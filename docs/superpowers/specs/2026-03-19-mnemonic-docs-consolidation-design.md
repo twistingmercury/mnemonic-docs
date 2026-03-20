@@ -46,8 +46,9 @@ mnemonic-docs/
         05-database-integration-flow.md
         06-deployment-architecture.md
         07-observability-architecture.md
-        08-mcp-tools.md
         README.md
+      mnemonic/                       # MCP service architecture
+        08-mcp-tools.md               # moved here: MCP-specific, not system-wide
       api/                            # api-specific architecture (post-diff)
       enricher/                       # enricher-specific architecture (post-diff)
       dbs/                            # database-specific architecture
@@ -79,7 +80,7 @@ For each shared doc (found in two or more of: `mnemonic`, `mnemonic-api`, `mnemo
 
 1. **Diff** the file across all repos that contain it.
 2. **Classify** each difference using these heuristics:
-   - A section that references component-internal concepts (e.g., "the enricher uses X", "the API endpoint Y") → component-specific; extract into `api/` or `enricher/` subdir
+   - A section that references component-internal concepts (e.g., "the MCP tool X", "the enricher uses Y", "the API endpoint Z") → component-specific; extract into `mnemonic/`, `api/`, or `enricher/` subdir as appropriate
    - A section that describes system-wide behavior (data flow, security model, deployment topology) → system-level; merge into `architecture/system/`
    - A section where two repos have conflicting factual content → use the most recently modified version; note the discrepancy in the header note
    - A section that appears only in one repo's version → assess whether it is an addition (include it) or reflects a deletion (if deleted in mnemonic, treat as stale and discard)
@@ -143,7 +144,8 @@ After all docs are written to `mnemonic-docs`, fix internal cross-links within t
 | `docs/mnemonic-concept.md` | mnemonic, mnemonic-api, mnemonic-enricher | `docs/concept.md` |
 | `docs/mnemonic-requirements.md` | mnemonic, mnemonic-api, mnemonic-enricher | `docs/requirements.md` |
 | `docs/requirements-traceability.md` | mnemonic, mnemonic-enricher | `docs/requirements-traceability.md` |
-| `docs/architecture/00–08 + README` | mnemonic, mnemonic-api, mnemonic-enricher | `docs/architecture/system/` (+ component subdirs post-diff) |
+| `docs/architecture/00–07 + README` | mnemonic, mnemonic-api, mnemonic-enricher | `docs/architecture/system/` (+ component subdirs post-diff) |
+| `docs/architecture/08-mcp-tools.md` | mnemonic, mnemonic-api, mnemonic-enricher | `docs/architecture/mnemonic/08-mcp-tools.md` (MCP-specific) |
 | `docs/diagrams/` | mnemonic, mnemonic-api, mnemonic-enricher | `docs/diagrams/` |
 | `docs/architecture/*` | mnemonic-dbs only | `docs/architecture/dbs/` |
 | `docs/adr/0001-frontend-stack.md` | mnemonic-admin only | `docs/architecture/admin/0001-frontend-stack.md` |
@@ -167,8 +169,9 @@ After the ralph-loop completes, verify:
 - [ ] All files listed in the Source Mapping table exist at their target path
 - [ ] All reconciled docs have a header note
 - [ ] No internal links in `mnemonic-docs/docs/` reference source-repo paths
-- [ ] Component-specific content extracted to `api/` or `enricher/` subdirs has its own header note
+- [ ] Component-specific content extracted to `mnemonic/`, `api/`, or `enricher/` subdirs has its own header note
 - [ ] `mnemonic-dbs` and `mnemonic-admin` docs are present at their target paths
+- [ ] `docs/architecture/mnemonic/08-mcp-tools.md` exists
 - [ ] Diagrams folder is populated and deduplicated
 
 ---
