@@ -140,7 +140,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/diagrams/01-concept-local-iteration.md docs/diagrams/post-pattern-flow.md docs/diagrams/concept.md`
   - Done: All diagram files exist in docs/diagrams/ with header notes
 
-- [ ] **Cycle 10 - Fix internal cross-links**: Update internal cross-links in all consolidated docs to use correct relative paths within mnemonic-docs.
+- [x] **Cycle 10 - Fix internal cross-links**: Update internal cross-links in all consolidated docs to use correct relative paths within mnemonic-docs.
   - Agent: `technical writer`
   - Files: All `.md` files under `docs/`
   - Steps:

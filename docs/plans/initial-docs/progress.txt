@@ -158,3 +158,19 @@ Date: 2026-03-23
 - mnemonic-api has concept.md (MVP 2 diagram) instead of numbered files; copied as-is
 - numbered 01–04 files present in mnemonic and mnemonic-enricher; 05 (cloud iteration) also in both
 - example-go-ci-cd-diagram.md contains a relative link to ../../_draft-skills/... which is not a design/ or plans/ path; deferred to Cycle 10 link audit
+
+## Cycle 10 - Fix internal cross-links
+Date: 2026-03-23
+
+### Work completed
+- docs/architecture/system/01-security-architecture.md: rewrote three broken `../mnemonic-requirements.md#se-*` links to `../../requirements.md#se-*` (correct path from docs/architecture/system/ to docs/requirements.md)
+- docs/diagrams/example-go-ci-cd-diagram.md: replaced broken `../../_draft-skills/` link with inline HTML comment indicating the reference remains in the source repo
+
+### Verification passed
+- `grep -rE "\]\(\.\./design/|\]\(\.\./plans/" docs/ --include="*.md" | wc -l | xargs test 0 -eq` → exit 0 (VERIFY PASSED)
+- All remaining relative links in consolidated docs resolve correctly within mnemonic-docs/
+
+### Notes
+- Only two links required fixing; all other relative links in docs/ were already valid
+- ../mnemonic-requirements.md was left over from source repos where requirements.md lived at a different relative path
+- _draft-skills link in diagrams file is not a design/ doc — replaced with descriptive inline comment
