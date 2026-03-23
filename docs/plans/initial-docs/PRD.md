@@ -69,7 +69,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/system/00-architectural-decisions.md docs/architecture/system/01-security-architecture.md docs/architecture/system/02-system-architecture.md docs/architecture/system/README.md`
   - Done: All four files exist at target paths with header notes
 
-- [ ] **Cycle 3 - Architecture docs 03 and 05**: Reconcile communication-patterns and database-integration-flow into docs/architecture/system/.
+- [x] **Cycle 3 - Architecture docs 03 and 05**: Reconcile communication-patterns and database-integration-flow into docs/architecture/system/.
   - Agent: `technical writer`
   - Files: `docs/architecture/system/03-communication-patterns.md`, `docs/architecture/system/05-database-integration-flow.md`
   - Steps:

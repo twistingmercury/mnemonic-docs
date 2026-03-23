@@ -33,3 +33,18 @@ Date: 2026-03-23
 - ADR-008 and ADR-009 from mnemonic-api are system-level decisions describing the enrichment pipeline decoupling; included as additions, not component-specific content
 - mnemonic-api repo is the most recently updated for 00-architectural-decisions.md
 - Full link audit deferred to Cycle 10
+
+## Cycle 3 - Architecture docs 03 and 05
+Date: 2026-03-23
+
+### Work completed
+- Wrote docs/architecture/system/03-communication-patterns.md — reconciled from all three repos; all three versions identical; mnemonic used as baseline; nav breadcrumb removed; MCP Tools link updated to ../mnemonic/08-mcp-tools.md; design doc link replaced with inline comment; header note added
+- Wrote docs/architecture/system/05-database-integration-flow.md — reconciled from all three repos; all three versions identical; mnemonic used as baseline; nav breadcrumb removed; design doc links replaced with inline comments; header note added
+
+### Verification passed
+- ls of both target files → exit 0
+- grep -l "Source:" on both files → both returned
+
+### Notes
+- Both files are identical across all three repos — no reconciliation decisions required
+- Full link audit deferred to Cycle 10
