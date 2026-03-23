@@ -78,7 +78,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/system/03-communication-patterns.md docs/architecture/system/05-database-integration-flow.md`
   - Done: Both files exist at target paths with header notes
 
-- [ ] **Cycle 4 - Architecture doc 04 (data architecture)**: Reconcile data-architecture (the largest doc, 1,092 lines) into docs/architecture/system/.
+- [x] **Cycle 4 - Architecture doc 04 (data architecture)**: Reconcile data-architecture (the largest doc, 1,092 lines) into docs/architecture/system/.
   - Agent: `technical writer`
   - Files: `docs/architecture/system/04-data-architecture.md`
   - Steps:
