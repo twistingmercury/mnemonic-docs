@@ -98,7 +98,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/system/06-deployment-architecture.md docs/architecture/system/07-observability-architecture.md`
   - Done: Both files exist at target paths with header notes
 
-- [ ] **Cycle 6 - Architecture doc 08 (MCP tools)**: Reconcile 08-mcp-tools.md into docs/architecture/mnemonic/.
+- [x] **Cycle 6 - Architecture doc 08 (MCP tools)**: Reconcile 08-mcp-tools.md into docs/architecture/mnemonic/.
   - Agent: `technical writer`
   - Files: `docs/architecture/mnemonic/08-mcp-tools.md`, `docs/architecture/mnemonic/README.md`
   - Steps:

@@ -78,3 +78,19 @@ Date: 2026-03-23
 ### Notes
 - Both files are identical across all three repos — no reconciliation decisions required
 - Full link audit deferred to Cycle 10
+
+## Cycle 6 - Architecture doc 08 (MCP tools)
+Date: 2026-03-23
+
+### Work completed
+- Created docs/architecture/mnemonic/ directory
+- Wrote docs/architecture/mnemonic/08-mcp-tools.md — reconciled from all three repos; all three versions identical; mnemonic used as baseline; blockquote header note added; nav breadcrumb replaced with simple back-link; design doc references replaced with inline HTML comments; Communication Patterns link updated to ../system/03-communication-patterns.md
+- Wrote docs/architecture/mnemonic/README.md — new file explaining the mnemonic subdir covers the MCP service component; blockquote header note added
+
+### Verification passed
+- ls docs/architecture/mnemonic/08-mcp-tools.md docs/architecture/mnemonic/README.md → exit 0
+- grep -l "Source:" on both files → both returned
+
+### Notes
+- All three source versions identical — no reconciliation decisions required
+- Full link audit deferred to Cycle 10
