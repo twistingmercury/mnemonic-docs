@@ -118,7 +118,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/dbs/00-overview.md docs/architecture/dbs/02-architectural-decisions.md docs/architecture/dbs/05-deployment-architecture.md docs/architecture/dbs/08-data-architecture.md docs/architecture/dbs/README.md`
   - Done: All five files exist at target paths with header notes
 
-- [ ] **Cycle 8 - mnemonic-admin architecture**: Copy mnemonic-admin ADR (single source) to docs/architecture/admin/.
+- [x] **Cycle 8 - mnemonic-admin architecture**: Copy mnemonic-admin ADR (single source) to docs/architecture/admin/.
   - Agent: `technical writer`
   - Files: `docs/architecture/admin/0001-frontend-stack.md`, `docs/architecture/admin/README.md`
   - Steps:

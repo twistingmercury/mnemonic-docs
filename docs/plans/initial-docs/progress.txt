@@ -115,3 +115,20 @@ Date: 2026-03-23
 - All files are single-source (mnemonic-dbs only); no reconciliation decisions required
 - Internal cross-links within dbs/ subdir remain intact (00-overview.md, 02-architectural-decisions.md, etc.)
 - ../../README.md back-links removed as project README does not exist yet (created in Cycle 11)
+
+## Cycle 8 - mnemonic-admin architecture
+Date: 2026-03-23
+
+### Work completed
+- Created docs/architecture/admin/ directory
+- Wrote docs/architecture/admin/0001-frontend-stack.md — single-source copy from mnemonic-admin/docs/adr/0001-frontend-stack.md; blockquote header note added below H1; no internal cross-links required updating
+- Wrote docs/architecture/admin/README.md — new file explaining the admin subdir covers the admin web UI component; blockquote header note added; link to ../system/README.md; copyright footer added
+
+### Verification passed
+- ls docs/architecture/admin/0001-frontend-stack.md docs/architecture/admin/README.md → exit 0
+- grep -l "Source:" on both files → both returned
+- No relative links to ../design/ or ../plans/ introduced
+
+### Notes
+- Single-source file (mnemonic-admin only); no reconciliation decisions required
+- ADR is a standalone document with no internal cross-links
