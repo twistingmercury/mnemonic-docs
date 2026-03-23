@@ -15,3 +15,21 @@ Date: 2026-03-23
 - All three concept and requirements files were identical across repos — no reconciliation decisions required
 - requirements-traceability.md is absent from mnemonic-api; noted in header
 - Full link audit deferred to Cycle 10
+
+## Cycle 2 - Architecture docs 00–02
+Date: 2026-03-23
+
+### Work completed
+- Wrote docs/architecture/system/00-architectural-decisions.md — reconciled from all three repos; mnemonic and mnemonic-enricher identical (ADR-001–007); mnemonic-api adds ADR-008 (RabbitMQ enrichment dispatch) and ADR-009 (best-effort publish) as system-level additions; Decision Summary table updated; "Related Design Docs" section replaced with inline comment
+- Wrote docs/architecture/system/01-security-architecture.md — identical across all three repos; mnemonic used as baseline; nav breadcrumb removed; header note added
+- Wrote docs/architecture/system/02-system-architecture.md — identical across all three repos; mnemonic used as baseline; MCP Tools link updated to ../mnemonic/08-mcp-tools.md; header note added
+- Wrote docs/architecture/system/README.md — identical across all three repos; concept/requirements links updated to ../../concept.md and ../../requirements.md; MCP Tools link updated; Design Documents section replaced with inline note; header note added
+
+### Verification passed
+- ls of all four target files → exit 0
+- grep -l "Source:" on all four files → all four returned
+
+### Notes
+- ADR-008 and ADR-009 from mnemonic-api are system-level decisions describing the enrichment pipeline decoupling; included as additions, not component-specific content
+- mnemonic-api repo is the most recently updated for 00-architectural-decisions.md
+- Full link audit deferred to Cycle 10

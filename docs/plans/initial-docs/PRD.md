@@ -58,7 +58,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/concept.md docs/requirements.md docs/requirements-traceability.md`
   - Done: All three files exist at target paths and each contains a blockquote header note with Source field
 
-- [ ] **Cycle 2 - Architecture docs 00–02**: Reconcile architectural-decisions, security-architecture, and system-architecture into docs/architecture/system/; extract any component-specific content.
+- [x] **Cycle 2 - Architecture docs 00–02**: Reconcile architectural-decisions, security-architecture, and system-architecture into docs/architecture/system/; extract any component-specific content.
   - Agent: `technical writer`
   - Files: `docs/architecture/system/00-architectural-decisions.md`, `docs/architecture/system/01-security-architecture.md`, `docs/architecture/system/02-system-architecture.md`, `docs/architecture/system/README.md`
   - Steps:
