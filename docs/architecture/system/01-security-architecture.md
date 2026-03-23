@@ -4,7 +4,7 @@
 > **Component-specific divergences:** None — all three versions are identical
 > **Last reconciled:** 2026-03-23
 
-> **MVP stance:** Mnemonic runs in a trusted network environment without authentication ([SE-1](../mnemonic-requirements.md#se-1)). The MCP interface is read-only ([SE-4](../mnemonic-requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../mnemonic-requirements.md#se-6)). This document describes the Post-MVP production security architecture.
+> **MVP stance:** Mnemonic runs in a trusted network environment without authentication ([SE-1](../../requirements.md#se-1)). The MCP interface is read-only ([SE-4](../../requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../../requirements.md#se-6)). This document describes the Post-MVP production security architecture.
 
 ## Table of Contents
 

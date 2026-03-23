@@ -4,7 +4,7 @@
 > **Last reconciled:** 2026-03-23
 
 This diagram shows how `src/mnemonic/build/build.sh` drives both local builds and CI builds.
-For a reusable org-level reference example, see [Docker-First CI/CD Reference Example](../../_draft-skills/docker-first-ci-cd-implementation/references/docker-first-ci-cd-diagram.md).
+<!-- Reference diagram remains in mnemonic/_draft-skills/docker-first-ci-cd-implementation/references/docker-first-ci-cd-diagram.md -->
 
 ```mermaid
 flowchart TD
