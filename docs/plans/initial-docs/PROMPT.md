@@ -110,7 +110,7 @@ If any check fails:
 - rerun verification
 - do not mark the cycle complete until all checks pass
 
-### Step 6: Commit the changes
+### Step 6: Commit and tag the changes
 
 After verification passes, stage and commit all files produced or modified by
 the cycle:
@@ -120,6 +120,13 @@ the cycle:
 - sign the commit: `git commit -S`
 - do not skip hooks or sign flags
 - if the commit fails, fix the issue and recommit before proceeding
+
+After the commit succeeds, create an annotated tag for the cycle:
+
+- tag name: `cycle-<N>` (e.g., `cycle-1`, `cycle-2`)
+- tag message: the cycle title (e.g., `Cycle 1 - Top-level system docs`)
+- sign the tag: `git tag -s cycle-<N> -m "<cycle title>"`
+- if tagging fails, fix the issue and retag before proceeding
 
 ### Step 7: Update project records
 

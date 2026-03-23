@@ -12,19 +12,20 @@ For the full vision and problem statement, see [Purpose](PURPOSE.md).
 
 The Mnemonic solution is split across five repositories. This repository (`mnemonic-docs`) consolidates their architecture and design.
 
-| Repository | Role |
-|---|---|
-| `mnemonic` | MCP service that exposes pattern search tools to Claude Code |
-| `mnemonic-api` | REST API for pattern management (CRUD operations) |
-| `mnemonic-dbs` | Database schemas (PostgreSQL, Neo4j) and Docker images for local development |
-| `mnemonic-enricher` | Worker that enriches patterns with embeddings and semantic metadata |
-| `mnemonic-admin` | Web UI for pattern management, search, and import |
+| Repository          | Role                                                                         |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `mnemonic`          | MCP service that exposes pattern search tools to Claude Code                 |
+| `mnemonic-api`      | REST API for pattern management (CRUD operations)                            |
+| `mnemonic-dbs`      | Database schemas (PostgreSQL, Neo4j) and Docker images for local development |
+| `mnemonic-enricher` | Worker that enriches patterns with embeddings and semantic metadata          |
+| `mnemonic-admin`    | Web UI for pattern management, search, and import                            |
 
 Each source repository is read-only in terms of architecture and concept documentation — all updates to those materials come through `mnemonic-docs`.
 
 ## Documentation Structure
 
 ### Foundation
+
 - **[Concept](docs/concept.md)** — Vision, use cases, and how Mnemonic works end-to-end
 - **[Requirements](docs/requirements.md)** — Functional and non-functional requirements
 - **[Requirements Traceability](docs/requirements-traceability.md)** — Mapping requirements to architecture decisions and components
@@ -33,12 +34,12 @@ Each source repository is read-only in terms of architecture and concept documen
 
 Start with [System Architecture Overview](docs/architecture/system/README.md), then explore component-specific architecture:
 
-| Directory | Contents |
-|---|---|
-| `docs/architecture/system/` | System-wide architecture: decisions, security, communication patterns, deployment, observability |
-| `docs/architecture/mnemonic/` | MCP service: tool discovery, definitions, response patterns |
-| `docs/architecture/dbs/` | Database schemas, migrations, deployment pipeline |
-| `docs/architecture/admin/` | Frontend stack and architectural decisions |
+| Directory                     | Contents                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------ |
+| `docs/architecture/system/`   | System-wide architecture: decisions, security, communication patterns, deployment, observability |
+| `docs/architecture/mnemonic/` | MCP service: tool discovery, definitions, response patterns                                      |
+| `docs/architecture/dbs/`      | Database schemas, migrations, deployment pipeline                                                |
+| `docs/architecture/admin/`    | Frontend stack and architectural decisions                                                       |
 
 ### Diagrams
 
@@ -53,17 +54,20 @@ Reference diagrams for conceptual understanding:
 ## Quick Navigation
 
 **First time here?** Read in this order:
+
 1. [Concept](docs/concept.md) — understand the problem and solution
 2. [Architecture System Overview](docs/architecture/system/README.md) — see how components fit together
 3. [Requirements](docs/requirements.md) — learn what the system must do
 
 **Looking for specific component architecture?** Jump to:
+
 - MCP tools: [docs/architecture/mnemonic/](docs/architecture/mnemonic/)
 - REST API: See system architecture docs (no separate API docs repo exists; API design lives in mnemonic-api source)
 - Databases: [docs/architecture/dbs/](docs/architecture/dbs/)
 - Admin UI: [docs/architecture/admin/](docs/architecture/admin/)
 
 **Troubleshooting or decisions?** Check:
+
 - [Architectural Decisions](docs/architecture/system/00-architectural-decisions.md) — ADRs across the system
 - [Security Architecture](docs/architecture/system/01-security-architecture.md) — authentication, authorization, and compliance
 
@@ -79,4 +83,4 @@ All five source repositories reference this repository for their architecture an
 
 ---
 
-Copyright (c) 2025 Jeremy K. Johnson. All rights reserved.
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.
