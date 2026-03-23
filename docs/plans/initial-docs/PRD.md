@@ -108,7 +108,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/mnemonic/08-mcp-tools.md docs/architecture/mnemonic/README.md`
   - Done: Both files exist with header notes
 
-- [ ] **Cycle 7 - mnemonic-dbs architecture**: Copy mnemonic-dbs architecture docs (single source) to docs/architecture/dbs/.
+- [x] **Cycle 7 - mnemonic-dbs architecture**: Copy mnemonic-dbs architecture docs (single source) to docs/architecture/dbs/.
   - Agent: `technical writer`
   - Files: `docs/architecture/dbs/00-overview.md`, `docs/architecture/dbs/02-architectural-decisions.md`, `docs/architecture/dbs/05-deployment-architecture.md`, `docs/architecture/dbs/08-data-architecture.md`, `docs/architecture/dbs/README.md`
   - Steps:

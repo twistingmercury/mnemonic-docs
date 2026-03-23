@@ -94,3 +94,24 @@ Date: 2026-03-23
 ### Notes
 - All three source versions identical — no reconciliation decisions required
 - Full link audit deferred to Cycle 10
+
+## Cycle 7 - mnemonic-dbs architecture
+Date: 2026-03-23
+
+### Work completed
+- Created docs/architecture/dbs/ directory
+- Wrote docs/architecture/dbs/00-overview.md — single-source copy from mnemonic-dbs; removed ../../README.md back-link; blockquote header note added
+- Wrote docs/architecture/dbs/02-architectural-decisions.md — single-source copy from mnemonic-dbs; replaced dual back-link with Overview-only link; blockquote header note added
+- Wrote docs/architecture/dbs/05-deployment-architecture.md — single-source copy from mnemonic-dbs; replaced dual back-link with Overview-only link; blockquote header note added
+- Wrote docs/architecture/dbs/08-data-architecture.md — single-source copy from mnemonic-dbs; replaced dual back-link with Overview-only link; blockquote header note added
+- Wrote docs/architecture/dbs/README.md — adapted from mnemonic-dbs/docs/architecture/README.md; added H1, blockquote header note, removed ../../README.md back-link, added footer link to system architecture
+
+### Verification passed
+- ls of all five target files → exit 0
+- grep -l "Source:" on all five files → all five returned
+- No relative links to ../design/ or ../plans/ found in any file
+
+### Notes
+- All files are single-source (mnemonic-dbs only); no reconciliation decisions required
+- Internal cross-links within dbs/ subdir remain intact (00-overview.md, 02-architectural-decisions.md, etc.)
+- ../../README.md back-links removed as project README does not exist yet (created in Cycle 11)
