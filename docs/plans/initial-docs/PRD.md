@@ -48,7 +48,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
 
 ## Implementation Plan
 
-- [ ] **Cycle 1 - Top-level system docs**: Reconcile concept.md, requirements.md, and requirements-traceability.md from source repos into docs/.
+- [x] **Cycle 1 - Top-level system docs**: Reconcile concept.md, requirements.md, and requirements-traceability.md from source repos into docs/.
   - Agent: `technical writer`
   - Files: `docs/concept.md`, `docs/requirements.md`, `docs/requirements-traceability.md`
   - Steps:
