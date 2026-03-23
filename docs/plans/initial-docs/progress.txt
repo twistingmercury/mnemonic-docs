@@ -132,3 +132,29 @@ Date: 2026-03-23
 ### Notes
 - Single-source file (mnemonic-admin only); no reconciliation decisions required
 - ADR is a standalone document with no internal cross-links
+
+## Cycle 9 - Diagrams
+Date: 2026-03-23
+
+### Work completed
+- Created docs/diagrams/ directory
+- Copied docs/diagrams/01-concept-local-iteration.md — from mnemonic + mnemonic-enricher (identical); blockquote header note added
+- Copied docs/diagrams/02-concept-local-iteration.md — from mnemonic + mnemonic-enricher (identical); blockquote header note added
+- Copied docs/diagrams/03-concept-local-iteration.md — from mnemonic + mnemonic-enricher (identical); blockquote header note added
+- Copied docs/diagrams/04-concept-local-iteration.md — from mnemonic + mnemonic-enricher (identical); blockquote header note added
+- Copied docs/diagrams/05-concept-cloud-iteration.md — from mnemonic + mnemonic-enricher (identical); blockquote header note added
+- Copied docs/diagrams/example-go-ci-cd-diagram.md — from all three repos (identical); blockquote header note added
+- Copied docs/diagrams/post-pattern-flow.md — from all three repos (identical); blockquote header note added
+- Copied docs/diagrams/concept.md — single-source from mnemonic-api; blockquote header note added
+
+### Verification passed
+- ls docs/diagrams/01-concept-local-iteration.md docs/diagrams/post-pattern-flow.md docs/diagrams/concept.md → exit 0
+- ls of all 8 target files → exit 0
+- grep -l "Source:" on all 8 files → all 8 returned
+- grep -rE "\]\(\.\./design/|\]\(\.\./plans/" docs/diagrams/ → 0 matches
+
+### Notes
+- All files identical across source repos — no reconciliation decisions required
+- mnemonic-api has concept.md (MVP 2 diagram) instead of numbered files; copied as-is
+- numbered 01–04 files present in mnemonic and mnemonic-enricher; 05 (cloud iteration) also in both
+- example-go-ci-cd-diagram.md contains a relative link to ../../_draft-skills/... which is not a design/ or plans/ path; deferred to Cycle 10 link audit

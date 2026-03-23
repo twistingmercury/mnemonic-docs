@@ -128,7 +128,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/admin/0001-frontend-stack.md docs/architecture/admin/README.md`
   - Done: Both files exist with header notes
 
-- [ ] **Cycle 9 - Diagrams**: Deduplicate and consolidate diagrams from mnemonic, mnemonic-api, and mnemonic-enricher into docs/diagrams/.
+- [x] **Cycle 9 - Diagrams**: Deduplicate and consolidate diagrams from mnemonic, mnemonic-api, and mnemonic-enricher into docs/diagrams/.
   - Agent: `technical writer`
   - Files: `docs/diagrams/01-concept-local-iteration.md`, `docs/diagrams/02-concept-local-iteration.md`, `docs/diagrams/03-concept-local-iteration.md`, `docs/diagrams/04-concept-local-iteration.md`, `docs/diagrams/05-concept-cloud-iteration.md`, `docs/diagrams/example-go-ci-cd-diagram.md`, `docs/diagrams/post-pattern-flow.md`, `docs/diagrams/concept.md`
   - Steps:
