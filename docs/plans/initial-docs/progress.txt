@@ -174,3 +174,16 @@ Date: 2026-03-23
 - Only two links required fixing; all other relative links in docs/ were already valid
 - ../mnemonic-requirements.md was left over from source repos where requirements.md lived at a different relative path
 - _draft-skills link in diagrams file is not a design/ doc — replaced with descriptive inline comment
+
+## Cycle 11 - README and validation
+Date: 2026-03-23
+
+### Work completed
+- Wrote README.md at repo root — describes the mnemonic-docs project purpose, the five-repo solution structure with component roles, docs/ directory layout (foundation, architecture, diagrams), quick navigation guide, and contributing guidelines
+
+### Verification passed
+- ls README.md docs/concept.md docs/architecture/system/00-architectural-decisions.md docs/architecture/mnemonic/08-mcp-tools.md docs/architecture/dbs/00-overview.md docs/architecture/admin/0001-frontend-stack.md docs/diagrams/post-pattern-flow.md → exit 0
+
+### Notes
+- All eleven cycles complete; PRD Definition of Done satisfied
+- README.md intentionally does not include a blockquote header note (it is an index, not a reconciled doc)

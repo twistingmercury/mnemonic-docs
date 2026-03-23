@@ -150,7 +150,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `grep -rE "\]\(\.\./design/|\]\(\.\./plans/" docs/ --include="*.md" | wc -l | xargs test 0 -eq`
   - Done: No consolidated docs contain relative links pointing to design/ or plans/ directories from source repos
 
-- [ ] **Cycle 11 - README and validation**: Create the top-level README.md and verify the full validation checklist passes.
+- [x] **Cycle 11 - README and validation**: Create the top-level README.md and verify the full validation checklist passes.
   - Agent: `technical writer`
   - Files: `README.md`
   - Steps:
