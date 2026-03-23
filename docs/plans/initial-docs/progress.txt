@@ -63,3 +63,18 @@ Date: 2026-03-23
 ### Notes
 - All three versions identical — no reconciliation decisions required
 - design/data-storage.md, design/pattern-processing.md, and operations/database-operations.md links replaced with comments per link-fixing rules; full audit deferred to Cycle 10
+
+## Cycle 5 - Architecture docs 06–07
+Date: 2026-03-23
+
+### Work completed
+- Wrote docs/architecture/system/06-deployment-architecture.md — reconciled from all three repos; all three versions identical; mnemonic used as baseline; nav breadcrumb removed; header note added; internal link to 07-observability-architecture.md remains valid (same directory)
+- Wrote docs/architecture/system/07-observability-architecture.md — reconciled from all three repos; all three versions identical; mnemonic used as baseline; nav breadcrumb removed; "Next" link updated to ../mnemonic/08-mcp-tools.md; copyright line preserved; header note added
+
+### Verification passed
+- ls of both target files → exit 0
+- grep -l "Source:" on both files → both returned
+
+### Notes
+- Both files are identical across all three repos — no reconciliation decisions required
+- Full link audit deferred to Cycle 10

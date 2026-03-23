@@ -89,7 +89,7 @@ The mnemonic solution was split into five repos. Documentation was copied across
   - Verify: `ls docs/architecture/system/04-data-architecture.md`
   - Done: File exists at target path with header note; any component-specific extracts have been written to their component subdirs
 
-- [ ] **Cycle 5 - Architecture docs 06–07**: Reconcile deployment-architecture and observability-architecture into docs/architecture/system/.
+- [x] **Cycle 5 - Architecture docs 06–07**: Reconcile deployment-architecture and observability-architecture into docs/architecture/system/.
   - Agent: `technical writer`
   - Files: `docs/architecture/system/06-deployment-architecture.md`, `docs/architecture/system/07-observability-architecture.md`
   - Steps:
