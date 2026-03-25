@@ -39,3 +39,10 @@
 - Issue: twistingmercury/mnemonic-mcp#74
 - Summary: Added OpenAI embedding and extraction model checks to health check documentation in docs/architecture/07-observability-architecture.md — updated JSON examples and added dependency table
 - PR: https://github.com/twistingmercury/mnemonic-mcp/pull/77
+
+## Cycle 7
+- Date: 2026-03-25
+- Repo: mnemonic-api
+- Issue: twistingmercury/mnemonic-api#3
+- Summary: Fixed configuration key hierarchy from server.admin/server.mcp to top-level server/mcp in docs/design/configuration.md — updated example YAML, env vars, Configuration Reference table, Viper defaults code example, and naming convention examples
+- PR: https://github.com/twistingmercury/mnemonic-api/pull/5
