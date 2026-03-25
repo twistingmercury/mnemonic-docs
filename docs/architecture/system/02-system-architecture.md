@@ -39,7 +39,6 @@ graph TB
             MCP[MCP Server :8081]
         end
         PATTERN[Pattern Enrichment Service]
-        TOOLING[Tooling Repository]
     end
 
     subgraph "Data Tier"
@@ -54,11 +53,9 @@ graph TB
     CURL -->|"POST/PUT/DELETE"| ADMIN
     CC -->|"MCP: Pattern search"| MCP
     ADMIN --> PATTERN
-    ADMIN --> TOOLING
     MCP --> PATTERN
     PATTERN <--> PG
     PATTERN <--> NEO
-    TOOLING <--> PG
     PATTERN <--> OPENAI
 ```
 
@@ -66,14 +63,13 @@ graph TB
 
 ### Mnemonic Server
 
-Mnemonic is a single Go server with two HTTP listeners providing team knowledge graph and tooling synchronization.
+Mnemonic is a single Go server with two HTTP listeners providing team knowledge graph and pattern search.
 
 **Responsibilities:**
 
 - **Admin REST API** (`:8080`): CRUD operations for patterns, agents, and skills
 - **MCP Server** (`:8081`): Read-only pattern search for Claude Code (3 tools)
 - **Pattern enrichment**: Semantic search via PGVector, knowledge graph via Neo4j
-- **Tooling synchronization**: Shared agent and skill definitions across team
 
 **Key Characteristics:**
 
@@ -273,7 +269,6 @@ graph TB
     subgraph "Mnemonic Domain"
         MD1[Team knowledge graph]
         MD2[Pattern semantic search]
-        MD3[Tooling synchronization]
     end
 
     subgraph "Admin Domain"
@@ -285,7 +280,6 @@ graph TB
     UD1 --> CD3
     CD3 -->|"search_patterns"| MD2
     AD1 --> MD1
-    AD2 --> MD3
 ```
 
 **Boundary Rules:**
@@ -293,7 +287,7 @@ graph TB
 - The user drives all workflow and orchestration decisions
 - Claude Code is the interface; Mnemonic is the memory
 - Pattern storage and search live only in Mnemonic
-- Tooling definitions (agents, skills) managed via admin API
+- Agent and skill associations managed via admin API for pattern filtering
 - File operations happen only on the workstation
 - Mnemonic never receives or stores user credentials
 

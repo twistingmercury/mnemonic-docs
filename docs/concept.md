@@ -26,11 +26,7 @@ architectural decisions, how we do things around here. When Claude Code needs co
 your team's approach to something, it can ask Mnemonic and get a real answer instead of
 guessing.
 
-**A tooling library.** Agents and skills are stored in Mnemonic and synced down to
-every developer's machine. Everyone runs the same versions. When the team improves a skill,
-everyone gets the update on their next sync.
-
-That is the whole idea. Shared memory, consistent tools.
+That is the whole idea. Shared memory for your team.
 
 ## The user is still in charge
 
@@ -66,14 +62,10 @@ Someone on the team — an admin, a CI pipeline, a script — pushes content int
 a REST API. That is the write path. You POST a pattern, Mnemonic stores it, generates a
 semantic embedding in the background, and it becomes searchable within a few moments.
 
-The same API handles tooling: upload an agent definition, register a skill.
-Mnemonic becomes the canonical source.
-
 ```mermaid
 graph LR
-    Admin([Admin / CI]) -->|POST patterns, agents, skills| REST[Mnemonic REST API]
+    Admin([Admin / CI]) -->|POST patterns| REST[Mnemonic REST API]
     REST --> KB[(Knowledge Base)]
-    REST --> Tools[(Agents & Skills)]
 ```
 
 ## Embeddings explained
@@ -151,25 +143,11 @@ During index creation, k-means finds "centroids" (bucket centers) and each patte
 
 The default configuration searches roughly 10% of patterns per query, which dramatically improves performance while maintaining accuracy. The key insight is that relevant patterns cluster together in embedding space, so searching nearby buckets catches what we need.
 
-## How tooling stays in sync
-
-Every developer runs a sync command periodically — `/mnemonic-sync` as a Claude Code skill. It
-checks what has changed on the server and downloads only the things that are new or updated.
-Agents land in `~/.claude/agents/`. Skills land in `~/.claude/skills/`.
-
-After a sync, you are running the same tooling as everyone else on the team.
-
-The sync is incremental. If only one collection changed, only that collection is fetched. It
-is fast regardless of how much total content Mnemonic holds.
-
 ## What lives where
 
 | What | Where it lives | Who owns it |
 | --- | --- | --- |
 | Patterns (team knowledge) | Mnemonic | Your team, via the REST API |
-| Agent definitions | Mnemonic | Your team, via the REST API |
-| Skill definitions | Mnemonic | Your team, via the REST API |
-| Local copies of tooling | `~/.claude/` on each machine | Synced from Mnemonic |
 | Workflow decisions | You | Always |
 | AI inference | Claude Code / Anthropic | Mnemonic never does inference |
 
