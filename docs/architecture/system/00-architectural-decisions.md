@@ -7,7 +7,7 @@
 ## Table of Contents
 
 - [Decision Record Format](#decision-record-format)
-- [ADR-001: Team Knowledge Graph and Tooling Synchronization](#adr-001-team-knowledge-graph-and-tooling-synchronization) (ACTIVE)
+- [ADR-001: Team Knowledge Graph](#adr-001-team-knowledge-graph) (ACTIVE)
 - [ADR-002: MCP Protocol for Claude Code Integration](#adr-002-mcp-protocol-for-claude-code-integration) (ACTIVE)
 - [ADR-003: Entity Storage with JSONB Document Model](#adr-003-entity-storage-with-jsonb-document-model) (ACTIVE)
 - [ADR-004: Pattern Storage and Enrichment Pipeline](#adr-004-pattern-storage-and-enrichment-pipeline) (ACTIVE)
@@ -26,7 +26,7 @@ Each architectural decision follows this structure:
 - **Decision**: What we decided to do
 - **Consequences**: The results of the decision, both positive and negative
 
-## <a id="adr-001"></a>ADR-001: Team Knowledge Graph and Tooling Synchronization
+## <a id="adr-001"></a>ADR-001: Team Knowledge Graph
 
 **Date:** 2026-02-14
 **Status:** Accepted
@@ -35,23 +35,22 @@ Each architectural decision follows this structure:
 
 Teams using Claude Code develop inconsistent tooling over time. Each developer accumulates their own set of agents and skills at different versions, with no shared baseline. Alongside this, knowledge silos form — patterns and approaches discovered by one team member don't reliably reach others. The result is duplicated effort, divergent practices, and no persistent team memory.
 
-Claude Code already handles orchestration well. The real problems are tooling drift and knowledge isolation.
+Claude Code already handles orchestration well. The real problem is knowledge isolation.
 
 ### Decision
 
-**Mnemonic is a team knowledge graph and tooling synchronization service.**
+**Mnemonic is a team knowledge graph service.**
 
 Core capabilities:
 
 1. **Team knowledge graph**: Curated patterns with semantic search (PGVector) and knowledge relationships (Neo4j)
-2. **Tooling synchronization**: Agents and skills synchronized across team members via the Admin REST API
-3. **User is the orchestrator**: Mnemonic provides memory and consistent tools; the user decides workflow
+2. **User is the orchestrator**: Mnemonic provides memory; the user decides workflow
 
 ### Consequences
 
 **Positive:**
 
-- Architecture is focused on the actual team pain points: tooling drift and knowledge silos
+- Architecture is focused on the actual team pain point: knowledge silos
 - MCP protocol provides natural Claude Code integration without a separate CLI
 - Manual orchestration is intentional and supported by team knowledge
 - Single server with two listeners simplifies deployment
@@ -59,7 +58,7 @@ Core capabilities:
 **Negative:**
 
 - Pattern_agent_associations table retained to support "which agents use this pattern" queries
-- Users must understand that Mnemonic provides knowledge and tools, not routing decisions
+- Users must understand that Mnemonic provides knowledge, not routing decisions
 
 ## <a id="adr-002"></a>ADR-002: MCP Protocol for Claude Code Integration
 
@@ -68,7 +67,7 @@ Core capabilities:
 
 ### Context
 
-Mnemonic needs a way to expose its knowledge graph to Claude Code sessions. The integration must support read-only access — Claude Code searches for patterns, but does not write to Mnemonic directly. Admin operations (data loading, updates) and tooling synchronization (agents, skills) use a separate REST API.
+Mnemonic needs a way to expose its knowledge graph to Claude Code sessions. The integration must support read-only access — Claude Code searches for patterns, but does not write to Mnemonic directly. Admin operations (data loading, updates) use a separate REST API.
 
 Options considered:
 
@@ -89,7 +88,7 @@ Key considerations:
 Architecture:
 
 - **MCP Server** (`:8081`): Read-only pattern search for Claude Code (3 tools)
-- **Admin REST API** (`:8080`): Write operations for data loading, tooling sync for agents and skills
+- **Admin REST API** (`:8080`): Write operations for data loading
 - **Single server**: Two HTTP listeners on one Go server
 
 MCP tools (3 pattern search tools):
@@ -168,7 +167,7 @@ This pattern disallows consecutive hyphens and trailing hyphens, ensuring clean 
 
 ### Context
 
-Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, skills) which use JSONB documents, patterns require relational columns for vector search, enrichment tracking, and graph relationships. The enrichment pipeline must generate embeddings via an external API (OpenAI text-embedding-3-small) and extract entities for the Neo4j knowledge graph.
+Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, skills) which use JSONB documents, patterns require relational columns for vector search, enrichment tracking, and graph relationships. The enrichment pipeline must generate embeddings via an external API (OpenAI text-embedding-3-large) and extract entities for the Neo4j knowledge graph.
 
 ### Decision
 
@@ -177,7 +176,7 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 **Pattern table design:**
 
 - UUID primary key (patterns may be renamed; need stable reference)
-- Separate `embedding` column (vector(1536)) for PGVector similarity search
+- Separate `embedding` column (vector(2000)) for PGVector similarity search
 - Enrichment status tracking (`pending` / `enriched` / `failed`) with error capture
 - JSONB `tags` column for flexible categorization
 
@@ -213,7 +212,7 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 
 | Decision | Choice                       | Rationale                                                      | Status |
 | -------- | ---------------------------- | -------------------------------------------------------------- | ------ |
-| ADR-001  | Team knowledge graph         | Solve real problems: tooling drift and knowledge silos         | ACTIVE |
+| ADR-001  | Team knowledge graph         | Solve knowledge isolation silos                                 | ACTIVE |
 | ADR-002  | MCP protocol integration     | Native Claude Code integration, dual protocol architecture     | ACTIVE |
 | ADR-003  | JSONB document model         | Schema-agnostic entity storage, CRC-64 change detection        | ACTIVE |
 | ADR-004  | Pattern storage + enrichment | Relational columns for vectors, Postgres-backed async queue    | ACTIVE |

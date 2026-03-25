@@ -46,7 +46,7 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 
 **Stores:**
 
-- Pattern content embeddings (1536 dimensions, OpenAI text-embedding-3-small)
+- Pattern content embeddings (2000 dimensions, OpenAI text-embedding-3-large truncated)
 - Vector similarity indexes (IVFFlat or HNSW based on scale)
 
 **Why PGVector:** Single database deployment (no separate vector service), transactional consistency with metadata, and sufficient performance for expected pattern counts.
@@ -83,7 +83,7 @@ flowchart TB
 
         subgraph PGVector["PGVector (Vectors)"]
             PV1["patterns.embedding"]
-            PV2["(1536-dim)"]
+            PV2["(2000-dim)"]
             PV3["Cosine distance"]
             PV4["similarity"]
             PV5["Semantic Search"]
@@ -116,7 +116,7 @@ name: VARCHAR(128)
 description: VARCHAR(500)
 content: TEXT (up to 10KB)
 tags: JSONB
-embedding: vector(1536)
+embedding: vector(2000)
 enrichment_status: ENUM ('pending', 'enriched', 'failed')
 enriched_at: TIMESTAMPTZ
 ```
@@ -127,7 +127,7 @@ enriched_at: TIMESTAMPTZ
 id: 550e8400-e29b-41d4-a716-446655440001
 name: "sql-query-optimization"
 content: "Use EXPLAIN ANALYZE to identify slow queries..."
-embedding: vector(1536) [0.023, -0.145, ...]
+embedding: vector(2000) [0.023, -0.145, ...]
 enrichment_status: 'enriched'
 ```
 
@@ -217,10 +217,10 @@ FOR UPDATE SKIP LOCKED;
 ```go
 // Call OpenAI embedding API
 embedding := openai.CreateEmbedding(
-  model: "text-embedding-3-small",
+  model: "text-embedding-3-large",
   input: pattern.Content,
 )
-// Returns: vector(1536) [0.023, -0.145, 0.087, ...]
+// Returns: vector(2000) [0.023, -0.145, 0.087, ...]
 ```
 
 **Step 4: Store Embedding (PGVector)**
@@ -314,10 +314,10 @@ This is the core operation: turning an MCP tool call into a knowledge graph quer
 ```go
 // Generate embedding for search query
 queryEmbedding := openai.CreateEmbedding(
-  model: "text-embedding-3-small",
+  model: "text-embedding-3-large",
   input: "How do I optimize SQL queries?",
 )
-// Returns: vector(1536)
+// Returns: vector(2000)
 ```
 
 **Step 2: Semantic Search (PGVector Similarity Search)**
@@ -422,7 +422,7 @@ While not part of the MVP, there's an interesting opportunity to visualize the e
 
 **The Idea:**
 
-Use dimensionality reduction techniques (t-SNE, UMAP) to project the 1536-dimensional embeddings down to 3D space for interactive visualization.
+Use dimensionality reduction techniques (t-SNE, UMAP) to project the 2000-dimensional embeddings down to 3D space for interactive visualization.
 
 **What You Could See:**
 
