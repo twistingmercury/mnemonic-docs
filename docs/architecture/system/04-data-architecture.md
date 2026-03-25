@@ -392,7 +392,7 @@ See [Index Strategies](#index-strategies) for the IVFFlat index definition. The 
 -- search_patterns: chunk-level semantic search
 -- Parameters:
 --   $1 = query embedding vector
---   $2 = similarity threshold (default 0.7)
+--   $2 = similarity threshold (default 0.5)
 --   $3 = result limit (default 10, max 50)
 --   $4 = tags filter (JSONB array or NULL)
 --   $5 = language filter (text or NULL)

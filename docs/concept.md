@@ -114,9 +114,9 @@ Cosine similarity measures the angle between these arrows:
 **Similarity scores:**
 
 - 1.0 = Identical direction (same meaning)
-- 0.7-1.0 = Small angle (highly relevant, typical threshold for pattern matching)
-- 0.5-0.7 = Medium angle (somewhat related)
-- 0.0-0.5 = Large angle (unrelated or opposite meaning)
+- 0.5-1.0 = Small angle (highly relevant, typical threshold for pattern matching)
+- 0.3-0.5 = Medium angle (somewhat related)
+- 0.0-0.3 = Large angle (unrelated or opposite meaning)
 
 **Example:**
 
