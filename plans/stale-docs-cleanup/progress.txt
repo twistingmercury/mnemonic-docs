@@ -32,3 +32,10 @@
 - Issue: twistingmercury/mnemonic-mcp#73
 - Summary: Fixed default search threshold from 0.7 to 0.5 in docs/architecture/08-mcp-tools.md and jsonschema tag in src/mnemonic/internal/mcpserver/input.go
 - PR: https://github.com/twistingmercury/mnemonic-mcp/pull/76
+
+## Cycle 6
+- Date: 2026-03-25
+- Repo: mnemonic-mcp
+- Issue: twistingmercury/mnemonic-mcp#74
+- Summary: Added OpenAI embedding and extraction model checks to health check documentation in docs/architecture/07-observability-architecture.md — updated JSON examples and added dependency table
+- PR: https://github.com/twistingmercury/mnemonic-mcp/pull/77
