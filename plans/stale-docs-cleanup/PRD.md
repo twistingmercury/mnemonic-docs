@@ -83,7 +83,7 @@ A comprehensive audit found 13 documentation issues across 7 repositories. Docs 
   - Verify: see ticket description
   - Done: PR created, issue commented with fix description and PR link
 
-- [ ] **Cycle 8**: `gh issue view 4 --repo twistingmercury/mnemonic-api`
+- [x] **Cycle 8**: `gh issue view 4 --repo twistingmercury/mnemonic-api`
   - Agent: `technical writer`
   - Repo: `mnemonic-api`
   - Verify: see ticket description
