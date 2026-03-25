@@ -137,7 +137,7 @@ erDiagram
 
 ### Embedding Dimensions
 
-Pattern embeddings were originally `vector(1536)` (text-embedding-3-small). Migration 000010 changed both the `patterns.embedding` column and the `pattern_chunks.embedding` column to `vector(2000)` (text-embedding-3-large with Matryoshka truncation).
+Pattern chunk embeddings use `vector(2000)` (OpenAI text-embedding-3-large with Matryoshka truncation). Migration 000010 updated `pattern_chunks.embedding` to this dimension. The `patterns` table embedding column was removed in migration 000009 — embeddings now exist only in `pattern_chunks`.
 
 ## Neo4j Schema
 
