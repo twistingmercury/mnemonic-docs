@@ -18,3 +18,10 @@
 - Issue: twistingmercury/mnemonic-docs#3
 - Summary: Removed agents/skills/tooling sync references from concept.md, requirements.md, and 02-system-architecture.md — Mnemonic is patterns-only
 - PR: https://github.com/twistingmercury/mnemonic-docs/pull/6
+
+## Cycle 4
+- Date: 2026-03-25
+- Repo: mnemonic-mcp
+- Issue: twistingmercury/mnemonic-mcp#72
+- Summary: Updated embedding model references from text-embedding-3-small/1536 to text-embedding-3-large/2000 across 4 docs files (04-data-architecture.md, 05-database-integration-flow.md, data-storage.md, configuration.md)
+- PR: https://github.com/twistingmercury/mnemonic-mcp/pull/75
