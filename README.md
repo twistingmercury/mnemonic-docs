@@ -39,7 +39,17 @@ Start with [System Architecture Overview](docs/architecture/system/README.md), t
 | `docs/architecture/system/`   | System-wide architecture: decisions, security, communication patterns, deployment, observability |
 | `docs/architecture/mnemonic/` | MCP service: tool discovery, definitions, response patterns                                      |
 | `docs/architecture/dbs/`      | Database schemas, migrations, deployment pipeline                                                |
-| `docs/architecture/admin/`    | Frontend stack and architectural decisions                                                       |
+| `docs/architecture/admin/`    | Frontend stack, ADRs, screen map, use cases, tech stack justification                            |
+
+### Design
+
+Implementation-level design documents shared across Go services:
+
+- **[Design Overview](docs/design/README.md)** — Configuration, data storage, MCP server, observability, pattern processing, service layer
+
+### Reference
+
+- **[Pattern File Schema](docs/reference/pattern-schema.md)** — Normative specification for pattern file structure, frontmatter, and chunking
 
 ### Diagrams
 
