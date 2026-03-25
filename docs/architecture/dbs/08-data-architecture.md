@@ -137,7 +137,7 @@ erDiagram
 
 ### Embedding Dimensions
 
-Pattern embeddings were originally `vector(1536)` (text-embedding-3-small). Migration 000010 changed both the `patterns.embedding` column and the `pattern_chunks.embedding` column to `vector(2000)`.
+Pattern embeddings were originally `vector(1536)` (text-embedding-3-small). Migration 000010 changed both the `patterns.embedding` column and the `pattern_chunks.embedding` column to `vector(2000)` (text-embedding-3-large with Matryoshka truncation).
 
 ## Neo4j Schema
 
