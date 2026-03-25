@@ -1,0 +1,168 @@
+services:
+  dev_postgres:
+    image: ghcr.io/twistingmercury/mnemonic-postgres:v1.0.0-dev
+
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - dev_postgres_data:/var/lib/postgresql/data
+    networks:
+      - mnemonic_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mnemonic"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  dev_neo4j:
+    image: ghcr.io/twistingmercury/mnemonic-neo4j:v1.0.0-dev
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - dev_neo4j_data:/data
+    environment:
+      NEO4J_AUTH: neo4j/mnemonic_dev
+    networks:
+      - mnemonic_network
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p mnemonic_dev 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  dev_rabbitmq:
+    image: rabbitmq:4.0-management
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: mnemonic
+      RABBITMQ_DEFAULT_PASS: mnemonic_dev
+    networks:
+      - mnemonic_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  dev_mcp:
+    image: ghcr.io/twistingmercury/mnemonic:latest-dev
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "/mnemonic", "--health"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+    environment:
+      MNEMONIC_DATABASE_POSTGRES_HOST: dev_postgres
+      MNEMONIC_DATABASE_POSTGRES_PASSWORD: mnemonic_dev
+      MNEMONIC_DATABASE_POSTGRES_SSL_MODE: disable
+      MNEMONIC_DATABASE_NEO4J_URI: bolt://dev_neo4j:7687
+      MNEMONIC_DATABASE_NEO4J_PASSWORD: mnemonic_dev
+      MNEMONIC_MCP_PORT: 8081
+      MNEMONIC_MCP_DEFAULT_SEARCH_THRESHOLD: 0.5
+      MNEMONIC_LOGGING_LEVEL: debug
+      MNEMONIC_OPENAI_API_KEY: ${MNEMONIC_OPENAI_API_KEY}
+    networks:
+      - mnemonic_network
+    depends_on:
+      dev_postgres:
+        condition: service_healthy
+      dev_neo4j:
+        condition: service_healthy
+
+  dev_api:
+    image: ghcr.io/twistingmercury/mnemonic-api:latest-dev
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/mnemonic-api", "--health"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+    environment:
+      MNEMONIC_DATABASE_POSTGRES_HOST: dev_postgres
+      MNEMONIC_DATABASE_POSTGRES_PASSWORD: mnemonic_dev
+      MNEMONIC_DATABASE_POSTGRES_SSL_MODE: disable
+      MNEMONIC_DATABASE_NEO4J_URI: bolt://dev_neo4j:7687
+      MNEMONIC_DATABASE_NEO4J_PASSWORD: mnemonic_dev
+      MNEMONIC_QUEUE_RABBITMQ_HOST: dev_rabbitmq
+      MNEMONIC_QUEUE_RABBITMQ_USER: mnemonic
+      MNEMONIC_QUEUE_RABBITMQ_PASSWORD: mnemonic_dev
+      MNEMONIC_LOGGING_LEVEL: debug
+      MNEMONIC_OPENAI_API_KEY: ${MNEMONIC_OPENAI_API_KEY}
+    networks:
+      - mnemonic_network
+    depends_on:
+      dev_postgres:
+        condition: service_healthy
+      dev_neo4j:
+        condition: service_healthy
+      dev_rabbitmq:
+        condition: service_healthy
+
+  dev_enricher:
+    image: ghcr.io/twistingmercury/mnemonic-enrichment:latest-dev
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "/mnemonic-enricher", "--health"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+    environment:
+      MNEMONIC_DATABASE_POSTGRES_HOST: dev_postgres
+      MNEMONIC_DATABASE_POSTGRES_PASSWORD: mnemonic_dev
+      MNEMONIC_DATABASE_POSTGRES_SSL_MODE: disable
+      MNEMONIC_DATABASE_NEO4J_URI: bolt://dev_neo4j:7687
+      MNEMONIC_DATABASE_NEO4J_PASSWORD: mnemonic_dev
+      MNEMONIC_QUEUE_PROVIDER: rabbitmq
+      MNEMONIC_QUEUE_RABBITMQ_HOST: dev_rabbitmq
+      MNEMONIC_QUEUE_RABBITMQ_USER: mnemonic
+      MNEMONIC_QUEUE_RABBITMQ_PASSWORD: mnemonic_dev
+      MNEMONIC_QUEUE_RABBITMQ_QUEUE: enrichment-jobs
+      MNEMONIC_LOGGING_LEVEL: debug
+      MNEMONIC_OPENAI_API_KEY: ${MNEMONIC_OPENAI_API_KEY}
+    networks:
+      - mnemonic_network
+    depends_on:
+      dev_postgres:
+        condition: service_healthy
+      dev_neo4j:
+        condition: service_healthy
+      dev_rabbitmq:
+        condition: service_healthy
+
+  dev_admin:
+    image: ghcr.io/twistingmercury/mnemonic-admin:latest-dev
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - mnemonic_network
+    depends_on:
+      - dev_api
+
+volumes:
+  dev_postgres_data:
+  dev_neo4j_data:
+
+networks:
+  mnemonic_network:
+    driver: bridge
