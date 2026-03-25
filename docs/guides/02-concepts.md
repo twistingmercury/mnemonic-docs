@@ -115,6 +115,7 @@ When Claude Code searches Mnemonic with a query like "how do we handle errors?",
 3. Results are ranked by cosine similarity: how closely aligned the vectors are
 
 **Cosine similarity scores range from 0.0 to 1.0:**
+
 - **1.0** = identical meaning
 - **0.7–1.0** = highly relevant (typical search threshold)
 - **0.5–0.7** = somewhat related
@@ -242,7 +243,7 @@ MCP is a protocol for exchanging information between AI assistants and external 
 
 Claude Code connects to Mnemonic via MCP over Streamable HTTP:
 
-```
+```text
 Claude Code → http://localhost:8081/mcp → Mnemonic MCP Server
 ```
 
@@ -257,6 +258,7 @@ Mnemonic exposes three read-only MCP tools:
 Semantic search over the team knowledge graph.
 
 **Parameters:**
+
 - `query` (required, string): Your natural language question
 - `limit` (optional, default 10, max 50): How many results to return
 - `threshold` (optional, default 0.5, range 0.0–1.0): Minimum similarity score
@@ -272,6 +274,7 @@ Example: Claude Code might call this when you ask "how do we test database migra
 Find patterns related to a given pattern via the knowledge graph.
 
 **Parameters:**
+
 - `pattern_id` (required, UUID): ID of the starting pattern
 - `limit` (optional, default 5, max 20): How many related patterns to return
 
@@ -284,6 +287,7 @@ Example: After retrieving a pattern about database migrations, Claude Code might
 Retrieve a specific pattern by UUID.
 
 **Parameters:**
+
 - `id` (required, UUID): The pattern's ID
 
 **Returns:** Markdown with full pattern content, metadata, relationships, and extracted concepts.
@@ -305,7 +309,7 @@ See [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) for complete tool spec
 Here's where everything runs:
 
 | Component | Port | Purpose |
-|-----------|------|---------|
+| --------- | ---- | ------- |
 | **mnemonic-mcp** | 8081 | MCP server for Claude Code |
 | **mnemonic-api** | 8080 | Admin REST API for pattern CRUD |
 | **mnemonic-enricher** | 8082 | Async enrichment worker |

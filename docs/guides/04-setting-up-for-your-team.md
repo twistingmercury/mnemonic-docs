@@ -1,13 +1,15 @@
 # Setting Up Mnemonic for Your Team
 
-This guide walks through a complete, production-ready setup of Mnemonic for a team. It assumes you've read the Quick Start or want a thorough foundation from scratch.
+This guide walks through setting up MFam on a local or trusted internal network. It assumes you've read the Quick Start or want a thorough foundation from scratch.
+
+> **Important:** Mnemonic is in early development. This setup is intended for local machines and trusted team networks only — not for public-facing or cloud deployments. There is no authentication, authorization, or encryption in transit. The infrastructure and deployment model will change significantly as Mnemonic evolves toward a cloud-native platform.
 
 ## Prerequisites
 
 Before starting, ensure you have:
 
 - **Docker and Docker Compose** installed and running
-- **An OpenAI API key** with access to the text-embedding-3-large model (https://platform.openai.com/api-keys)
+- **An OpenAI API key** with access to the text-embedding-3-large model (<https://platform.openai.com/api-keys>)
 - **curl, jq, and yq** (mikefarah/yq) for API interaction and pattern loading scripts
 - **Git** to clone repositories
 - The mnemonic-docs and mnemonic-patterns repositories (see next section)
@@ -57,7 +59,7 @@ Replace `sk-your-key-here` with your actual API key.
 All other configuration uses development defaults in the docker-compose.yaml:
 
 | Service | Default Port | Default Credentials |
-|---------|--------------|-------------------|
+| ------- | ------------ | ----------------- |
 | PostgreSQL | 5432 | mnemonic / mnemonic_dev |
 | Neo4j | 7474 (HTTP), 7687 (Bolt) | neo4j / mnemonic_dev |
 | RabbitMQ | 5672 (AMQP), 15672 (Management) | mnemonic / mnemonic_dev |
@@ -66,7 +68,7 @@ All other configuration uses development defaults in the docker-compose.yaml:
 | Enricher | 8082 | — (internal use only) |
 | Admin UI | 3000 | — (no auth in Phase 1) |
 
-These defaults are appropriate for local and trusted team networks. For production deployments, override credentials by setting environment variables before running `docker compose up` (see the docker-compose.yaml for the full list of `MNEMONIC_*` variables).
+These defaults are appropriate for local machines and trusted team networks. If deploying on a shared server, override credentials by setting environment variables before running `docker compose up` (see the docker-compose.yaml for the full list of `MNEMONIC_*` variables). Do not expose these services to the public internet.
 
 ## Step 3: Start the Stack
 
@@ -134,7 +136,7 @@ This script:
 
 Example output:
 
-```
+```text
 Loading patterns from ./patterns/
   ✓ go-error-handling
   ✓ go-testing-strategies
@@ -152,6 +154,7 @@ If you want to point the script at a different Mnemonic server (e.g., a shared t
 ```
 
 The script uses curl, yq, and jq to interact with the API. If loading fails, ensure:
+
 - The Admin API is running and healthy (`curl -s http://localhost:8080/health`)
 - Your OpenAI API key is set and valid (the enricher will fail silently if the key is wrong)
 - Each pattern's frontmatter is valid YAML and contains required fields (name, description, entity_type, language, domain)
@@ -241,7 +244,7 @@ If your team uses a different AI assistant that supports MCP (e.g., Anthropic's 
 2. Add a new MCP server entry with these settings:
    - **Name:** mnemonic
    - **Transport:** HTTP Streamable
-   - **URL:** http://localhost:8081/mcp (or your server's address)
+   - **URL:** <http://localhost:8081/mcp> (or your server's address)
 3. Restart the assistant
 
 ## Step 7: Test the Integration
@@ -291,19 +294,19 @@ docker compose logs -f
 
 **Neo4j Browser** (pattern relationship graph):
 
-Open http://localhost:7474 in a web browser. Log in with credentials: neo4j / mnemonic_dev.
+Open <http://localhost:7474> in a web browser. Log in with credentials: neo4j / mnemonic_dev.
 
 From the Neo4j browser, you can explore the pattern relationship graph, run Cypher queries, and troubleshoot pattern connections.
 
 **RabbitMQ Management UI** (job queue):
 
-Open http://localhost:15672 in a web browser. Log in with credentials: mnemonic / mnemonic_dev.
+Open <http://localhost:15672> in a web browser. Log in with credentials: mnemonic / mnemonic_dev.
 
 Use the management UI to inspect queues, monitor job throughput, and troubleshoot queue issues. The main queue is named `mnemonic.enrichment`.
 
 **Admin UI** (web-based pattern browser):
 
-Open http://localhost:3000 in a web browser. No login required in Phase 1.
+Open <http://localhost:3000> in a web browser. No login required in Phase 1.
 
 The Admin UI provides a web interface for searching patterns, viewing pattern details, and managing the pattern library. This is useful for admins and pattern authors.
 
@@ -342,6 +345,7 @@ docker compose logs dev_api  # or dev_mcp, dev_enricher, etc.
 ```
 
 Common causes:
+
 - Port already in use (change the port in docker-compose.yaml)
 - Insufficient disk space (free up space and retry)
 - Missing or invalid OpenAI API key (check MNEMONIC_OPENAI_API_KEY)
@@ -355,6 +359,7 @@ docker compose logs dev_enricher
 ```
 
 Common causes:
+
 - Invalid OpenAI API key
 - OpenAI API rate limit (wait and retry)
 - Pattern content exceeds size limits (shorten the pattern or split it)
@@ -386,19 +391,21 @@ All patterns should show `"enriched"`. If they show `"pending"`, wait a moment a
 
 ## Security Considerations
 
-**Phase 1 limitations:**
+**Mnemonic does not currently support public or cloud deployment.** The following limitations apply:
 
-- No authentication or authorization — Mnemonic runs without credentials checks. The MCP interface is read-only, and the REST API is open. This is appropriate only for trusted local networks or team-internal deployments.
-- No audit trail — there is no record of who accessed or modified patterns.
-- No encryption in transit — use Mnemonic only within a trusted network (local machine or corporate LAN).
+- **No authentication or authorization** — all API endpoints are open. The MCP interface is read-only, but the REST API allows unrestricted pattern creation, modification, and deletion.
+- **No encryption in transit** — all traffic is unencrypted HTTP.
+- **No audit trail** — there is no record of who accessed or modified patterns.
 
-For production deployments:
+**You must not expose Mnemonic to the public internet.** Run it only on local machines or trusted internal networks (e.g., a corporate LAN or VPN).
 
-- Run Mnemonic only on internal networks, not exposed to the internet
+To reduce risk on shared internal networks:
+
 - Restrict database and queue access to the Docker network only
 - Use strong credentials for RabbitMQ, PostgreSQL, and Neo4j (override defaults in docker-compose.yaml)
 - Monitor logs regularly for unusual activity
-- Plan for authentication and authorization in Phase 2
+
+Authentication, authorization, and secure transport are planned for future releases as Mnemonic moves toward a cloud-native deployment model.
 
 ## Customization
 
@@ -447,15 +454,13 @@ docker compose up -d
 
 ### Scaling for a Larger Team
 
-For larger teams or more complex use cases:
+For larger teams sharing a single instance on an internal network:
 
-- Deploy Mnemonic on a shared server (e.g., a team VM or Kubernetes cluster)
+- Deploy on a shared server accessible over the team's LAN or VPN
 - Adjust resource limits in docker-compose.yaml (memory, CPU)
-- Configure external PostgreSQL and Neo4j databases instead of using the Docker Compose ones
-- Set up a reverse proxy (nginx, Caddy) in front of the services for load balancing and SSL termination
 - Use environment variables to override default credentials
 
-See the project CLAUDE.md file for details on the service architecture and configuration options.
+Cloud-native deployment (managed databases, Kubernetes, authentication, SSL) is not yet supported but is on the roadmap. Expect the deployment model to change significantly in future releases.
 
 ## What's Next
 
