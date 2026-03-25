@@ -67,3 +67,10 @@
 - Issue: twistingmercury/mnemonic-enricher#4
 - Summary: Fixed embedding model default from text-embedding-3-small to text-embedding-3-large, added missing MNEMONIC_OPENAI_EMBEDDING_DIMENSIONS row (2000), fixed worker count default from 4 to 2, fixed job timeout from 30s to 5m in README.md; updated all stale text-embedding-3-small/1536 references across 11 docs files
 - PR: https://github.com/twistingmercury/mnemonic-enricher/pull/6
+
+## Cycle 11
+- Date: 2026-03-25
+- Repo: mnemonic-dbs
+- Issue: twistingmercury/mnemonic-dbs#1
+- Summary: Updated data architecture ERD and schema reference to match migrations 000004-000010 — removed dropped patterns.embedding column, fixed enrichment_jobs columns, fixed pattern_agent_associations composite PK, corrected skills/skill_files ERD entities, removed stale idx_patterns_embedding index, updated embedding dimension description
+- PR: https://github.com/twistingmercury/mnemonic-dbs/pull/2
