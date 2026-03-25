@@ -53,3 +53,10 @@
 - Issue: twistingmercury/mnemonic-api#4
 - Summary: Updated embedding model defaults from text-embedding-3-small/1536 to text-embedding-3-large/2000 in docs/design/configuration.md (3 locations); fixed architecture diagram in docs/architecture/02-system-architecture.md to remove incorrect embedded enrichment worker and show RabbitMQ queue with external mnemonic-enricher
 - PR: https://github.com/twistingmercury/mnemonic-api/pull/6
+
+## Cycle 9
+- Date: 2026-03-25
+- Repo: mnemonic-enricher
+- Issue: twistingmercury/mnemonic-enricher#3
+- Summary: Replaced all Postgres-backed queue / FOR UPDATE SKIP LOCKED references with RabbitMQ-based job delivery across 7 doc files (ADR-004, system architecture, communication patterns, data architecture, database integration flow, data-storage, pattern-processing); updated sequence diagrams and scaling/concurrency sections
+- PR: https://github.com/twistingmercury/mnemonic-enricher/pull/5
