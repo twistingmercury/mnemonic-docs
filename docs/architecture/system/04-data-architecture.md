@@ -118,7 +118,7 @@ graph TB
 
 **Stores:**
 
-- Chunk embeddings: 1536-dimensional vectors generated from OpenAI text-embedding-3-small, stored in `pattern_chunks.embedding`
+- Chunk embeddings: 2000-dimensional vectors generated from OpenAI text-embedding-3-large (Matryoshka truncation), stored in `pattern_chunks.embedding`
 
 **Index Type (MVP):** IVFFlat for up to 100,000 patterns; see [Index Strategies](#index-strategies) for configuration.
 
@@ -183,7 +183,7 @@ erDiagram
         int chunk_index
         varchar section_title
         text content
-        vector embedding "dimension 1536"
+        vector embedding "dimension 2000"
         varchar enrichment_status
         timestamptz created_at
         timestamptz updated_at
@@ -318,7 +318,7 @@ erDiagram
 | `chunk_index`       | INT         | NO       | 0-based section order                    |
 | `section_title`     | VARCHAR     | YES      | H2 heading text or NULL for intro        |
 | `content`           | TEXT        | NO       | Markdown text of this section            |
-| `embedding`         | VECTOR(1536)| YES      | OpenAI text-embedding-3-small embedding  |
+| `embedding`         | VECTOR(2000)| YES      | OpenAI text-embedding-3-large embedding  |
 | `enrichment_status` | VARCHAR     | NO       | 'pending', 'enriched', 'failed'          |
 | `created_at`        | TIMESTAMPTZ | NO       | Application set                          |
 | `updated_at`        | TIMESTAMPTZ | NO       | Application set                          |
@@ -392,7 +392,7 @@ See [Index Strategies](#index-strategies) for the IVFFlat index definition. The 
 -- search_patterns: chunk-level semantic search
 -- Parameters:
 --   $1 = query embedding vector
---   $2 = similarity threshold (default 0.7)
+--   $2 = similarity threshold (default 0.5)
 --   $3 = result limit (default 10, max 50)
 --   $4 = tags filter (JSONB array or NULL)
 --   $5 = language filter (text or NULL)
@@ -548,7 +548,7 @@ sequenceDiagram
     WORKER->>WORKER: Split content at H2 headings into chunks
     loop For each chunk
         WORKER->>OPENAI: Generate chunk embedding
-        OPENAI-->>WORKER: vector(1536)
+        OPENAI-->>WORKER: vector(2000)
         WORKER->>PGV: Store chunk embedding in pattern_chunks
     end
     WORKER->>PG: UPDATE pattern (status: enriched)
@@ -578,7 +578,7 @@ sequenceDiagram
 
     CLIENT->>API: GET /v1/search?q=retry+pattern
     API->>EMBED: Generate embedding for query
-    EMBED-->>API: query_vector(1536)
+    EMBED-->>API: query_vector(2000)
     API->>PGV: SELECT * WHERE embedding <=> query_vector (IVFFlat index)
     PGV-->>API: Top-K similar chunks with similarity scores
     API->>PG: JOIN with patterns table for metadata

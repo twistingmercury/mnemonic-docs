@@ -10,8 +10,6 @@
 
 - [Overview](#overview)
 - [Knowledge Management](#knowledge-management)
-- [Tooling Management](#tooling-management)
-- [Tooling Synchronization](#tooling-synchronization)
 - [Administration](#administration)
 - [Observability](#observability)
 - [Security](#security)
@@ -24,8 +22,7 @@
 Mnemonic solves the problem of inconsistent tooling and isolated knowledge in teams using Claude Code.
 See [concept.md](concept.md) for the full problem statement and rationale.
 
-Mnemonic must provide two primary capabilities: a searchable team knowledge base and a synchronized
-tooling library. An admin REST API handles all writes; a read-only MCP interface serves Claude Code.
+Mnemonic must provide a searchable team knowledge base. An admin REST API handles all writes; a read-only MCP interface serves Claude Code.
 
 ## Knowledge Management
 
@@ -47,40 +44,12 @@ administrators.
 <a id="km-6"></a>**KM-6.** Mnemonic must allow patterns to be associated with specific agents, with a relevance score
 per association.
 
-## Tooling Management
-
-<a id="tm-1"></a>**TM-1.** Mnemonic must store agent definitions as named, retrievable documents.
-
-<a id="tm-2"></a>**TM-2.** Mnemonic must store skill definitions as named, retrievable documents. Skills may include
-child files (scripts, references, assets) that are returned as part of the skill definition.
-
-<a id="tm-4"></a>**TM-4.** Mnemonic must enforce consistent naming rules for agents and skills so that
-names are URL-safe and predictable.
-
-<a id="tm-5"></a>**TM-5.** Mnemonic must support full create, update, and delete operations for all tooling types via
-the admin API.
-
-<a id="tm-6"></a>**TM-6.** Mnemonic must detect whether a tooling definition has changed since it was last stored,
-without requiring a full content comparison.
-
-## Tooling Synchronization
-
-<a id="ts-1"></a>**TS-1.** Mnemonic must expose a synchronization manifest that a client can use to determine which
-agents and skills are new or changed since the client last synced.
-
-<a id="ts-2"></a>**TS-2.** The synchronization manifest must include enough information for a client to fetch only
-what has changed, enabling incremental sync.
-
-<a id="ts-3"></a>**TS-3.** Mnemonic must return complete skill definitions including all child files in a single
-response, so a sync client does not need multiple round-trips per skill.
-
-<a id="ts-4"></a>**TS-4.** Mnemonic must serve list and detail endpoints for agents and skills so a sync
-client can discover and retrieve any item individually.
+**Note:** Tooling management (agents, skills) and tooling synchronization requirements have been removed. Mnemonic is focused on pattern knowledge management. Agent and skill definitions are best managed via version-controlled repositories.
 
 ## Administration
 
 <a id="ad-1"></a>**AD-1.** Mnemonic must expose an administrative API for all write operations: creating, updating,
-and deleting patterns, agents, and skills.
+and deleting patterns.
 
 <a id="ad-2"></a>**AD-2.** The admin API must return structured error responses so that scripts and CI pipelines can
 detect and handle failures programmatically.
@@ -139,7 +108,7 @@ independent of the application lifecycle.
 
 ## Scope Boundaries
 
-Mnemonic's scope is knowledge storage and tooling synchronization. The following boundaries define
+Mnemonic's scope is knowledge storage. The following boundaries define
 what the system is responsible for:
 
 <a id="sb-1"></a>- Mnemonic's only use of external AI services is embedding generation for pattern enrichment.
@@ -153,8 +122,7 @@ what the system is responsible for:
 
 - Workstations running Claude Code can reach the Mnemonic MCP endpoint over the local or team
   network.
-- A team member or CI process takes responsibility for loading and maintaining patterns and tooling
-  definitions via the admin API.
+- A team member or CI process takes responsibility for loading and maintaining patterns via the admin API.
 - Pattern content is curator-supplied. Mnemonic does not generate or validate content quality.
 - The external embedding API (used during pattern enrichment) is available. If it is unavailable,
   enrichment will be retried; patterns will not be searchable until enrichment succeeds.

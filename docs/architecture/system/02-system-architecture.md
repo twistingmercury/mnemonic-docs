@@ -39,7 +39,6 @@ graph TB
             MCP[MCP Server :8081]
         end
         PATTERN[Pattern Enrichment Service]
-        TOOLING[Tooling Repository]
     end
 
     subgraph "Data Tier"
@@ -54,11 +53,9 @@ graph TB
     CURL -->|"POST/PUT/DELETE"| ADMIN
     CC -->|"MCP: Pattern search"| MCP
     ADMIN --> PATTERN
-    ADMIN --> TOOLING
     MCP --> PATTERN
     PATTERN <--> PG
     PATTERN <--> NEO
-    TOOLING <--> PG
     PATTERN <--> OPENAI
 ```
 
@@ -66,14 +63,13 @@ graph TB
 
 ### Mnemonic Server
 
-Mnemonic is a single Go server with two HTTP listeners providing team knowledge graph and tooling synchronization.
+Mnemonic is a single Go server with two HTTP listeners providing a team knowledge graph.
 
 **Responsibilities:**
 
-- **Admin REST API** (`:8080`): CRUD operations for patterns, agents, and skills
+- **Admin REST API** (`:8080`): CRUD operations for patterns
 - **MCP Server** (`:8081`): Read-only pattern search for Claude Code (3 tools)
 - **Pattern enrichment**: Semantic search via PGVector, knowledge graph via Neo4j
-- **Tooling synchronization**: Shared agent and skill definitions across team
 
 **Key Characteristics:**
 
@@ -99,8 +95,6 @@ graph TB
 
         subgraph "Core Services"
             PATTERN[Pattern Service]
-            AGENT[Agent Service]
-            SKILL[Skill Service]
         end
 
         subgraph "Storage Layer"
@@ -121,8 +115,6 @@ graph TB
     REST_HANDLER --> REST_VALID
     REST_VALID --> ADMIN_SVC
     ADMIN_SVC --> PATTERN
-    ADMIN_SVC --> AGENT
-    ADMIN_SVC --> SKILL
 
     MCP_HANDLER --> MCP_TOOLS
     MCP_TOOLS --> PATTERN
@@ -130,8 +122,6 @@ graph TB
     PATTERN <--> PG
     PATTERN <--> PGV
     PATTERN <--> NEO
-    AGENT <--> PG
-    SKILL <--> PG
 
     ENRICH --> PATTERN
     ENRICH --> OPENAI
@@ -186,7 +176,7 @@ sequenceDiagram
     CC->>MCP: search_patterns(query, limit)
 
     MCP->>OPENAI: Generate query embedding
-    OPENAI-->>MCP: vector(1536)
+    OPENAI-->>MCP: vector(2000)
     MCP->>PG: Vector similarity search (PGVector)
     PG-->>MCP: Ranked patterns + similarity scores
 
@@ -219,7 +209,7 @@ sequenceDiagram
     Note over WORKER: Async enrichment
     WORKER->>PG: Claim job (FOR UPDATE SKIP LOCKED)
     WORKER->>OPENAI: Generate embedding
-    OPENAI-->>WORKER: vector(1536)
+    OPENAI-->>WORKER: vector(2000)
     WORKER->>PG: Store embedding, status: enriched
     WORKER->>NEO: Create knowledge graph nodes/relationships
     NEO-->>WORKER: Success
