@@ -74,3 +74,10 @@
 - Issue: twistingmercury/mnemonic-dbs#1
 - Summary: Updated data architecture ERD and schema reference to match migrations 000004-000010 — removed dropped patterns.embedding column, fixed enrichment_jobs columns, fixed pattern_agent_associations composite PK, corrected skills/skill_files ERD entities, removed stale idx_patterns_embedding index, updated embedding dimension description
 - PR: https://github.com/twistingmercury/mnemonic-dbs/pull/2
+
+## Cycle 12
+- Date: 2026-03-25
+- Repo: mnemonic-patterns
+- Issue: twistingmercury/mnemonic-patterns#2
+- Summary: Fixed script paths (./scripts/validate.sh → install/validate.sh), removed mnemctl references, removed unenforced 500-char description max, standardized related_patterns format to human-readable titles, fixed GitHub URLs (doublej → twistingmercury) across 4 files
+- PR: https://github.com/twistingmercury/mnemonic-patterns/pull/3
