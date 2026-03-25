@@ -11,3 +11,10 @@
 - Issue: twistingmercury/mnemonic-docs#2
 - Summary: Fixed default search threshold from 0.7 to 0.5 in concept.md, 08-mcp-tools.md, and 04-data-architecture.md
 - PR: https://github.com/twistingmercury/mnemonic-docs/pull/5
+
+## Cycle 3
+- Date: 2026-03-25
+- Repo: mnemonic-docs
+- Issue: twistingmercury/mnemonic-docs#3
+- Summary: Removed agents/skills/tooling sync references from concept.md, requirements.md, and 02-system-architecture.md — Mnemonic is patterns-only
+- PR: https://github.com/twistingmercury/mnemonic-docs/pull/6
