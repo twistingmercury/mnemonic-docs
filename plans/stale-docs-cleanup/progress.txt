@@ -1,0 +1,6 @@
+## Cycle 1
+- Date: 2026-03-25
+- Repo: mnemonic-docs
+- Issue: twistingmercury/mnemonic-docs#1
+- Summary: Updated embedding model references from text-embedding-3-small/1536 to text-embedding-3-large/2000 across 4 files (concept.md, 04-data-architecture.md, 03-communication-patterns.md, dbs/08-data-architecture.md)
+- PR: https://github.com/twistingmercury/mnemonic-docs/pull/4
