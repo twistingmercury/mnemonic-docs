@@ -66,7 +66,7 @@ The database schema was originally embedded inside the `mnemonic` application re
 
 **Decision:**
 
-Extract schema into its own repo (`mnemonic-dbs`). Both `mnemonic` and `mnemonic-api` pull the pre-built images from GHCR. Schema changes have their own PR, review, and CI pipeline.
+Extract schema into its own repo (`mnemonic-dbs`). All three application repos (`mnemonic-mcp`, `mnemonic-api`, `mnemonic-enricher`) pull the pre-built images from GHCR. Schema changes have their own PR, review, and CI pipeline.
 
 **Consequences:**
 

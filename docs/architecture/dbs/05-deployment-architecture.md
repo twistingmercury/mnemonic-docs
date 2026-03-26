@@ -106,7 +106,7 @@ Application services reference `:latest-dev` in development and `:latest` (or a 
 3. Open a PR — CI runs tests and validates the build
 4. Merge to `develop`: new `latest-dev` images are pushed
 5. Merge to `main`: new `latest` + versioned images are pushed
-6. Update image references in `mnemonic` and `mnemonic-api`
+6. Update image references in `mnemonic-mcp`, `mnemonic-api`, and `mnemonic-enricher`
 
 **Rollback:**
 Pull a prior image tag. Because schema state is baked into the image, rolling back means pointing the application at an older tag. No down migration scripts are maintained.

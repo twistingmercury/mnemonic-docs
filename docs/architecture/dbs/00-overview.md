@@ -14,7 +14,7 @@
 
 `mnemonic-dbs` owns the database schema and pre-seeded Docker images for the Mnemonic project. It produces two images — `mnemonic-postgres` and `mnemonic-neo4j` — that application services pull directly instead of running migrations at startup.
 
-The repo is intentionally decoupled from the application code. Schema changes are made here, tested, built into new image tags, and consumed by `mnemonic` and `mnemonic-api` by updating their image references. This gives schema changes their own lifecycle: reviewed, tested, and versioned independently.
+The repo is intentionally decoupled from the application code. Schema changes are made here, tested, built into new image tags, and consumed by `mnemonic-mcp`, `mnemonic-api`, and `mnemonic-enricher` by updating their image references. This gives schema changes their own lifecycle: reviewed, tested, and versioned independently.
 
 ## Core Concept
 
@@ -38,11 +38,14 @@ graph LR
 
     subgraph Apps["Application Services"]
         API["mnemonic-api"]
-        MCP["mnemonic"]
+        MCP["mnemonic-mcp"]
+        ENR["mnemonic-enricher"]
         PG_IMG --> API
         PG_IMG --> MCP
+        PG_IMG --> ENR
         NEO_IMG --> API
         NEO_IMG --> MCP
+        NEO_IMG --> ENR
     end
 ```
 
