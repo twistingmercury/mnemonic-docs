@@ -12,12 +12,13 @@
   - [Error Handling](#error-handling)
 - [Admin to REST API Communication](#admin-to-rest-api-communication)
   - [Admin Operations](#admin-operations)
+- [Admin API to Enricher Communication](#admin-api-to-enricher-communication)
 - [Resilience Patterns](#resilience-patterns)
 - [Security Considerations](#security-considerations)
 
 ## Overview
 
-Mnemonic uses a dual protocol architecture with distinct communication patterns for each use case.
+Mnemonic uses three communication channels, each serving a distinct role in the system.
 
 ```mermaid
 graph LR
@@ -26,10 +27,14 @@ graph LR
         ADMIN[Admin Tools]
         MCP[MCP Server :8081]
         REST[Admin REST API :8080]
+        RMQ[RabbitMQ]
+        ENR[Enricher]
     end
 
-    CC -->|"MCP<br/>Read-only"| MCP
-    ADMIN -->|"REST<br/>CRUD"| REST
+    CC -->|"1. MCP over Streamable HTTP<br/>Read-only"| MCP
+    ADMIN -->|"2. REST over HTTP<br/>CRUD"| REST
+    REST -->|"3. Async job dispatch"| RMQ
+    RMQ -->|"Consume"| ENR
 ```
 
 ## Claude Code to MCP Server Communication
@@ -125,28 +130,16 @@ Admin tools (curl, scripts) communicate with Mnemonic via REST API for CRUD oper
 
 ```mermaid
 sequenceDiagram
-    participant Admin
-    participant REST as Admin REST API
-    participant PG as Postgres
-    participant WORKER as Background Worker
-    participant OPENAI as OpenAI Embedding API
-    participant NEO as Neo4j
+    participant C as Admin Tool
+    participant API as Admin API
+    participant PG as PostgreSQL
+    participant RMQ as RabbitMQ
 
-    Admin->>REST: POST /v1/api/patterns (JSON)
-    REST->>REST: Validate request
-    REST->>PG: Store pattern (status: pending)
-    REST->>PG: Queue enrichment job
-    PG-->>REST: Pattern ID
-    REST-->>Admin: 202 Accepted
-
-    Note over WORKER: Async enrichment
-    WORKER->>PG: Claim job (FOR UPDATE SKIP LOCKED)
-    WORKER->>OPENAI: Generate embedding
-    OPENAI-->>WORKER: vector(2000)
-    WORKER->>PG: Store embedding, status: enriched
-    WORKER->>NEO: Create knowledge graph nodes/relationships
-    NEO-->>WORKER: Success
-    WORKER->>PG: Job completed
+    C->>API: POST /v1/api/patterns
+    API->>PG: INSERT pattern (status=pending)
+    API->>RMQ: publish enrichment job
+    API->>C: 202 Accepted
+    Note right of RMQ: Enricher processes<br/>asynchronously
 ```
 
 **Request Characteristics:**
@@ -155,6 +148,33 @@ sequenceDiagram
 - JSON payloads for all operations
 - No authentication (MVP, localhost only); see [Security Architecture](01-security-architecture.md) for Post-MVP
 - Idempotent operations where possible
+
+## Admin API to Enricher Communication
+
+The Admin API and Enricher communicate exclusively through RabbitMQ. There is no direct HTTP communication between these two services.
+
+When a pattern is created or updated, the Admin API publishes an enrichment job (containing the pattern ID) to a RabbitMQ exchange. The Enricher consumes messages from its bound queue and processes them asynchronously: generating embeddings via OpenAI, storing chunks in PostgreSQL, extracting concepts, and creating relationships in Neo4j.
+
+**Best-effort publish (ADR-009):** If RabbitMQ is unavailable at publish time, the Admin API still stores the pattern in PostgreSQL with `enrichment_status='pending'`. A recovery process can re-publish pending patterns once RabbitMQ is restored.
+
+```mermaid
+sequenceDiagram
+    participant API as Admin API
+    participant RMQ as RabbitMQ
+    participant E as Enricher
+    participant OAI as OpenAI
+    participant PG as PostgreSQL
+    participant N4J as Neo4j
+
+    API->>RMQ: publish enrichment job
+    RMQ->>E: deliver message
+    E->>OAI: generate embedding
+    E->>PG: store chunk embedding
+    E->>OAI: extract concepts
+    E->>N4J: create relationships
+    E->>PG: update enrichment status
+    E->>RMQ: acknowledge message
+```
 
 ## Resilience Patterns
 
