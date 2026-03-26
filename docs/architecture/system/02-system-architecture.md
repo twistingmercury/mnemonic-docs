@@ -6,129 +6,108 @@
 
 - [Architecture Overview](#architecture-overview)
 - [Component Breakdown](#component-breakdown)
-  - [Mnemonic Server](#mnemonic-server)
+  - [Mnemonic MCP Server](#mnemonic-mcp-server)
+  - [Mnemonic Admin API](#mnemonic-admin-api)
+  - [Mnemonic Enricher](#mnemonic-enricher)
   - [Claude Code Integration](#claude-code-integration)
 - [Data Flow](#data-flow)
+  - [Pattern Search via MCP](#pattern-search-via-mcp)
+  - [Data Loading via Admin API](#data-loading-via-admin-api)
 - [Component Interactions](#component-interactions)
+  - [Claude Code to MCP Server](#claude-code-to-mcp-server)
+  - [Admin Tools to REST API](#admin-tools-to-rest-api)
+  - [Admin API to Enricher](#admin-api-to-enricher)
 - [Boundary Definitions](#boundary-definitions)
   - [Cross-Cutting Concerns](#cross-cutting-concerns)
 - [Post-MVP](#post-mvp)
-  - [Expanded Component Topology](#expanded-component-topology)
-  - [Boundary Changes](#boundary-changes)
-  - [Multiple Instances](#multiple-instances)
+  - [MVP 3: Managed Infrastructure](#mvp-3-managed-infrastructure)
+  - [MVP 4: Kubernetes](#mvp-4-kubernetes)
+  - [MVP 5: Cloud-Native](#mvp-5-cloud-native)
 
 ## Architecture Overview
 
-Mnemonic follows a single-server architecture with dual protocol interfaces: REST for administration and MCP for Claude Code integration.
+Mnemonic uses a decomposed service architecture with three independent services communicating through a message queue and shared data stores.
+
+| Service | Repository | Port | Role |
+| --- | --- | --- | --- |
+| MCP Server | `mnemonic-mcp` | 8081 | Read-only MCP interface for Claude Code |
+| Admin API | `mnemonic-api` | 8080 | REST API for pattern CRUD and administration |
+| Enricher | `mnemonic-enricher` | -- | Standalone worker for async pattern enrichment |
 
 ```mermaid
-graph TB
-    subgraph "Claude Code"
-        CC[Claude Code MCP Client]
-    end
-
-    subgraph "Admin Tools"
-        CURL[curl/scripts]
-    end
-
-    subgraph "Mnemonic Server"
-        subgraph "Two HTTP Listeners"
-            ADMIN[Admin REST API :8080]
-            MCP[MCP Server :8081]
-        end
-        PATTERN[Pattern Enrichment Service]
-    end
-
-    subgraph "Data Tier"
-        PG[(Postgres + PGVector)]
-        NEO[(Neo4j)]
-    end
-
-    subgraph "External Services"
-        OPENAI[OpenAI Embedding API]
-    end
-
-    CURL -->|"POST/PUT/DELETE"| ADMIN
-    CC -->|"MCP: Pattern search"| MCP
-    ADMIN --> PATTERN
-    MCP --> PATTERN
-    PATTERN <--> PG
-    PATTERN <--> NEO
-    PATTERN <--> OPENAI
+flowchart TB
+  claude["Claude Code"] -->|MCP| mcp["mnemonic MCP server\n:8081"]
+  admin["Admin Tools"] -->|REST| api["mnemonic Admin API\n:8080"]
+  api --> pg[("PostgreSQL + PGVector")]
+  api --> queue[("RabbitMQ")]
+  queue --> enricher["mnemonic Enricher"]
+  enricher --> pg
+  enricher --> neo4j[("Neo4j")]
+  mcp -->|read only| pg
+  mcp -->|read only| neo4j
 ```
+
+This is the MVP 2 topology. For the full evolution from monolith through cloud deployment, see diagrams [01](../../diagrams/01-concept-local-iteration.md) through [05](../../diagrams/05-concept-cloud-iteration.md).
 
 ## Component Breakdown
 
-### Mnemonic Server
+<a id="mnemonic-server"></a>
 
-Mnemonic is a single Go server with two HTTP listeners providing a team knowledge graph.
+### Mnemonic MCP Server
+
+The MCP server (`mnemonic-mcp`, port 8081) provides a read-only interface for Claude Code to search the team knowledge graph.
 
 **Responsibilities:**
 
-- **Admin REST API** (`:8080`): CRUD operations for patterns
-- **MCP Server** (`:8081`): Read-only pattern search for Claude Code (3 tools)
-- **Pattern enrichment**: Semantic search via PGVector, knowledge graph via Neo4j
+- Expose three MCP tools: `search_patterns`, `find_related_patterns`, `get_pattern`
+- Query PostgreSQL + PGVector for semantic search over pattern chunks
+- Query Neo4j for graph-based pattern relationships
 
 **Key Characteristics:**
 
-- Single server process, two HTTP listeners
-- Lightweight service (calls embedding API only; no generative inference)
-- Stateless request handling
-- Dual protocol architecture (REST admin + MCP read-only)
-- Full storage stack: Postgres + PGVector + Neo4j
+- Read-only access to all data stores (no writes to any database)
+- Streamable HTTP transport, stateless
+- Lightweight service (calls embedding API for query vectorization only; no generative inference)
+- No authentication (MVP, local trusted environment)
 
-```mermaid
-graph TB
-    subgraph "Mnemonic Internal Structure"
-        subgraph "Admin REST API :8080"
-            REST_HANDLER[HTTP Handler]
-            REST_VALID[Request Validator]
-            ADMIN_SVC[Admin Handler]
-        end
+### Mnemonic Admin API
 
-        subgraph "MCP Server :8081"
-            MCP_HANDLER[MCP Handler]
-            MCP_TOOLS[Tool Implementations]
-        end
+The Admin API (`mnemonic-api`, port 8080) provides a REST interface for pattern management and administration.
 
-        subgraph "Core Services"
-            PATTERN[Pattern Service]
-        end
+**Responsibilities:**
 
-        subgraph "Storage Layer"
-            PG[(Postgres)]
-            PGV[(PGVector)]
-            NEO[(Neo4j)]
-        end
+- CRUD operations for patterns and agents
+- Validate and store patterns in PostgreSQL
+- Publish enrichment jobs to RabbitMQ on pattern create/update
+- Sync Neo4j graph state on best-effort basis (per ADR-009)
 
-        subgraph "Background Processing"
-            ENRICH[Enrichment Worker]
-        end
-    end
+**Key Characteristics:**
 
-    subgraph "External Services"
-        OPENAI[OpenAI Embedding API]
-    end
+- Writes to PostgreSQL for all pattern and agent data
+- Returns 202 Accepted for pattern create/update (enrichment is async)
+- Best-effort RabbitMQ publish: if the queue is unavailable, the pattern is stored with `pending` status and a recovery process can re-publish
+- No authentication (MVP)
 
-    REST_HANDLER --> REST_VALID
-    REST_VALID --> ADMIN_SVC
-    ADMIN_SVC --> PATTERN
+### Mnemonic Enricher
 
-    MCP_HANDLER --> MCP_TOOLS
-    MCP_TOOLS --> PATTERN
+The Enricher (`mnemonic-enricher`) is a standalone worker that processes pattern enrichment asynchronously.
 
-    PATTERN <--> PG
-    PATTERN <--> PGV
-    PATTERN <--> NEO
+**Responsibilities:**
 
-    ENRICH --> PATTERN
-    ENRICH --> OPENAI
-    PATTERN --> OPENAI
-```
+- Consume enrichment job messages from RabbitMQ
+- Generate embeddings via the OpenAI Embedding API
+- Store chunk embeddings and update enrichment status in PostgreSQL
+- Extract concepts and create relationships in Neo4j
 
-**What Mnemonic Does NOT Do:**
+**Key Characteristics:**
 
-- Perform LLM inference (Mnemonic calls an embedding API for pattern enrichment, but does not perform generative AI inference)
+- Decoupled from the Admin API via RabbitMQ
+- Horizontally scalable (multiple instances consume from the same queue)
+- Writes to PostgreSQL (chunk embeddings, enrichment status) and Neo4j (concept graph)
+
+**What Mnemonic Services Do NOT Do:**
+
+- Perform LLM inference (services call an embedding API, but do not perform generative AI inference)
 - Store user credentials
 - Execute tools or file operations
 - Maintain session state
@@ -188,30 +167,35 @@ Post-MVP: search_patterns will incorporate Neo4j graph scores for blended rankin
 
 ### Data Loading via Admin API
 
+Pattern creation follows a synchronous write to PostgreSQL followed by asynchronous enrichment via the Enricher.
+
 ```mermaid
 sequenceDiagram
     participant Admin
-    participant REST as Admin REST API
-    participant PG as Postgres
-    participant WORKER as Background Worker
+    participant API as Admin API
+    participant PG as PostgreSQL
+    participant RMQ as RabbitMQ
+    participant Enricher as Enricher
     participant OPENAI as OpenAI Embedding API
     participant NEO as Neo4j
 
-    Admin->>REST: POST /v1/api/patterns (JSON)
-    REST->>REST: Validate request
-    REST->>PG: Store pattern (status: pending)
-    REST->>PG: Queue enrichment job
-    PG-->>REST: Pattern ID
-    REST-->>Admin: 202 Accepted
+    Admin->>API: POST /v1/api/patterns (JSON)
+    API->>API: Validate request
+    API->>PG: Insert pattern (enrichment_status: pending)
+    PG-->>API: Pattern ID
+    API->>RMQ: Publish enrichment job
+    API-->>Admin: 202 Accepted
 
-    Note over WORKER: Async enrichment
-    WORKER->>PG: Claim job (FOR UPDATE SKIP LOCKED)
-    WORKER->>OPENAI: Generate embedding
-    OPENAI-->>WORKER: vector(2000)
-    WORKER->>PG: Store embedding, status: enriched
-    WORKER->>NEO: Create knowledge graph nodes/relationships
-    NEO-->>WORKER: Success
-    WORKER->>PG: Job completed
+    Note over RMQ,Enricher: Async enrichment
+    RMQ->>Enricher: Deliver enrichment message
+    Enricher->>OPENAI: Generate embeddings
+    OPENAI-->>Enricher: vector(2000)
+    Enricher->>PG: Store chunk embeddings
+    Enricher->>OPENAI: Extract concepts
+    OPENAI-->>Enricher: Concept list
+    Enricher->>NEO: Create concept nodes and relationships
+    NEO-->>Enricher: Success
+    Enricher->>PG: Update enrichment_status to enriched
 ```
 
 ## Component Interactions
@@ -234,13 +218,14 @@ sequenceDiagram
 | Request contains  | JSON payloads for CRUD operations                                                 |
 | Response contains | Created/updated resources, success/error status                                   |
 
-### Mnemonic to Storage Layer
+### Admin API to Enricher
 
-| Aspect   | Detail                           |
-| -------- | -------------------------------- |
-| Postgres | Relational data, pattern storage |
-| PGVector | Semantic search via embeddings   |
-| Neo4j    | Knowledge graph relationships    |
+| Aspect              | Detail                                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| Protocol            | AMQP via RabbitMQ                                                                        |
+| Message trigger     | Pattern create or update in Admin API                                                    |
+| Message contains    | Pattern ID and enrichment action                                                         |
+| Failure handling    | Best-effort publish (ADR-009): if RabbitMQ is unavailable, pattern stored with `pending` status; recovery process can re-publish |
 
 ## Boundary Definitions
 
@@ -261,19 +246,16 @@ graph TB
     subgraph "Mnemonic Domain"
         MD1[Team knowledge graph]
         MD2[Pattern semantic search]
-        MD3[Tooling synchronization]
     end
 
     subgraph "Admin Domain"
         AD1[Pattern CRUD]
-        AD2[Agent CRUD]
-        AD3[Skill CRUD]
+        AD2[Agent management]
     end
 
     UD1 --> CD3
     CD3 -->|"search_patterns"| MD2
     AD1 --> MD1
-    AD2 --> MD3
 ```
 
 **Boundary Rules:**
@@ -281,82 +263,52 @@ graph TB
 - The user drives all workflow and orchestration decisions
 - Claude Code is the interface; Mnemonic is the memory
 - Pattern storage and search live only in Mnemonic
-- Tooling definitions (agents, skills) managed via admin API
+- Admin operations are managed via the Admin API
 - File operations happen only on the workstation
 - Mnemonic never receives or stores user credentials
 
 ### Cross-Cutting Concerns
 
-- **Observability**: Mnemonic emits structured logs, exposes a health check endpoint, and publishes metrics on both interfaces. See [Observability Architecture](07-observability-architecture.md).
-- **Schema migration**: Migrations are pre-applied at Docker image build time via entrypoint scripts. Mnemonic verifies schema compatibility at startup but does not run migrations. See [Data Architecture - Migration Strategy](04-data-architecture.md#migration-strategy).
+- **Observability**: All three services emit structured logs, expose health check endpoints, and publish metrics. See [Observability Architecture](07-observability-architecture.md).
+- **Schema migration**: Migrations are pre-applied at Docker image build time via entrypoint scripts. Services verify schema compatibility at startup but do not run migrations. See [Data Architecture - Migration Strategy](04-data-architecture.md#migration-strategy).
 
 ## Post-MVP
 
-This section covers system-level changes when moving from local MVP to cloud or production deployment. It does not repeat MVP content — refer to the sections above for the single-instance topology.
+This section covers the planned progression from the current local MVP 2 topology toward cloud-native deployment. Each milestone builds on the previous one.
 
-### Expanded Component Topology
+### MVP 3: Managed Infrastructure
 
-In production, a security proxy layer sits in front of Mnemonic. Envoy handles TLS termination and identity validation; OPA evaluates authorization policy as a sidecar. Multiple Mnemonic instances run behind a load balancer.
+Move stateful infrastructure to managed AWS services while keeping application services local.
 
-```mermaid
-graph TB
-    CLIENT[Client / Claude Code]
-    LB[Load Balancer]
+- Replace local PostgreSQL + PGVector with AWS RDS PostgreSQL + PGVector
+- Replace local Neo4j with AWS Neptune
+- Replace local RabbitMQ with AWS SQS
+- MCP server, Admin API, and Enricher remain local
 
-    subgraph "Security Proxy Layer"
-        ENVOY[Envoy Proxy\nTLS termination\nJWT + API key validation]
-        OPA[OPA Sidecar\nRBAC policy evaluation]
-    end
+See [03-concept-local-iteration](../../diagrams/03-concept-local-iteration.md).
 
-    subgraph "Mnemonic Instances"
-        MN1[Mnemonic Instance 1]
-        MN2[Mnemonic Instance 2]
-        MNN[Mnemonic Instance N]
-    end
+### MVP 4: Kubernetes
 
-    subgraph "Data Tier"
-        PG[(Postgres + PGVector)]
-        NEO[(Neo4j)]
-    end
+Deploy application services to a local Kubernetes cluster and introduce authentication and authorization.
 
-    CLIENT -->|HTTPS| LB
-    LB --> ENVOY
-    ENVOY -->|"Authorization check"| OPA
-    OPA -->|Allow / Deny| ENVOY
-    ENVOY -->|"Trusted headers injected"| MN1
-    ENVOY --> MN2
-    ENVOY --> MNN
-    MN1 <--> PG
-    MN1 <--> NEO
-    MN2 <--> PG
-    MN2 <--> NEO
-```
+- Deploy MCP server, Admin API, and Enricher to local single-node Kubernetes (minikube)
+- Add Envoy as ingress/authN layer for MCP and Admin API traffic
+- Add OPA policies as the authZ checkpoint
+- Begin Helm charts for repeatable cluster deployment
+- Data and queue infrastructure remain on managed AWS services
 
-The request path is: Client → Load Balancer → Envoy (TLS + identity validation) → OPA check → Mnemonic.
+See [04-concept-local-iteration](../../diagrams/04-concept-local-iteration.md).
 
-See [Security Architecture - Component Architecture](01-security-architecture.md#component-architecture) for a detailed view of the Envoy and OPA configuration, and [Deployment Architecture - Post-MVP](06-deployment-architecture.md#post-mvp) for the full production deployment topology.
+### MVP 5: Cloud-Native
 
-### Boundary Changes
+Move the full runtime to AWS and adopt infrastructure-as-code.
 
-The [MVP Boundary Definitions](#boundary-definitions) assume a trusted local network — Mnemonic accepts all traffic without verifying caller identity. In production the trust model shifts:
+- Deploy all services to AWS Fargate
+- Provision infrastructure with Terraform
+- Use SSM Parameter Store and Secrets Manager for runtime configuration
+- Retain Envoy + OPA in the request path for MCP and Admin API authorization
 
-- Mnemonic only accepts traffic from Envoy (network isolation enforces this)
-- Client-provided identity headers are stripped by Envoy before requests reach Mnemonic
-- Mnemonic trusts the identity headers that Envoy injects (`X-User-ID`, `X-Team-ID`, `X-User-Roles`), not raw request headers
-- Admin API requests must pass through the same auth path before reaching Mnemonic
-
-Mnemonic itself requires no changes to authentication logic — it reads injected headers and proceeds. The security boundary is enforced externally.
-
-See [Security Architecture - Identity Headers](01-security-architecture.md#identity-headers) for the full header specification.
-
-### Multiple Instances
-
-Mnemonic is stateless — all state lives in Postgres and Neo4j — so multiple instances can run behind a load balancer without coordination between them. Each instance is identical.
-
-Two areas to review when scaling out:
-
-- **Connection pool sizing**: Each instance holds its own connection pool. With N instances, total connections to Postgres and Neo4j multiply by N. See [Data Architecture - Connection Pool Configuration](04-data-architecture.md#connection-pool-configuration) for pool sizing guidance.
-- **Background enrichment workers**: The enrichment worker uses `FOR UPDATE SKIP LOCKED` when claiming jobs, which is already part of the MVP design. This ensures safe concurrent access across instances without duplicate processing.
+See [05-concept-cloud-iteration](../../diagrams/05-concept-cloud-iteration.md).
 
 **Next:** [Communication Patterns](03-communication-patterns.md)
 
