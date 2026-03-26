@@ -50,6 +50,7 @@ Implementation-level design documents shared across Go services:
 ### Reference
 
 - **[Pattern File Schema](docs/reference/pattern-schema.md)** — Normative specification for pattern file structure, frontmatter, and chunking
+- **[Glossary](docs/reference/glossary.md)** — Definitions of key terms used throughout the documentation
 
 ### Diagrams
 
