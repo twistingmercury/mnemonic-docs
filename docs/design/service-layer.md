@@ -63,6 +63,14 @@
 
 > **Architecture Reference:** [System Architecture - Mnemonic Server](../architecture/system/02-system-architecture.md#mnemonic-server) | [Data Architecture - Data Flow Patterns](../architecture/system/04-data-architecture.md#data-flow-patterns)
 
+The service layer pattern is shared across all three Mnemonic services (`mnemonic-mcp`, `mnemonic-api`, `mnemonic-enricher`), but each service contains only the service interfaces and repositories relevant to its responsibilities:
+
+| Service | Service Interfaces |
+|---------|-------------------|
+| `mnemonic-mcp` | SearchService, PatternService (read), AgentService (read), GraphRepository |
+| `mnemonic-api` | PatternService (full CRUD), AgentService, SkillService, SkillFileService, EnrichmentService (job creation + RabbitMQ publish) |
+| `mnemonic-enricher` | EnrichmentService (job processing), EmbeddingService, ExtractionService, GraphRepository |
+
 The service layer sits between the transport handlers (REST and MCP) and the data repositories. It is responsible for:
 
 - **Business logic** -- validation beyond what the database enforces, CRC64 computation, timestamp management
@@ -80,22 +88,26 @@ The service layer does NOT:
 
 ```mermaid
 graph TB
-    subgraph "Transport Layer"
-        REST[REST Handlers<br/>Gin :8080]
+    subgraph "mnemonic-mcp"
         MCP[MCP Tool Handlers<br/>:8081]
+        TD[ToolDependencies<br/>MCP facade]
+        SEARCH[SearchService]
+        PS_R[PatternService<br/>read-only]
+        AS_R[AgentService<br/>read-only]
     end
 
-    subgraph "Service Layer (this doc)"
-        PS[PatternService]
+    subgraph "mnemonic-api"
+        REST[REST Handlers<br/>Gin :8080]
+        PS[PatternService<br/>full CRUD]
         AS[AgentService]
         SS[SkillService]
         SFS[SkillFileService]
-        ES[EnrichmentService]
-        SEARCH[SearchService]
-        TD[ToolDependencies<br/>MCP facade]
+        ES_PUB[EnrichmentService<br/>job creation + publish]
     end
 
-    subgraph "External Services"
+    subgraph "mnemonic-enricher"
+        CONSUMER[RabbitMQ Consumer]
+        ES_PROC[EnrichmentService<br/>job processing]
         EMB[EmbeddingService]
         EXT[ExtractionService]
     end
@@ -110,27 +122,19 @@ graph TB
         CR[ChunkRepository]
     end
 
+    MCP --> TD
+    TD --> PS_R
+    TD --> SEARCH
+    SEARCH --> CR
+    SEARCH --> AR
+    PS_R --> PR
+    AS_R --> AR
+
     REST --> PS
     REST --> AS
     REST --> SS
     REST --> SFS
-    REST --> SEARCH
-
-    MCP --> TD
-    TD --> PS
-    TD --> SEARCH
-
-    ES --> EMB
-    ES --> EXT
-    ES --> PR
-    ES --> EJR
-    ES --> GR
-    ES --> AR
-    ES --> CR
-    SEARCH --> EMB
-    SEARCH --> CR
-    SEARCH --> AR
-
+    REST --> ES_PUB
     PS --> PR
     PS --> EJR
     PS --> GR
@@ -140,36 +144,34 @@ graph TB
     SS --> SR
     SFS --> SFR
     SFS --> SR
+
+    CONSUMER --> ES_PROC
+    ES_PROC --> EMB
+    ES_PROC --> EXT
+    ES_PROC --> PR
+    ES_PROC --> EJR
+    ES_PROC --> GR
+    ES_PROC --> AR
+    ES_PROC --> CR
 ```
 
 ## Package Layout
 
 [Table of Contents](#table-of-contents)
 
-Service interfaces and implementations live under `internal/service/`. Each domain gets its own sub-package to keep repository type imports unambiguous.
+Service interfaces and implementations live under `internal/service/` in each repo. Each domain gets its own sub-package to keep repository type imports unambiguous.
 
-**Note:** All paths shown in this document are filesystem paths relative to the repository root (`src/mnemonic/`).
+Each service repo follows the same internal package convention:
 
 ```text
-src/mnemonic/internal/service/
-    agent/
-        service.go          -- AgentService interface + agentService struct
-    pattern/
-        service.go          -- PatternService interface + patternService struct
-    skill/
-        service.go          -- SkillService interface + skillService struct
-    skillfile/
-        service.go          -- SkillFileService interface + skillFileService struct
-    enrichment/
-        service.go          -- EnrichmentService interface + enrichmentService struct
-    search/
-        service.go          -- SearchService interface + searchService struct
-    openai/
-        embedding.go        -- EmbeddingService interface + openaiEmbedding struct
-        extraction.go       -- ExtractionService interface + openaiExtraction struct
+mnemonic-mcp/src/internal/service/       # search, pattern (read-only), agent (read-only)
+mnemonic-api/src/internal/service/        # pattern, agent, skill, skillfile, enrichment
+mnemonic-enricher/src/internal/service/   # enrichment, embedding, extraction
 ```
 
-The `internal/mcpserver/deps.go` file defines the `ToolDependencies` interface. Its concrete implementation (`toolDeps` struct) lives in the same package and composes service interfaces.
+Each contains only the service packages relevant to that service's responsibilities.
+
+The `internal/mcpserver/deps.go` file (in `mnemonic-mcp`) defines the `ToolDependencies` interface. Its concrete implementation (`toolDeps` struct) lives in the same package and composes service interfaces.
 
 ## External Service Interfaces
 
@@ -587,8 +589,19 @@ import (
     enrichmentrepo "github.com/twistingmercury/mnemonic/internal/repository/enrichmentjob"
 )
 
-// EnrichmentService is the worker-facing interface for processing enrichment jobs.
-// The enrichment worker goroutine calls these methods; REST/MCP handlers do not.
+// EnrichmentService has two distinct usages across the Mnemonic services:
+//
+// In mnemonic-api: the EnrichmentService is responsible for creating enrichment
+// jobs when patterns are created or updated, and publishing job notifications to
+// RabbitMQ. REST handlers call this service; it does not process jobs.
+//
+// In mnemonic-enricher: the EnrichmentService is the consumer-facing interface
+// for processing enrichment jobs claimed from RabbitMQ. It runs the full
+// enrichment pipeline (embedding, extraction, graph sync). REST/MCP handlers
+// do not call this service.
+//
+// The interface below describes the mnemonic-enricher side. The mnemonic-api
+// side exposes only job creation and queue publishing methods.
 //
 // Note: The concrete implementation imports patternrepo, graphrepo, agentrepo,
 // and openai packages. These are omitted from the interface definition because
@@ -1707,124 +1720,23 @@ mcpSrv := mcpserver.NewMCPServer(cfg.Server.MCP, toolDeps)
 
 [Table of Contents](#table-of-contents)
 
-The service layer design introduces requirements that are not yet reflected in the [Data Storage](data-storage.md) document. These changes should be applied to data-storage.md before or during implementation.
+The changes originally tracked in this section have been applied to [data-storage.md](data-storage.md). Specifically:
 
-### 1. New PatternRepository Method: GetPatternIDsByAgent
+- The `pattern_chunks` table (Migration 009) and `ChunkRepository` interface are documented in data-storage.md.
+- The `GetPatternIDsByAgent` method, `ComputeRelatedToEdges` method, updated `RelatedPattern` struct, `AgentAssociation` type, and updated `FindRelatedPatterns` query have all been incorporated.
 
-The `SearchService` agent pre-filter (see [Agent Filter for search_patterns](#agent-filter-for-search_patterns)) requires a method to resolve an agent ID to the set of associated pattern IDs:
-
-```go
-// Added to PatternRepository interface:
-
-    // GetPatternIDsByAgent returns all pattern IDs associated with the given agent.
-    // Used by SearchService for agent-scoped similarity search pre-filtering.
-    GetPatternIDsByAgent(ctx context.Context, agentID uuid.UUID) ([]uuid.UUID, error)
-```
-
-SQL:
-
-```sql
-SELECT pattern_id FROM pattern_agent_associations WHERE agent_id = $1;
-```
-
-### 2. New GraphRepository Method: ComputeRelatedToEdges
-
-The enrichment pipeline (see [RELATED_TO Edge Computation](#related_to-edge-computation)) requires a method to compute and create RELATED_TO edges:
-
-```go
-// Added to GraphRepository interface:
-
-    // ComputeRelatedToEdges computes and creates RELATED_TO edges between
-    // the given pattern and other patterns sharing concepts. Existing
-    // RELATED_TO edges for this pattern are deleted first, then recomputed.
-    // Only edges with similarity >= minSimilarity are created.
-    ComputeRelatedToEdges(ctx context.Context, patternID uuid.UUID, minSimilarity float64) error
-```
-
-### 3. Updated RelatedPattern Struct
-
-The current `RelatedPattern` struct in `internal/repository/graph/` has only `ID`, `Name`, `SharedConcepts int`. It needs `Similarity float64` and `ConceptNames []string` fields to support the MCP `find_related_patterns` response format:
-
-```go
-// Updated RelatedPattern struct (replaces SharedConcepts int):
-type RelatedPattern struct {
-    ID             uuid.UUID
-    Name           string
-    SharedConcepts int      // Count of shared concepts (retained for backward compat)
-    Similarity     float64  // Pre-computed similarity score from RELATED_TO edge (0.0-1.0)
-    ConceptNames   []string // Names of the shared concepts
-}
-```
-
-### 4. Add `AgentAssociation` Type to GraphRepository
-
-The `SetPatternAgentRelevance` method accepts `[]AgentAssociation` but the type is not defined in the GraphRepository section. The Cypher query for `SetPatternAgentRelevance` matches Agent nodes by `name` (not UUID), so the graph repo type uses `AgentName`:
-
-```go
-// AgentAssociation represents an agent relevance pair for graph sync.
-// Uses AgentName (not AgentID) because Neo4j Agent nodes are keyed by name.
-type AgentAssociation struct {
-    AgentName string
-    Relevance float64
-}
-```
-
-### 5. Update `FindRelatedPatterns` Query
-
-The `FindRelatedPatterns` Cypher query must be updated to return similarity and concept names. The query uses pre-computed RELATED_TO edges (created during enrichment) and collects shared concept names:
-
-```cypher
-// Updated FindRelatedPatterns query using pre-computed RELATED_TO edges
-MATCH (p1:Pattern {id: $patternId})-[r:RELATED_TO]-(p2:Pattern)
-WITH p2, r.similarity AS similarity
-
-// Collect shared concept names
-OPTIONAL MATCH (p1:Pattern {id: $patternId})<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2)
-WITH p2, similarity, collect(c.name) AS conceptNames, count(c) AS sharedConcepts
-
-ORDER BY similarity DESC
-LIMIT $limit
-RETURN p2.id AS id, p2.name AS name, sharedConcepts, similarity, conceptNames
-```
+No further updates to data-storage.md are required from this document.
 
 ## Required Changes to configuration.md
 
 [Table of Contents](#table-of-contents)
 
-The following four locations in [configuration.md](configuration.md) need updates to support the `CleanupCompletedJobs` and `CleanupFailedJobs` methods on `EnrichmentService`:
+The changes originally tracked in this section have been applied to [configuration.md](configuration.md). Specifically:
 
-1. **`EnrichmentConfig` struct** — add retention fields
-2. **YAML config example** — add default values
-3. **`setDefaults` function** — register Viper defaults for the new keys
-4. **Configuration Reference table** — document the new fields
+- RabbitMQ configuration is documented for both `mnemonic-api` (publisher) and `mnemonic-enricher` (consumer).
+- `enrichment.completed_retention` and `enrichment.failed_retention` fields are present in the Configuration Reference table with their defaults (168h and 720h respectively).
 
-The suggested additions:
-
-```go
-type EnrichmentConfig struct {
-    // ... existing fields ...
-    CompletedRetention time.Duration `mapstructure:"completed_retention"` // Default: 7d (168h)
-    FailedRetention    time.Duration `mapstructure:"failed_retention"`    // Default: 30d (720h)
-}
-```
-
-The corresponding YAML config defaults:
-
-```yaml
-enrichment:
-  # ... existing fields ...
-  completed_retention: 168h   # 7 days
-  failed_retention: 720h      # 30 days
-```
-
-The `setDefaults` function needs corresponding entries:
-
-```go
-viper.SetDefault("enrichment.completed_retention", "168h")
-viper.SetDefault("enrichment.failed_retention", "720h")
-```
-
-The Configuration Reference table needs two new rows for `enrichment.completed_retention` and `enrichment.failed_retention` with their types, defaults, and descriptions.
+No further updates to configuration.md are required from this document.
 
 ## Key Takeaways
 
