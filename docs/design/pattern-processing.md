@@ -64,36 +64,39 @@ Enrichment is triggered automatically when a pattern is created or updated. The 
 ```mermaid
 sequenceDiagram
     participant Client as Client (REST API)
-    participant API as Mnemonic API
+    participant API as Admin API
     participant PG as Postgres
-    participant Worker as Background Worker
+    participant RMQ as RabbitMQ
+    participant Enricher as mnemonic-enricher
     participant OpenAI as OpenAI API
     participant PGV as PGVector
     participant Neo4j as Neo4j
 
     Client->>API: POST /v1/api/patterns
-    API->>PG: Save pattern (status: "pending")
-    API->>PG: Queue enrichment job
+    API->>PG: INSERT pattern (status: pending)
+    API->>RMQ: Publish enrichment job
     API-->>Client: 202 Accepted
 
-    Note over Worker,PG: Asynchronous processing
+    Note over RMQ,Enricher: Asynchronous processing
 
-    Worker->>PG: Pick up job from queue
-    Worker->>PG: Load pattern content
-    Worker->>Worker: Split content at H2 headings into chunks
+    RMQ->>Enricher: Deliver message
+    Enricher->>PG: Load pattern content
+    Enricher->>Enricher: Split content at H2 headings into chunks
     loop For each chunk
-        Worker->>OpenAI: Generate chunk embedding
-        OpenAI-->>Worker: Embedding vector
-        Worker->>PGV: Store chunk embedding in pattern_chunks
+        Enricher->>OpenAI: Generate chunk embedding
+        OpenAI-->>Enricher: Embedding vector
+        Enricher->>PGV: Store chunk embedding in pattern_chunks
     end
-    Worker->>OpenAI: Extract entities from full content (LLM)
-    OpenAI-->>Worker: Extracted entities
-    Worker->>Neo4j: Create relationships
-    Worker->>PG: Update status to "enriched"
+    Enricher->>OpenAI: Extract entities from full content (LLM)
+    OpenAI-->>Enricher: Extracted entities
+    Enricher->>Neo4j: Create relationships
+    Enricher->>PG: Update status to "enriched"
+    Enricher->>RMQ: Acknowledge message
 
     alt OpenAI call fails
-        Worker->>PG: Update status to "failed"
-        Note over Worker,PG: Store enrichment_error message
+        Enricher->>PG: Update status to "failed"
+        Enricher->>RMQ: Nack for redelivery
+        Note over Enricher,PG: Store enrichment_error message
     end
 ```
 
@@ -371,36 +374,28 @@ Where `graph_score` would consider direct agent association relevance, hop dista
 
 > **Architecture Reference:** [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment) | [Deployment Architecture - Scaling Considerations](../architecture/system/06-deployment-architecture.md#scaling-considerations)
 
-### In-Process Background Worker
+### Standalone Enrichment Service
 
-The enrichment worker runs as a background goroutine within the same Mnemonic process:
+The enricher runs as an independent service (`mnemonic-enricher`) consuming messages from RabbitMQ. It is completely decoupled from the Admin API and MCP server.
 
 ```mermaid
 flowchart LR
-    subgraph mnemonic["Mnemonic Process"]
-        A[HTTP Handler] --> B[Job Queue]
-        B --> C[Background Worker<br/>goroutine]
-        C --> D[Embedding Service]
-        C --> E[Entity Extraction Service]
-    end
-
-    F[(Postgres<br/>+ PGVector)] <--> A
-    F <--> C
-    G[(Neo4j)] <--> C
-    H[OpenAI API] <--> D
-    H <--> E
+  api["Admin API"] -->|publish| rabbit[("RabbitMQ")]
+  rabbit -->|consume| enricher["mnemonic-enricher"]
+  enricher -->|embeddings| openai["OpenAI API"]
+  enricher -->|store embeddings| pg[("PostgreSQL + PGVector")]
+  enricher -->|concepts, relationships| neo4j[("Neo4j")]
 ```
 
-**Why in-process?**
+The enricher connects to RabbitMQ, Postgres, Neo4j, and the OpenAI API. It consumes messages containing a `pattern_id` (or `chunk_id` for chunk-level enrichment) and processes the 5-step enrichment pipeline described above. On successful processing, the enricher acknowledges the message. On failure, the message is nacked for redelivery subject to retry limits.
 
-- **Low volume expected**: Pattern creates/updates are infrequent (not hundreds per day)
-- **Simpler deployment**: Single container, no external message broker
-- **Postgres-backed queue**: Job queue persists in Postgres for reliability
-- **Easy to migrate**: Can extract to separate service later if needed
+Multiple enricher instances can consume from the same RabbitMQ queue for horizontal scaling. RabbitMQ handles message distribution across consumers automatically.
 
-### Job Queue Design
+### Job Dispatch Design
 
-Use a Postgres-backed job queue (no external message broker required):
+**Primary dispatch:** RabbitMQ message published by the Admin API on pattern create or update. The message contains the `pattern_id` (or `chunk_id` for chunk-level enrichment).
+
+**Recovery mechanism:** The Postgres `enrichment_jobs` table serves as a fallback for best-effort publish scenarios (per ADR-009). If the RabbitMQ publish fails, the pattern is stored with `enrichment_status = 'pending'` in Postgres. A periodic recovery process scans for patterns in `pending` status without a corresponding in-flight RabbitMQ message and re-publishes them.
 
 ```sql
 CREATE TABLE enrichment_jobs (
@@ -427,10 +422,10 @@ CREATE UNIQUE INDEX idx_enrichment_jobs_unique_pending ON enrichment_jobs (patte
     WHERE status IN ('pending', 'processing');
 ```
 
-Worker polling:
+During recovery scans, the `FOR UPDATE SKIP LOCKED` construct prevents duplicate processing when multiple enricher instances scan the table concurrently:
 
 ```sql
--- Claim next available job (with row-level locking)
+-- Recovery: claim a pending job missed by RabbitMQ
 UPDATE enrichment_jobs
 SET status = 'processing',
     started_at = NOW(),
@@ -447,150 +442,25 @@ WHERE id = (
 RETURNING *;
 ```
 
-### Scaling and Concurrency
+### Scaling
 
-When running multiple Mnemonic instances (pods), all instances can safely process enrichment jobs concurrently without duplicate processing. This is achieved through Postgres row-level locking.
+Multiple `mnemonic-enricher` instances can run concurrently:
 
-#### How Multi-Pod Job Claiming Works
+- RabbitMQ distributes messages across connected consumers automatically
+- Each instance processes jobs independently
+- Postgres `FOR UPDATE SKIP LOCKED` on the `enrichment_jobs` table prevents duplicate processing during recovery scans
 
-```mermaid
-sequenceDiagram
-    participant Pod1 as Mnemonic Pod 1
-    participant Pod2 as Mnemonic Pod 2
-    participant PG as Postgres
+| Instances   | Behavior                                                  |
+| ----------- | --------------------------------------------------------- |
+| 1 instance  | Single consumer processes all messages sequentially       |
+| 2 instances | Messages distributed across both; ~2x throughput          |
+| N instances | Messages distributed across N instances; ~Nx throughput   |
 
-    Note over Pod1,Pod2: Both pods poll for jobs simultaneously
+**Throughput limits:**
 
-    Pod1->>PG: SELECT ... FOR UPDATE SKIP LOCKED
-    Pod2->>PG: SELECT ... FOR UPDATE SKIP LOCKED
-
-    Note over PG: Postgres locks row for Pod 1
-    PG-->>Pod1: Returns Job A (locked)
-
-    Note over PG: Pod 2 skips locked row, gets next
-    PG-->>Pod2: Returns Job B (locked)
-
-    Pod1->>PG: UPDATE job A status = 'processing'
-    Pod2->>PG: UPDATE job B status = 'processing'
-
-    Note over Pod1,Pod2: Each pod processes different jobs
-```
-
-#### The FOR UPDATE SKIP LOCKED Guarantee
-
-The key SQL construct that prevents duplicate processing:
-
-```sql
-SELECT id FROM enrichment_jobs
-WHERE status = 'pending'
-  AND scheduled_for <= NOW()
-  AND attempts < max_attempts
-ORDER BY scheduled_for
-FOR UPDATE SKIP LOCKED  -- Critical: skips rows locked by other transactions
-LIMIT 1
-```
-
-**What `FOR UPDATE SKIP LOCKED` does:**
-
-| Behavior      | Description                                                              |
-| ------------- | ------------------------------------------------------------------------ |
-| `FOR UPDATE`  | Locks the selected row for the duration of the transaction               |
-| `SKIP LOCKED` | If another transaction holds a lock on a row, skip it instead of waiting |
-
-This means:
-
-- **No duplicate processing**: Two pods cannot claim the same job
-- **No blocking**: Pods don't wait on each other; they grab different jobs
-- **No external coordination**: No distributed locks, Redis, or Zookeeper needed
-- **Automatic failover**: If a pod crashes mid-processing, the job remains in "processing" state and can be reclaimed after timeout
-
-#### Job Timeout and Recovery
-
-To handle crashed workers, implement a job timeout mechanism:
-
-```sql
--- Reclaim stale jobs (stuck in "processing" for too long)
-UPDATE enrichment_jobs
-SET status = 'pending',
-    scheduled_for = NOW() + INTERVAL '30 seconds'
-WHERE status = 'processing'
-  AND started_at < NOW() - INTERVAL '5 minutes'
-  AND attempts < max_attempts;
-```
-
-Run this query periodically (e.g., every minute) to recover jobs from crashed workers.
-
-#### Horizontal Scaling Behavior
-
-| Pods   | Behavior                                       |
-| ------ | ---------------------------------------------- |
-| 1 pod  | Default 2 workers process jobs concurrently    |
-| 2 pods | Jobs distributed automatically; ~2x throughput |
-| N pods | Jobs distributed across N pods; ~Nx throughput |
-
-**Note**: Throughput scales linearly until limited by:
-
-- OpenAI API rate limits (shared across all pods)
+- OpenAI API rate limits (shared across all instances)
 - Postgres connection pool exhaustion
 - Neo4j write capacity
-
-### Future Scaling: Dedicated Enrichment Processor
-
-For larger deployments or separation of concerns, the enrichment worker can be extracted to a dedicated service:
-
-```mermaid
-flowchart TB
-    subgraph api["Mnemonic API (Multiple Pods)"]
-        A1[API Pod 1]
-        A2[API Pod 2]
-        A3[API Pod N]
-    end
-
-    subgraph worker["Enrichment Processor (Separate Service)"]
-        W1[Worker Pod 1]
-        W2[Worker Pod 2]
-    end
-
-    PG[(Postgres<br/>Job Queue)]
-    OpenAI[OpenAI API]
-    Neo4j[(Neo4j)]
-
-    A1 --> PG
-    A2 --> PG
-    A3 --> PG
-
-    W1 <--> PG
-    W2 <--> PG
-    W1 <--> OpenAI
-    W2 <--> OpenAI
-    W1 <--> Neo4j
-    W2 <--> Neo4j
-```
-
-**Why consider a dedicated enrichment processor?**
-
-| Benefit                    | Description                                                             |
-| -------------------------- | ----------------------------------------------------------------------- |
-| **Separation of concerns** | API handles requests; processor handles background work                 |
-| **Independent scaling**    | Scale API pods for request volume; scale workers for enrichment backlog |
-| **Resource isolation**     | LLM calls don't compete with API request handling                       |
-| **Deployment flexibility** | Update enrichment logic without redeploying API                         |
-| **Cost optimization**      | Run workers on cheaper/burstable instances                              |
-
-**When to migrate to dedicated processor:**
-
-- Enrichment backlog consistently grows (processing can't keep up)
-- API latency affected by enrichment worker resource usage
-- Need to scale enrichment independently from API
-- Want to deploy enrichment changes without API downtime
-
-**Migration path:**
-
-1. Extract worker code to separate Go binary (same codebase, different main)
-2. Deploy as separate container/service
-3. Remove in-process worker from API pods
-4. Scale worker pods based on queue depth
-5. Consider Redis or SQS if Postgres queue becomes bottleneck
 
 ## External Service Dependencies
 
@@ -670,11 +540,17 @@ openai:
 
 # Enrichment worker configuration
 enrichment:
-  worker_count: 2 # Number of concurrent workers (goroutines)
-  poll_interval: 5s # How often to check for new jobs
   max_attempts: 3 # Retry attempts before marking as failed
   retry_delay: 30s # Delay between retry attempts
   job_timeout: 5m  # Maximum time for a single enrichment job
+  recovery_interval: 60s # How often to scan for missed jobs in Postgres
+
+# RabbitMQ configuration (required)
+rabbitmq:
+  url: amqp://guest:guest@localhost:5672/
+  exchange: mnemonic.enrichment
+  queue: mnemonic.enrichment.jobs
+  prefetch_count: 1 # Messages delivered to each consumer before ack
 
 # Neo4j configuration (required)
 neo4j:
@@ -741,6 +617,8 @@ Before deploying pattern enrichment, verify:
 - [ ] Network egress to `api.openai.com` allowed
 - [ ] PGVector dimensions match configured embedding dimensions (2000)
 - [ ] Enrichment job table created in Postgres
+- [ ] RabbitMQ instance provisioned and accessible
+- [ ] RabbitMQ exchange and queue configured
 - [ ] Neo4j instance provisioned and accessible
 - [ ] Neo4j credentials configured
 
@@ -751,14 +629,15 @@ Before deploying pattern enrichment, verify:
 | Invalid/missing API key | All enrichment jobs fail               | Startup validation, health checks |
 | Rate limit exceeded     | Temporary failures, 429 responses      | Exponential backoff, queuing      |
 | OpenAI outage           | Embedding/extraction unavailable       | Circuit breaker, queue for retry  |
+| RabbitMQ unavailable    | Jobs fall back to Postgres recovery    | Best-effort publish (ADR-009)     |
 | Neo4j unavailable       | Relationship storage fails             | Circuit breaker, queue for retry  |
 | Dimension mismatch      | Vectors unusable for similarity search | Validate config at startup        |
 | Network blocked         | Cannot reach external APIs             | Verify egress rules               |
-| Worker crash            | Jobs stuck in "processing"             | Job timeout, automatic requeuing  |
+| Enricher crash          | Unacked messages redelivered by RabbitMQ | Nack/redelivery, Postgres recovery |
 
 ### Health Check Endpoint
 
-The pattern service should expose a health check that validates enrichment capability:
+The `mnemonic-enricher` service exposes a health check that validates enrichment capability:
 
 ```go
 // Health check should verify:
@@ -766,8 +645,8 @@ The pattern service should expose a health check that validates enrichment capab
 // 2. OpenAI API is reachable (optional: test calls)
 // 3. PGVector is available with correct dimensions
 // 4. Neo4j is available and accessible
-// 5. Enrichment worker is running
-// 6. Job queue is accessible
+// 5. RabbitMQ connection is active
+// 6. Enrichment jobs table is accessible
 ```
 
 ## Internal Dependencies
