@@ -12,17 +12,15 @@
   - [Operational Considerations](#operational-considerations)
   - [Independent Deployment Pipelines](#independent-deployment-pipelines)
 - [Post-MVP](#post-mvp)
-  - [Production Deployment](#production-deployment)
-  - [Backup and Recovery](#backup-and-recovery)
-  - [Scaling Considerations](#scaling-considerations)
-  - [Log Collection Infrastructure](#log-collection-infrastructure)
-  - [Updates and Maintenance](#updates-and-maintenance)
+  - [MVP 3: Managed Infrastructure](#mvp-3-managed-infrastructure)
+  - [MVP 4: Kubernetes Deployment](#mvp-4-kubernetes-deployment)
+  - [MVP 5: Cloud-Native Production](#mvp-5-cloud-native-production)
 
 ## MVP
 
 ### Deployment Overview
 
-Mnemonic uses a lightweight deployment model with minimal server-side infrastructure. The heavy lifting (LLM inference, tool execution) happens on user workstations via Claude Code.
+Mnemonic deploys as six containers orchestrated by docker-compose. Three application services handle distinct responsibilities: read-only MCP serving, admin CRUD, and asynchronous enrichment. RabbitMQ decouples write-path operations from enrichment processing. The heavy lifting (LLM inference, tool execution) happens on user workstations via Claude Code.
 
 ```mermaid
 graph TB
@@ -33,27 +31,40 @@ graph TB
     end
 
     subgraph "Admin Tools"
-        ADMIN[curl/scripts]
+        ADMIN[Admin UI / curl]
     end
 
-    subgraph "Server Infrastructure"
-        subgraph "Mnemonic"
-            MCP[MCP Server :8081]
-            REST[Admin API :8080]
-        end
-        PG[(Postgres + PGVector)]
-        NEO[(Neo4j)]
+    subgraph "Server Infrastructure (docker-compose)"
+        MCP[mnemonic-mcp<br/>MCP Server :8081]
+        API[mnemonic-api<br/>Admin REST API :8080]
+        ENRICHER[mnemonic-enricher<br/>Enrichment Worker]
+        RMQ[rabbitmq<br/>:5672 / :15672]
+        PG[(mnemonic-postgres<br/>PostgreSQL + PGVector<br/>:5432)]
+        NEO[(mnemonic-neo4j<br/>Neo4j<br/>:7687)]
     end
 
     WS1 -->|"MCP"| MCP
     WS2 -->|"MCP"| MCP
     WS3 -->|"MCP"| MCP
-    ADMIN -->|"REST"| REST
+    ADMIN -->|"REST"| API
     MCP --> PG
     MCP --> NEO
-    REST --> PG
-    REST --> NEO
+    API --> PG
+    API --> NEO
+    API -->|"publish"| RMQ
+    RMQ -->|"consume"| ENRICHER
+    ENRICHER --> PG
+    ENRICHER --> NEO
 ```
+
+| Container | Image | Port | Role |
+|---|---|---|---|
+| mnemonic-mcp | ghcr.io/twistingmercury/mnemonic-mcp | 8081 | MCP server (read-only) |
+| mnemonic-api | ghcr.io/twistingmercury/mnemonic-api | 8080 | Admin REST API |
+| mnemonic-enricher | ghcr.io/twistingmercury/mnemonic-enricher | -- | Enrichment worker |
+| rabbitmq | rabbitmq:3-management | 5672/15672 | Message queue |
+| mnemonic-postgres | ghcr.io/twistingmercury/mnemonic-postgres | 5432 | PostgreSQL + PGVector |
+| mnemonic-neo4j | ghcr.io/twistingmercury/mnemonic-neo4j | 7687 | Neo4j |
 
 ### Deployment Topology
 
@@ -63,11 +74,17 @@ graph TB
 graph TB
     subgraph "Client Tier"
         CC[Claude Code via MCP]
-        ADMIN[Admin via curl/REST]
+        ADMIN[Admin UI / curl]
     end
 
-    subgraph "Service Tier"
-        MN[Mnemonic<br/>Knowledge Sync + MCP Server]
+    subgraph "Application Tier"
+        MCP[mnemonic-mcp<br/>Read-Only MCP Server]
+        API[mnemonic-api<br/>Admin REST API]
+        ENRICHER[mnemonic-enricher<br/>Enrichment Worker]
+    end
+
+    subgraph "Messaging Tier"
+        RMQ[RabbitMQ]
     end
 
     subgraph "Data Tier"
@@ -75,15 +92,21 @@ graph TB
         NEO[(Neo4j)]
     end
 
-    CC -->|"MCP"| MN
-    ADMIN -->|"REST"| MN
-    MN --> PG
-    MN --> NEO
+    CC -->|"MCP"| MCP
+    ADMIN -->|"REST"| API
+    MCP --> PG
+    MCP --> NEO
+    API --> PG
+    API --> NEO
+    API -->|"publish"| RMQ
+    RMQ -->|"consume"| ENRICHER
+    ENRICHER --> PG
+    ENRICHER --> NEO
 ```
 
 #### Physical View
 
-The physical deployment is intentionally simple.
+All six containers run on a single host via docker-compose.
 
 ```mermaid
 graph TB
@@ -91,87 +114,156 @@ graph TB
         D1[Dev 1<br/>Claude Code MCP]
         D2[Dev 2<br/>Claude Code MCP]
         DN[Dev N<br/>Claude Code MCP]
-        ADMIN[Admin curl/scripts]
+        ADMIN[Admin UI / curl]
     end
 
-    subgraph "Server Environment"
-        subgraph "Container Runtime"
-            MN_C[Mnemonic<br/>MCP :8081 + Admin :8080]
-        end
-        PG[(Postgres + PGVector)]
-        NEO[(Neo4j)]
+    subgraph "Server Environment (docker-compose)"
+        MCP[mnemonic-mcp<br/>:8081]
+        API[mnemonic-api<br/>:8080]
+        ENRICHER[mnemonic-enricher]
+        RMQ[rabbitmq<br/>:5672 / :15672]
+        PG[(mnemonic-postgres<br/>:5432)]
+        NEO[(mnemonic-neo4j<br/>:7687)]
     end
 
-    D1 -->|"MCP"| MN_C
-    D2 -->|"MCP"| MN_C
-    DN -->|"MCP"| MN_C
-    ADMIN -->|"REST"| MN_C
-    MN_C --> PG
-    MN_C --> NEO
+    D1 -->|"MCP"| MCP
+    D2 -->|"MCP"| MCP
+    DN -->|"MCP"| MCP
+    ADMIN -->|"REST"| API
+    MCP --> PG
+    MCP --> NEO
+    API --> PG
+    API --> NEO
+    API -->|"publish"| RMQ
+    RMQ -->|"consume"| ENRICHER
+    ENRICHER --> PG
+    ENRICHER --> NEO
 ```
 
 ### Component Deployment
 
-#### Mnemonic
+#### Mnemonic MCP Server
 
-**Deployment Location:** Server infrastructure
+**Deployment Location:** Server infrastructure (docker-compose)
 
 **Characteristics:**
 
-- Single server process with two HTTP listeners (Admin REST :8080, MCP :8081)
-- Stateless service (patterns and tooling from storage)
-- Lightweight (calls embedding API for pattern enrichment; no generative AI inference)
-- Horizontally scalable (if needed)
-- Dual protocol architecture (REST admin + MCP read-only)
+- Read-only MCP interface for Claude Code pattern searches
+- Connects to Postgres (PGVector semantic search) and Neo4j (graph traversal)
+- Stateless; horizontally scalable
+- No write operations; safe to run multiple instances behind a load balancer
 
 **Resource Requirements:**
 
-| Resource | Expectation                                    |
-| -------- | ---------------------------------------------- |
-| CPU      | Low to moderate (pattern queries, MCP serving) |
-| Memory   | Moderate (caching, pattern indexing)           |
-| Storage  | Via external databases (Postgres, Neo4j)       |
-| Network  | Moderate (all MCP + admin traffic)             |
+| Resource | Expectation |
+|---|---|
+| CPU | Low (pattern queries, MCP serving) |
+| Memory | Moderate (connection pools, response assembly) |
+| Storage | None (reads from external databases) |
+| Network | Moderate (all MCP client traffic) |
 
-**Storage Stack:**
+#### Mnemonic Admin API
 
-- **Postgres** - Relational data (patterns, agents, skills, metadata)
-- **PGVector** - Vector embeddings for semantic search
-- **Neo4j** - Knowledge graph for pattern relationships (required)
+**Deployment Location:** Server infrastructure (docker-compose)
+
+**Characteristics:**
+
+- REST API for pattern CRUD operations
+- Connects to Postgres for persistent storage and RabbitMQ for enrichment dispatch
+- Syncs Neo4j best-effort on write operations
+- Stateless; horizontally scalable
+
+**Resource Requirements:**
+
+| Resource | Expectation |
+|---|---|
+| CPU | Low (CRUD operations, message publishing) |
+| Memory | Low to moderate (connection pools) |
+| Storage | None (writes to external databases) |
+| Network | Low (admin traffic only) |
+
+#### Mnemonic Enricher
+
+**Deployment Location:** Server infrastructure (docker-compose)
+
+**Characteristics:**
+
+- Consumes enrichment messages from RabbitMQ
+- Connects to Postgres (read/write embeddings), Neo4j (write graph relationships), and OpenAI API (generate embeddings)
+- Horizontally scalable; multiple workers can consume from the same queue
+- No inbound HTTP traffic
+
+**Resource Requirements:**
+
+| Resource | Expectation |
+|---|---|
+| CPU | Low to moderate (embedding requests are I/O-bound) |
+| Memory | Low to moderate (message processing) |
+| Storage | None (writes to external databases) |
+| Network | Moderate (OpenAI API calls, database writes) |
+
+#### RabbitMQ
+
+**Deployment Location:** Server infrastructure (docker-compose)
+
+**Characteristics:**
+
+- Message queue for async enrichment dispatch between Admin API and Enricher
+- Management UI available on port 15672
+- Uses the `rabbitmq:3-management` image (no custom build)
+
+**Resource Requirements:**
+
+| Resource | Expectation |
+|---|---|
+| CPU | Low (message routing) |
+| Memory | Low (small queue depth expected) |
+| Storage | Ephemeral (messages are transient; no durability requirement in MVP) |
+| Network | Low (internal container traffic only) |
 
 ### Infrastructure Requirements
 
 #### Server Infrastructure
 
-The server-side footprint is intentionally minimal for MVP: a single Mnemonic container with external Postgres and Neo4j databases, suitable for small teams.
+The server-side deployment consists of six containers running via docker-compose, suitable for small teams.
 
 ```mermaid
 graph TB
-    subgraph "Minimal Deployment"
-        SINGLE[Single Container<br/>Mnemonic]
-        PG1[(Postgres + PGVector)]
-        NEO1[(Neo4j)]
-        SINGLE --> PG1
-        SINGLE --> NEO1
+    subgraph "MVP Deployment (docker-compose)"
+        MCP[mnemonic-mcp<br/>:8081]
+        API[mnemonic-api<br/>:8080]
+        ENRICHER[mnemonic-enricher]
+        RMQ[rabbitmq<br/>:5672 / :15672]
+        PG[(mnemonic-postgres<br/>:5432)]
+        NEO[(mnemonic-neo4j<br/>:7687)]
     end
+
+    MCP --> PG
+    MCP --> NEO
+    API --> PG
+    API --> NEO
+    API --> RMQ
+    RMQ --> ENRICHER
+    ENRICHER --> PG
+    ENRICHER --> NEO
 ```
 
 #### Client Requirements
 
-| Requirement       | MVP Local Deployment  |
-| ----------------- | --------------------- |
-| Claude Code       | Required              |
-| MCP Support       | Required              |
-| Anthropic API key | Via Claude Code       |
-| Network access    | To Mnemonic MCP :8081 |
+| Requirement | MVP Local Deployment |
+|---|---|
+| Claude Code | Required |
+| MCP Support | Required |
+| Anthropic API key | Via Claude Code |
+| Network access | To mnemonic-mcp :8081 |
 
 #### Admin Requirements
 
-| Requirement      | MVP Local Deployment |
-| ---------------- | -------------------- |
-| curl/HTTP client | Required             |
-| Network access   | To Admin API :8080   |
-| Authentication   | None (trusted)       |
+| Requirement | MVP Local Deployment |
+|---|---|
+| HTTP client | Required (Admin UI or curl) |
+| Network access | To mnemonic-api :8080 |
+| Authentication | None (trusted network) |
 
 ### Operational Considerations
 
@@ -179,200 +271,130 @@ graph TB
 
 Key metrics to monitor:
 
-| Component      | Metrics                                             |
-| -------------- | --------------------------------------------------- |
-| Mnemonic MCP   | Request rate, latency, error rate, pattern searches |
-| Mnemonic Admin | Write operations, data loading, tooling updates     |
-| Postgres       | Connection count, query latency, storage usage      |
-| Neo4j          | Query latency, memory usage, connection count       |
+| Component | Metrics |
+|---|---|
+| mnemonic-mcp | Request rate, latency, error rate, pattern searches |
+| mnemonic-api | Write operations, CRUD latency, message publish rate |
+| mnemonic-enricher | Queue consumption rate, enrichment latency, OpenAI API errors |
+| RabbitMQ | Queue depth, message rates, consumer count |
+| Postgres | Connection count, query latency, storage usage |
+| Neo4j | Query latency, memory usage, connection count |
 
 #### Logging
 
-Mnemonic emits structured logs with trace correlation via OpenTelemetry (see [Observability Architecture](07-observability-architecture.md)).
+All application services emit structured logs with trace correlation via OpenTelemetry (see [Observability Architecture](07-observability-architecture.md)).
 
-| Component      | Log Focus                                                        |
-| -------------- | ---------------------------------------------------------------- |
-| Mnemonic MCP   | Pattern searches, errors (instrumented in MVP)                   |
-| Mnemonic Admin | Data loading, CRUD operations, errors (instrumented in MVP)      |
+| Component | Log Focus |
+|---|---|
+| mnemonic-mcp | Pattern searches, errors |
+| mnemonic-api | CRUD operations, message publishing, errors |
+| mnemonic-enricher | Enrichment processing, OpenAI API calls, errors |
 
 ### Independent Deployment Pipelines
 
-**CRITICAL PRINCIPLE:** Database migrations and application code are versioned and deployed independently.
+Each application service and the database images have independent CI/CD pipelines. Database migrations and application code are versioned and deployed independently.
 
 ```mermaid
 graph TB
-    subgraph "Code Changes"
-        APP_CODE[internal/, cmd/**]
-        DB_CODE[migrations/**]
+    subgraph "Source Repositories"
+        MCP_SRC[mnemonic-mcp<br/>src/]
+        API_SRC[mnemonic-api<br/>src/]
+        ENR_SRC[mnemonic-enricher<br/>src/]
+        DBS_SRC[mnemonic-dbs<br/>postgres/ neo4j/]
     end
 
     subgraph "CI/CD Pipelines"
-        APP_CI[mnemonic-ci.yaml + mnemonic-cd.yaml<br/>Build, Test, Deploy Container]
-        DB_CI[mnemonic-db-ci.yaml<br/>Validate, Test, Apply Migrations]
+        MCP_CI[mnemonic-mcp CI/CD<br/>Build, Test, Push to GHCR]
+        API_CI[mnemonic-api CI/CD<br/>Build, Test, Push to GHCR]
+        ENR_CI[mnemonic-enricher CI/CD<br/>Build, Test, Push to GHCR]
+        DBS_CI[mnemonic-dbs CI/CD<br/>Build, Test, Push to GHCR]
     end
 
-    subgraph "Deployments"
-        APP_DEPLOY[Application Container<br/>Version: v1.2.3]
-        DB_DEPLOY[Database Schema<br/>Version: migration 005]
+    subgraph "Container Registry (GHCR)"
+        MCP_IMG[ghcr.io/.../mnemonic-mcp]
+        API_IMG[ghcr.io/.../mnemonic-api]
+        ENR_IMG[ghcr.io/.../mnemonic-enricher]
+        PG_IMG[ghcr.io/.../mnemonic-postgres]
+        NEO_IMG[ghcr.io/.../mnemonic-neo4j]
     end
 
-    APP_CODE -->|triggers| APP_CI
-    DB_CODE -->|triggers| DB_CI
-    APP_CI --> APP_DEPLOY
-    DB_CI --> DB_DEPLOY
+    MCP_SRC --> MCP_CI --> MCP_IMG
+    API_SRC --> API_CI --> API_IMG
+    ENR_SRC --> ENR_CI --> ENR_IMG
+    DBS_SRC --> DBS_CI --> PG_IMG
+    DBS_SRC --> DBS_CI --> NEO_IMG
 ```
 
-**Implementation Status:**
+Each Go service pipeline follows the standard pattern documented in the [Go CI/CD diagram](../../diagrams/example-go-ci-cd-diagram.md): build Docker image, run quality gates and unit tests in the container, run E2E tests against a compose stack, then push the image to GHCR on merge.
 
-The Mnemonic application CI/CD pipeline is now operational:
+**Pipeline Summary:**
 
-- **CI workflow** (`mnemonic-ci.yaml`) - Builds Docker image, runs unit and E2E tests, uploads artifact
-- **CD workflow** (`mnemonic-cd.yaml`) - Downloads artifact from CI, pushes to registry
-- **Database migrations pipeline** - Post-MVP
+| Pipeline | Repository | Triggers On | Produces |
+|---|---|---|---|
+| mnemonic-mcp CI/CD | mnemonic-mcp | `src/` changes | MCP server image |
+| mnemonic-api CI/CD | mnemonic-api | `src/` changes | Admin API image |
+| mnemonic-enricher CI/CD | mnemonic-enricher | `src/` changes | Enricher image |
+| mnemonic-dbs CI/CD | mnemonic-dbs | `postgres/` or `neo4j/` changes | Database images |
 
-The CI/CD separation pattern ensures clean separation of concerns:
+**Why Independent Pipelines?**
 
-- CI focuses on validation (build, test, artifact creation)
-- CD focuses on deployment (registry push)
-- Database migrations will have dedicated pipeline to avoid coupling with application deployments
-
-**Why Separate Pipelines?**
-
-| Scenario          | Without Separation               | With Separation           |
-| ----------------- | -------------------------------- | ------------------------- |
-| Go logic bug fix  | Rebuilds app AND runs migrations | App deploys only          |
-| Add new index     | Rebuilds app container           | Migrations run only       |
-| Add column + code | Single coupled deploy            | Migration first, then app |
-
-**Pipeline Triggers:**
-
-| Pipeline                        | Triggers On                                | Does NOT Trigger On  |
-| ------------------------------- | ------------------------------------------ | -------------------- |
-| `mnemonic-ci.yaml`              | `src/mnemonic/**` (excludes `migrations/`) | `migrations/**`      |
-| `mnemonic-cd.yaml`              | Triggered by successful `mnemonic-ci.yaml` | Manual triggers only |
-| `mnemonic-db-ci.yaml` (Planned) | `migrations/**`                            | `src/mnemonic/**`    |
-
-**Version Compatibility:**
-
-- Application version: Git tag (e.g., `v1.2.3`)
-- Database version: Highest applied migration (e.g., `005`)
-- Compatibility matrix documented in release notes
+| Scenario | Without Separation | With Separation |
+|---|---|---|
+| MCP query bug fix | Rebuilds all services | Only mnemonic-mcp deploys |
+| New admin endpoint | Rebuilds MCP and enricher too | Only mnemonic-api deploys |
+| Schema migration | Rebuilds all application images | Only database images rebuild |
+| Enricher tuning | Touches unrelated services | Only mnemonic-enricher deploys |
 
 **Deployment Order for Breaking Changes:**
 
 ```text
-1. Deploy migration (forward-compatible: nullable/default values)
-2. Verify migration succeeded in production
-3. Deploy application (uses new schema)
+1. Deploy database images (forward-compatible: nullable/default values)
+2. Verify schema changes succeeded
+3. Deploy application services (use new schema)
 4. (Optional) Deploy tightening migration (add NOT NULL, remove old columns)
 ```
 
 This separation ensures:
 
 - Faster deployments (only deploy what changed)
-- Safer rollbacks (can rollback app without touching DB)
+- Safer rollbacks (can rollback one service without touching others)
 - Clear audit trail (which pipeline changed what)
 
 ## Post-MVP
 
-### Production Deployment
+### MVP 3: Managed Infrastructure
 
-Production deployment extends the [MVP topology](#deployment-topology) with an Envoy proxy for TLS termination, authentication enforcement, and routing, plus OPA for policy-based authorization.
+Move stateful infrastructure to AWS managed services while keeping application services running locally:
 
-The [MVP client and admin requirements](#infrastructure-requirements) remain in place; the following additions apply in production:
+- Replace local PostgreSQL + PGVector with AWS RDS PostgreSQL + PGVector
+- Replace local Neo4j with AWS Neptune
+- Replace local RabbitMQ with AWS SQS
 
-| Requirement    | Production Deployment                            |
-| -------------- | ------------------------------------------------ |
-| Client network | To Mnemonic MCP :8081 (via Envoy)                |
-| Admin network  | To Admin API :8080 (via Envoy + OPA)             |
-| Authentication | OAuth2 tokens via Envoy (admin); none for client |
+Application services (mnemonic-mcp, mnemonic-api, mnemonic-enricher) remain local. This validates cloud data-tier connectivity without changing the application runtime.
 
-The [MVP minimal deployment](#server-infrastructure) scales to multiple Mnemonic instances behind a load balancer when needed — see [Scaling Considerations](#scaling-considerations).
+See [MVP 3 concept diagram](../../diagrams/03-concept-local-iteration.md).
 
-### Backup and Recovery
+### MVP 4: Kubernetes Deployment
 
-Backup procedures for all components are to be designed.
+Deploy application services to local Kubernetes (minikube or equivalent single-node cluster):
 
-| Component                        | Strategy                         |
-| -------------------------------- | -------------------------------- |
-| Patterns                         | Backup procedures to be designed |
-| Tooling (agents/skills)          | Backup procedures to be designed |
-| Postgres data                    | Backup procedures to be designed |
-| Neo4j data                       | Backup procedures to be designed |
+- Add Envoy proxy as the ingress and authN layer for MCP and Admin API traffic
+- Add OPA policies as the authZ checkpoint before requests reach service handlers
+- Begin Helm chart development for repeatable local cluster deployment
+- Keep data and queue infrastructure on managed AWS services (from MVP 3)
 
-### Scaling Considerations
+See [MVP 4 concept diagram](../../diagrams/04-concept-local-iteration.md).
 
-Mnemonic is stateless and horizontally scalable. The [MVP single-container deployment](#server-infrastructure) scales to the following topology when load or availability requirements grow:
+### MVP 5: Cloud-Native Production
 
-```mermaid
-graph TB
-    subgraph "Scaled Deployment"
-        LB[Load Balancer]
-        MN1[Mnemonic 1]
-        MN2[Mnemonic 2]
-        PG2[(Postgres + PGVector)]
-        NEO2[(Neo4j)]
-    end
+Deploy the full stack to AWS:
 
-    LB --> MN1
-    LB --> MN2
-    MN1 --> PG2
-    MN1 --> NEO2
-    MN2 --> PG2
-    MN2 --> NEO2
-```
+- Move application services from local Kubernetes to AWS Fargate
+- Envoy + OPA remain in the request path for authN/authZ
+- Provision all AWS infrastructure (networking, compute, managed services) with Terraform
+- Use SSM Parameter Store and Secrets Manager for runtime configuration and secrets
 
-#### Horizontal Scaling
-
-```mermaid
-graph LR
-    subgraph "Scaling Points"
-        MN[Mnemonic<br/>Stateless, easy to scale]
-        PG[Postgres<br/>Read replicas]
-        NEO[Neo4j<br/>Query scaling]
-    end
-```
-
-| Component | Scaling Approach                          |
-| --------- | ----------------------------------------- |
-| Mnemonic  | Add instances behind load balancer        |
-| Postgres  | Read replicas, connection pooling         |
-| Neo4j     | Scaling approach to be designed           |
-
-#### Performance Considerations
-
-- Mnemonic latency should be minimal (knowledge graph queries and MCP serving are fast)
-- Pattern queries should be cached where possible
-- Claude Code execution is the primary latency source (not Mnemonic)
-
-#### Capacity Planning
-
-| Factor         | Consideration                      |
-| -------------- | ---------------------------------- |
-| Team size      | Number of concurrent MCP/API users |
-| Request rate   | Queries per minute to Mnemonic     |
-| Pattern volume | Total patterns in storage          |
-| Pattern size   | Average pattern complexity         |
-
-### Log Collection Infrastructure
-
-The [MVP logging](#logging) covers instrumentation (emitting structured logs with trace correlation). Log collection, aggregation, querying, and retention infrastructure (Loki) is Post-MVP.
-
-### Updates and Maintenance
-
-```mermaid
-graph TB
-    subgraph "Update Strategy"
-        MN_UP[Mnemonic Updates<br/>Rolling deployment]
-        DB_UP[Database Updates<br/>Careful migration]
-        ADMIN_UP[Admin curl Updates<br/>User-controlled]
-    end
-```
-
-| Component | Update Approach                         |
-| --------- | --------------------------------------- |
-| Mnemonic  | Rolling deployment, backward compatible |
-| Databases | Migration-aware, data preservation      |
+See [MVP 5 concept diagram](../../diagrams/05-concept-cloud-iteration.md).
 
 **Next:** [Observability Architecture](07-observability-architecture.md)
 
