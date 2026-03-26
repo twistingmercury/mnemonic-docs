@@ -56,13 +56,13 @@ Implementation-level design documents shared across Go services:
 
 The system evolves through five iterations from local monolith to cloud-native deployment:
 
-| Iteration | Document | Description |
-|-----------|----------|-------------|
-| MVP 1 | [01-concept-local-iteration.md](docs/diagrams/01-concept-local-iteration.md) | Monolithic local service with PostgreSQL + Neo4j |
-| MVP 2 | [02-concept-local-iteration.md](docs/diagrams/02-concept-local-iteration.md) | Service decomposition (MCP, Admin API, Enricher) + RabbitMQ |
-| MVP 3 | [03-concept-local-iteration.md](docs/diagrams/03-concept-local-iteration.md) | Local services with AWS-managed infrastructure |
-| MVP 4 | [04-concept-local-iteration.md](docs/diagrams/04-concept-local-iteration.md) | Local Kubernetes with Envoy + OPA authentication |
-| MVP 5 | [05-concept-cloud-iteration.md](docs/diagrams/05-concept-cloud-iteration.md) | AWS Fargate deployment with Terraform automation |
+| Iteration | Document                                                                     | Description                                                 |
+| --------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| MVP 1     | [01-concept-local-iteration.md](docs/diagrams/01-concept-local-iteration.md) | Monolithic local service with PostgreSQL + Neo4j            |
+| MVP 2     | [02-concept-local-iteration.md](docs/diagrams/02-concept-local-iteration.md) | Service decomposition (MCP, Admin API, Enricher) + RabbitMQ |
+| MVP 3     | [03-concept-local-iteration.md](docs/diagrams/03-concept-local-iteration.md) | Local services with AWS-managed infrastructure              |
+| MVP 4     | [04-concept-local-iteration.md](docs/diagrams/04-concept-local-iteration.md) | Local Kubernetes with Envoy + OPA authentication            |
+| MVP 5     | [05-concept-cloud-iteration.md](docs/diagrams/05-concept-cloud-iteration.md) | AWS Fargate deployment with Terraform automation            |
 
 Additional diagrams:
 
