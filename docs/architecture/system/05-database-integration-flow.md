@@ -9,7 +9,7 @@
 - [The Pattern UUID: The Universal Key](#the-pattern-uuid-the-universal-key)
 - [Data Flow: Pattern Creation and Enrichment](#data-flow-pattern-creation-and-enrichment)
 - [Query Flow: Pattern Search Pipeline](#query-flow-pattern-search-pipeline)
-- [Sequence Diagram](#sequence-diagram)
+- [Query Sequence Diagram](#query-sequence-diagram)
 - [Summary Table](#summary-table)
 - [Post-MVP: Visualization](#post-mvp-visualization)
 - [Post-MVP: Admin Tooling](#post-mvp-admin-tooling)
@@ -33,7 +33,7 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 - Skills (name, definition JSONB, crc64)
 - Skill files (skill_id, file_type, filename, document JSONB, crc64)
 - Patterns (name, content, tags, enrichment_status)
-- Enrichment jobs (background processing queue)
+- Pattern chunks (chunk text and embeddings)
 - Pattern associations
 
 **Why PostgreSQL:** Mature ecosystem, excellent Go driver support, JSONB for flexible storage, and transactional consistency across entities.
@@ -44,7 +44,7 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 
 **Stores:**
 
-- Pattern content embeddings (2000 dimensions, OpenAI text-embedding-3-large truncated)
+- Pattern chunk embeddings (2000 dimensions, OpenAI text-embedding-3-large truncated), stored in `pattern_chunks.embedding`
 - Vector similarity indexes (IVFFlat or HNSW based on scale)
 
 **Why PGVector:** Single database deployment (no separate vector service), transactional consistency with metadata, and sufficient performance for expected pattern counts.
@@ -56,11 +56,9 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 **Stores:**
 
 - Pattern nodes (mirrored from PostgreSQL with id, name, description)
-- Agent nodes (mirrored from PostgreSQL with name)
 - Concept nodes (extracted during enrichment: technology, practice, domain)
 - Relationships:
-  - `(:Pattern)-[:RELEVANT_FOR {relevance: 0.95}]->(:Agent)`
-  - `(:Concept)-[:MENTIONED_IN]->(:Pattern)`
+  - `(:Pattern)-[:HAS_CONCEPT]->(:Concept)`
   - `(:Pattern)-[:RELATED_TO {similarity: 0.85}]->(:Pattern)`
 
 **Why Neo4j:** Native graph model for relationship-heavy queries, expressive Cypher query language, and built-in graph algorithms.
@@ -69,34 +67,54 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 
 ```mermaid
 flowchart TB
-    subgraph MNEMONIC_SERVICE["MNEMONIC SERVICE"]
-        subgraph PostgreSQL["PostgreSQL (RDBMS)"]
-            PG1["agents"]
-            PG2["patterns"]
-            PG3["skills"]
-            PG4["enrichment_jobs"]
-            PG5["Source of Truth"]
-            PG6["skill_files"]
-        end
-
-        subgraph PGVector["PGVector (Vectors)"]
-            PV1["patterns.embedding"]
-            PV2["(2000-dim)"]
-            PV3["Cosine distance"]
-            PV4["similarity"]
-            PV5["Semantic Search"]
-        end
-
-        subgraph Neo4j["Neo4j (Graph)"]
-            N1["(:Agent)"]
-            N2["(:Pattern)"]
-            N3["(:Concept)"]
-            N4["[:RELEVANT_FOR]"]
-            N5["[:MENTIONED_IN]"]
-            N6["[:RELATED_TO]"]
-            N7["Relationships & Traversal"]
-        end
+    subgraph MCP_SERVER["MCP SERVER (read-only)"]
+        direction LR
+        MCP_PG["reads PostgreSQL + PGVector"]
+        MCP_N4J["reads Neo4j"]
     end
+
+    subgraph ADMIN_API["ADMIN API (read-write)"]
+        direction LR
+        API_PG["writes PostgreSQL"]
+        API_MQ["publishes to RabbitMQ"]
+    end
+
+    subgraph ENRICHER["ENRICHER (async)"]
+        direction LR
+        ENR_PG["writes PostgreSQL (embeddings)"]
+        ENR_N4J["writes Neo4j (graph)"]
+    end
+
+    subgraph PostgreSQL["PostgreSQL (RDBMS)"]
+        PG1["agents"]
+        PG2["patterns + pattern_chunks"]
+        PG3["skills"]
+        PG5["Source of Truth"]
+        PG6["skill_files"]
+    end
+
+    subgraph PGVector["PGVector (Vectors)"]
+        PV1["pattern_chunks.embedding"]
+        PV2["(2000-dim)"]
+        PV5["Semantic Search"]
+    end
+
+    subgraph Neo4j["Neo4j (Graph)"]
+        N2["(:Pattern)"]
+        N3["(:Concept)"]
+        N5["[:HAS_CONCEPT]"]
+        N6["[:RELATED_TO]"]
+        N7["Relationships & Traversal"]
+    end
+
+    MCP_PG --> PostgreSQL
+    MCP_PG --> PGVector
+    MCP_N4J --> Neo4j
+    API_PG --> PostgreSQL
+    API_MQ --> RabbitMQ[("RabbitMQ")]
+    ENR_PG --> PostgreSQL
+    ENR_PG --> PGVector
+    ENR_N4J --> Neo4j
 
     Note["UUID connects Pattern across PostgreSQL & Neo4j"]
 ```
@@ -114,18 +132,22 @@ name: VARCHAR(128)
 description: VARCHAR(500)
 content: TEXT (up to 10KB)
 tags: JSONB
-embedding: vector(2000)
 enrichment_status: ENUM ('pending', 'enriched', 'failed')
 enriched_at: TIMESTAMPTZ
+
+-- pattern_chunks table (embeddings stored per chunk)
+id: UUID (Primary Key)
+pattern_id: UUID (Foreign Key -> patterns.id)
+content: TEXT
+embedding: vector(2000)
 ```
 
-**Example Row:**
+**Example patterns Row:**
 
 ```text
 id: 550e8400-e29b-41d4-a716-446655440001
 name: "sql-query-optimization"
 content: "Use EXPLAIN ANALYZE to identify slow queries..."
-embedding: vector(2000) [0.023, -0.145, ...]
 enrichment_status: 'enriched'
 ```
 
@@ -151,13 +173,13 @@ The same UUID enables queries like:
 ```mermaid
 flowchart LR
     subgraph PostgreSQL
-        P["Pattern<br/>id: UUID-123<br/>name: ...<br/>content: ...<br/>embedding: vec"]
+        P["Pattern<br/>id: UUID-123<br/>name: ...<br/>content: ...<br/>chunks: pattern_chunks"]
     end
 
     subgraph Neo4j
         NP["Pattern node<br/>id: UUID-123"]
-        NA["Agent node<br/>name: db-agent"]
-        NP -->|RELEVANT_FOR| NA
+        NC["Concept node<br/>name: sql"]
+        NP -->|HAS_CONCEPT| NC
     end
 
     P <-.->|Same UUID| NP
@@ -165,11 +187,11 @@ flowchart LR
 
 ## Data Flow: Pattern Creation and Enrichment
 
-Pattern enrichment is an asynchronous pipeline that transforms raw content into searchable, connected knowledge.
+Pattern enrichment is an asynchronous pipeline that transforms raw content into searchable, connected knowledge. The Admin API handles synchronous intake and publishes work to RabbitMQ; the Enricher processes it independently.
 
 ### Step-by-Step Flow
 
-**Step 1: Pattern Created (PostgreSQL)**
+**Step 1: Admin API receives POST /v1/api/patterns**
 
 ```http
 POST /v1/api/patterns
@@ -180,8 +202,13 @@ POST /v1/api/patterns
 }
 ```
 
+**Step 2: Admin API validates pattern fields**
+
+Required fields (`name`, `content`) and field length constraints are checked before any writes occur. Invalid requests are rejected with 400 Bad Request.
+
+**Step 3: Admin API inserts pattern into PostgreSQL with `enrichment_status='pending'`**
+
 ```sql
--- Postgres INSERT
 INSERT INTO patterns (id, name, content, tags, enrichment_status)
 VALUES (
   gen_random_uuid(),
@@ -191,47 +218,48 @@ VALUES (
   'pending'
 );
 -- id generated: 550e8400-e29b-41d4-a716-446655440001
-
--- Enrichment job created
-INSERT INTO enrichment_jobs (pattern_id, status)
-VALUES ('550e8400-e29b-41d4-a716-446655440001', 'pending');
 ```
 
-**Step 2: Background Worker Claims Job**
+**Step 4: Admin API creates pattern chunks from decorated sections**
 
-```go
-// Worker claims job atomically
-SELECT id, pattern_id
-FROM enrichment_jobs
-WHERE status = 'pending'
-  AND scheduled_for <= NOW()
-ORDER BY scheduled_for
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
+Pattern content decorated with `[//]: pattern` section markers is split into indexable chunks and stored in the `pattern_chunks` table, associated with the new pattern ID.
+
+**Step 5: Admin API publishes enrichment job to RabbitMQ**
+
+```json
+{
+  "pattern_id": "550e8400-e29b-41d4-a716-446655440001"
+}
 ```
 
-**Step 3: Generate Embedding (OpenAI API)**
+**Step 6: Admin API returns 202 Accepted to client**
+
+The pattern record exists in PostgreSQL at this point but embeddings and graph nodes are not yet populated.
+
+**Step 7 (Async): Enricher consumes message from RabbitMQ**
+
+The Enricher is a separate service that subscribes to the enrichment queue. It picks up the message and begins processing independently of the Admin API.
+
+**Step 8 (Async): Enricher generates chunk embeddings via OpenAI text-embedding-3-large**
 
 ```go
-// Call OpenAI embedding API
+// Call OpenAI embedding API for each chunk
 embedding := openai.CreateEmbedding(
   model: "text-embedding-3-large",
-  input: pattern.Content,
+  input: chunk.Content,
 )
 // Returns: vector(2000) [0.023, -0.145, 0.087, ...]
 ```
 
-**Step 4: Store Embedding (PGVector)**
+**Step 9 (Async): Enricher stores embeddings in `pattern_chunks` table**
 
 ```sql
-UPDATE patterns
-SET embedding = $1::vector,
-    enrichment_status = 'enriched',
-    enriched_at = NOW()
-WHERE id = '550e8400-e29b-41d4-a716-446655440001';
+UPDATE pattern_chunks
+SET embedding = $1::vector
+WHERE id = $2;
 ```
 
-**Step 5: Extract Concepts (LLM)**
+**Step 10 (Async): Enricher extracts concepts via OpenAI**
 
 ```go
 // LLM extracts entities and concepts from content
@@ -243,7 +271,7 @@ concepts := llm.ExtractConcepts(pattern.Content)
 // ]
 ```
 
-**Step 6: Create Graph Nodes and Relationships (Neo4j)**
+**Step 11 (Async): Enricher creates Neo4j Pattern node with HAS_CONCEPT relationships**
 
 ```cypher
 // Create Pattern node
@@ -251,28 +279,60 @@ MERGE (p:Pattern {id: "550e8400-e29b-41d4-a716-446655440001"})
 SET p.name = "sql-optimization",
     p.description = "Database query optimization"
 
-// Create Concept nodes
+// Create Concept nodes and HAS_CONCEPT relationships
 MERGE (c1:Concept {name: "sql", type: "technology"})
 MERGE (c2:Concept {name: "query-optimization", type: "practice"})
-
-// Create relationships
-MERGE (c1)-[:MENTIONED_IN]->(p)
-MERGE (c2)-[:MENTIONED_IN]->(p)
-
-// Link to relevant agents (if associations exist)
-MATCH (a:Agent {name: "database-agent"})
-MERGE (p)-[:RELEVANT_FOR {relevance: 0.95}]->(a)
+MERGE (p)-[:HAS_CONCEPT]->(c1)
+MERGE (p)-[:HAS_CONCEPT]->(c2)
 ```
 
-After creating concept nodes and MENTIONED_IN edges, the enricher computes RELATED_TO edges between this pattern and other patterns that share one or more of the same concepts. This step populates the pattern-to-pattern similarity relationships used by `find_related_patterns`.
+**Step 12 (Async): Enricher creates RELATED_TO edges between patterns sharing concepts**
 
-**Step 7: Complete Enrichment Job**
+After creating concept nodes, the Enricher computes RELATED_TO edges between this pattern and other patterns that share one or more of the same concepts. This populates the pattern-to-pattern similarity relationships used by `find_related_patterns`.
+
+```cypher
+MATCH (p:Pattern {id: "550e8400-e29b-41d4-a716-446655440001"})-[:HAS_CONCEPT]->(c:Concept)<-[:HAS_CONCEPT]-(other:Pattern)
+WHERE p <> other
+MERGE (p)-[:RELATED_TO]->(other)
+```
+
+**Step 13 (Async): Enricher updates `enrichment_status` to `enriched`**
 
 ```sql
-UPDATE enrichment_jobs
-SET status = 'completed',
-    completed_at = NOW()
-WHERE pattern_id = '550e8400-e29b-41d4-a716-446655440001';
+UPDATE patterns
+SET enrichment_status = 'enriched',
+    enriched_at = NOW()
+WHERE id = '550e8400-e29b-41d4-a716-446655440001';
+```
+
+### Creation and Enrichment Sequence
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as Admin API
+    participant PG as PostgreSQL
+    participant MQ as RabbitMQ
+    participant ENR as Enricher
+    participant OAI as OpenAI
+    participant N4J as Neo4j
+
+    Client->>API: POST /v1/api/patterns
+    API->>API: Validate fields
+    API->>PG: INSERT pattern (status=pending)
+    API->>PG: INSERT pattern_chunks
+    API->>MQ: Publish enrichment job
+    API-->>Client: 202 Accepted
+
+    MQ-->>ENR: Consume enrichment job
+    ENR->>OAI: Generate chunk embeddings (text-embedding-3-large)
+    OAI-->>ENR: vector(2000) per chunk
+    ENR->>PG: UPDATE pattern_chunks SET embedding
+    ENR->>OAI: Extract concepts
+    OAI-->>ENR: Concept list
+    ENR->>N4J: MERGE Pattern node + HAS_CONCEPT edges
+    ENR->>N4J: MERGE RELATED_TO edges (shared concepts)
+    ENR->>PG: UPDATE patterns SET enrichment_status=enriched
 ```
 
 ### Enrichment State Transitions
@@ -321,25 +381,26 @@ queryEmbedding := openai.CreateEmbedding(
 **Step 2: Semantic Search (PGVector Similarity Search)**
 
 ```sql
--- Find patterns semantically similar to query
+-- Find pattern chunks semantically similar to query
 SELECT
-  id,
-  name,
-  content,
-  1 - (embedding <=> $1::vector) AS similarity
-FROM patterns
-WHERE enrichment_status = 'enriched'
-  AND 1 - (embedding <=> $1::vector) > 0.7  -- threshold
-ORDER BY embedding <=> $1::vector
+  pc.pattern_id,
+  p.name,
+  pc.content,
+  1 - (pc.embedding <=> $1::vector) AS similarity
+FROM pattern_chunks pc
+JOIN patterns p ON p.id = pc.pattern_id
+WHERE p.enrichment_status = 'enriched'
+  AND 1 - (pc.embedding <=> $1::vector) > 0.7  -- threshold
+ORDER BY pc.embedding <=> $1::vector
 LIMIT 5;
 ```
 
 **Results:**
 
 ```text
-id: 550e8400-...001, name: sql-optimization, similarity: 0.94
-id: 550e8400-...002, name: database-indexing, similarity: 0.82
-id: 550e8400-...003, name: query-performance, similarity: 0.78
+pattern_id: 550e8400-...001, name: sql-optimization, similarity: 0.94
+pattern_id: 550e8400-...002, name: database-indexing, similarity: 0.82
+pattern_id: 550e8400-...003, name: query-performance, similarity: 0.78
 ```
 
 **Step 3: Response Assembly**
@@ -371,22 +432,24 @@ The MCP server returns these ranked patterns to Claude Code, which uses them to 
 
 Post-MVP: search_patterns will incorporate graph scores via `relevance = (0.7 × vector_similarity) + (0.3 × graph_score)`. <!-- design docs remain in mnemonic/docs/design/ -->
 
-## Sequence Diagram
+## Query Sequence Diagram
 
 ```mermaid
 sequenceDiagram
     participant CC as Claude Code
     participant MCP as MCP Server
     participant SVC as SearchService
+    participant OAI as OpenAI
     participant PGV as PGVector
     participant PG as PostgreSQL
 
     CC->>MCP: search_patterns tool call
     MCP->>SVC: SearchPatterns(SearchOptions{query, limit, threshold})
 
-    Note over SVC: Step 1: Generate query embedding<br/>(OpenAI API, not shown)
+    SVC->>OAI: Step 1: Generate query embedding (text-embedding-3-large)
+    OAI-->>SVC: vector(2000)
 
-    SVC->>PGV: Step 2: Vector similarity search<br/>SELECT ... WHERE similarity > 0.7
+    SVC->>PGV: Step 2: Vector similarity search<br/>SELECT FROM pattern_chunks WHERE similarity > 0.7
     PGV-->>SVC: Ranked pattern IDs + similarity scores
 
     SVC->>PG: Step 3: Pattern details<br/>SELECT FROM patterns
@@ -484,7 +547,7 @@ This is a post-MVP feature. The database-level operations work; admin tooling ad
 
 - **Three complementary databases** - Each chosen for specific strengths: PostgreSQL (ACID), PGVector (semantic search), Neo4j (relationships)
 - **Pattern UUID is the universal key** - Same identifier connects data across PostgreSQL and Neo4j
-- **Enrichment is asynchronous** - Pattern processing happens in background jobs to avoid API latency
+- **Enrichment is asynchronous** - The Admin API publishes to RabbitMQ and returns immediately; the Enricher processes independently to avoid write-path latency
 - **Pattern search uses vector similarity (MVP-1)** - PGVector ranks results by cosine similarity; PostgreSQL provides full pattern details. Blended scoring with Neo4j graph context is planned post-MVP.
 - **PostgreSQL is source of truth** - Other databases contain projections and derived data
 - **Graph relationships add context** - Neo4j expands beyond similarity to include explicit knowledge connections
@@ -492,15 +555,12 @@ This is a post-MVP feature. The database-level operations work; admin tooling ad
 **Next Steps:**
 
 - Review [Data Architecture](04-data-architecture.md) for detailed schemas and configurations
-- <!-- design docs remain in mnemonic-api/docs/design/ -->
-- <!-- design docs remain in mnemonic/docs/design/ -->
 
 ---
 
 See also:
 
 - [System Architecture](02-system-architecture.md) for component overview
-- <!-- design docs remain in mnemonic-api/docs/design/ -->
 - [Deployment Architecture](06-deployment-architecture.md) for scaling patterns
 
 **Next:** [Deployment Architecture](06-deployment-architecture.md)
