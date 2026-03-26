@@ -12,7 +12,7 @@
 
 ## Overview
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic) | [ADR-004: Unified Backend with REST API](../../architecture/00-architectural-decisions.md#adr-004-unified-backend-with-rest-api)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [ADR-004: Unified Backend with REST API](../architecture/system/00-architectural-decisions.md#adr-004-unified-backend-with-rest-api)
 
 Pattern enrichment transforms raw pattern content into searchable, interconnected knowledge. When a pattern is created or updated, Mnemonic automatically enriches it to enable:
 
@@ -23,11 +23,11 @@ Enrichment data feeds all three MCP tools: `search_patterns` (semantic search), 
 
 This design is inspired by Cognee's cognify pipeline (chunk, classify, extract, integrate, summarize) but adapted for Mnemonic's simpler use case: patterns are already curated documents, not raw data requiring extensive preprocessing.
 
-**Note:** Following the architectural pivot (see [2026-02-14-mnemonic-pivot-knowledge-sync.md](../plans/2026-02-14-mnemonic-pivot-knowledge-sync.md)), enriched patterns are consumed by the MCP server's search tools and the Admin API search endpoint, not by a routing engine.
+**Note:** Following the architectural pivot (see 2026-02-14-mnemonic-pivot-knowledge-sync.md (in source repository)), enriched patterns are consumed by the MCP server's search tools and the Admin API search endpoint, not by a routing engine.
 
 ## Enrichment Model
 
-> **Architecture Reference:** [Communication Patterns - Response Structure](../../architecture/03-communication-patterns.md#response-structure)
+> **Architecture Reference:** [Communication Patterns - Response Structure](../architecture/system/03-communication-patterns.md#response-structure)
 
 Patterns include enrichment status fields to track processing state:
 
@@ -57,7 +57,7 @@ Each `pattern_chunks` row also has its own `enrichment_status`, `enrichment_erro
 
 ## Automatic Enrichment Flow
 
-> **Architecture Reference:** [System Architecture - Data Flow](../../architecture/02-system-architecture.md#data-flow)
+> **Architecture Reference:** [System Architecture - Data Flow](../architecture/system/02-system-architecture.md#data-flow)
 
 Enrichment is triggered automatically when a pattern is created or updated. The API responds immediately while enrichment processes asynchronously in the background.
 
@@ -108,7 +108,7 @@ Key characteristics:
 
 ## Enrichment Pipeline
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic) | [Concept](../mnemonic-concept.md)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Concept](../concept.md)
 
 ### Write-time Enrichment
 
@@ -369,7 +369,7 @@ Where `graph_score` would consider direct agent association relevance, hop dista
 
 ## Enrichment Worker Deployment
 
-> **Architecture Reference:** [Deployment Architecture - Component Deployment](../../architecture/06-deployment-architecture.md#component-deployment) | [Deployment Architecture - Scaling Considerations](../../architecture/06-deployment-architecture.md#scaling-considerations)
+> **Architecture Reference:** [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment) | [Deployment Architecture - Scaling Considerations](../architecture/system/06-deployment-architecture.md#scaling-considerations)
 
 ### In-Process Background Worker
 
@@ -594,7 +594,7 @@ flowchart TB
 
 ## External Service Dependencies
 
-> **Architecture Reference:** [Requirements - Non-Goals](../mnemonic-requirements.md#non-goals) | [System Architecture - Boundary Definitions](../../architecture/02-system-architecture.md#boundary-definitions)
+> **Architecture Reference:** [Requirements - Non-Goals](../mnemonic-requirements.md#non-goals) | [System Architecture - Boundary Definitions](../architecture/system/02-system-architecture.md#boundary-definitions)
 
 Pattern enrichment requires external API calls for embedding generation and entity extraction.
 
@@ -638,7 +638,7 @@ Additional LLM providers (Anthropic, Azure OpenAI) can be added post-MVP if need
 
 ## Configuration Requirements
 
-> **Architecture Reference:** [Deployment Architecture - Operational Considerations](../../architecture/06-deployment-architecture.md#operational-considerations)
+> **Architecture Reference:** [Deployment Architecture - Operational Considerations](../architecture/system/06-deployment-architecture.md#operational-considerations)
 
 ### Required Environment Variables
 
@@ -725,7 +725,7 @@ For bulk pattern imports, implement:
 
 ## Deployment Requirements
 
-> **Architecture Reference:** [Deployment Architecture - Infrastructure Requirements](../../architecture/06-deployment-architecture.md#infrastructure-requirements) | [Deployment Architecture - Deployment Topology](../../architecture/06-deployment-architecture.md#deployment-topology)
+> **Architecture Reference:** [Deployment Architecture - Infrastructure Requirements](../architecture/system/06-deployment-architecture.md#infrastructure-requirements) | [Deployment Architecture - Deployment Topology](../architecture/system/06-deployment-architecture.md#deployment-topology)
 >
 > **Observability Reference:** [Enrichment Worker Observability](observability-implementation.md#enrichment-worker-observability) — metrics, tracing spans, and structured logging for the enrichment pipeline
 
@@ -772,7 +772,7 @@ The pattern service should expose a health check that validates enrichment capab
 
 ## Internal Dependencies
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic)
 
 ### PGVector Configuration
 
@@ -845,9 +845,9 @@ Pattern content:
 
 ## References
 
-- [Architecture Overview](../../architecture/README.md)
-- [System Architecture](../../architecture/02-system-architecture.md) - Storage stack details
-- [Mnemonic OpenAPI Spec](../../../api/openapi/mnemonic-v1.yaml) - Full API definition
+- [Architecture Overview](../architecture/system/README.md)
+- [System Architecture](../architecture/system/02-system-architecture.md) - Storage stack details
+- Mnemonic OpenAPI Spec (mnemonic-v1.yaml, in source repository) - Full API definition
 
 ---
 

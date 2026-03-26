@@ -51,9 +51,9 @@
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture](../../architecture/04-data-architecture.md) | [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic)
+> **Architecture Reference:** [Data Architecture](../architecture/system/04-data-architecture.md) | [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic)
 
-This document provides implementation details for the Mnemonic data storage layer. It translates the architectural specifications from [Data Architecture](../../architecture/04-data-architecture.md) into concrete SQL migrations, Cypher queries, and Go interface definitions.
+This document provides implementation details for the Mnemonic data storage layer. It translates the architectural specifications from [Data Architecture](../architecture/system/04-data-architecture.md) into concrete SQL migrations, Cypher queries, and Go interface definitions.
 
 **Implementation Scope:**
 
@@ -266,7 +266,7 @@ For database-level JSONB schema validation, consider the [pg_jsonschema](https:/
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture - Migration Strategy](../../architecture/04-data-architecture.md#migration-strategy)
+> **Architecture Reference:** [Data Architecture - Migration Strategy](../architecture/system/04-data-architecture.md#migration-strategy)
 
 ### Migration File Structure
 
@@ -839,7 +839,7 @@ This migration is separated from 009 because the embedding dimension is a deploy
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture - PGVector Configuration](../../architecture/04-data-architecture.md#pgvector-configuration)
+> **Architecture Reference:** [Data Architecture - PGVector Configuration](../architecture/system/04-data-architecture.md#pgvector-configuration)
 
 ### Index Selection Guidelines
 
@@ -960,7 +960,7 @@ analyze patterns;
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture - Neo4j Graph Model](../../architecture/04-data-architecture.md#neo4j-graph-model)
+> **Architecture Reference:** [Data Architecture - Neo4j Graph Model](../architecture/system/04-data-architecture.md#neo4j-graph-model)
 
 ### Schema Constraints
 
@@ -1846,13 +1846,13 @@ export MNEMONIC_DATABASE_NEO4J_DATABASE="neo4j"
 
 **Architecture Documents:**
 
-- [Data Architecture](../../architecture/04-data-architecture.md) - Data model design and storage decisions
-- [System Architecture](../../architecture/02-system-architecture.md) - Component overview
-- [Deployment Architecture](../../architecture/06-deployment-architecture.md) - Deployment patterns
+- [Data Architecture](../architecture/system/04-data-architecture.md) - Data model design and storage decisions
+- [System Architecture](../architecture/system/02-system-architecture.md) - Component overview
+- [Deployment Architecture](../architecture/system/06-deployment-architecture.md) - Deployment patterns
 
 **Design Documents:**
 
-- [API Specification](2026-02-15-pivot-api-specification.md) - REST and MCP API contracts
+- API Specification (2026-02-15-pivot-api-specification.md, in source repository) - REST and MCP API contracts
 - [Configuration](configuration.md) - Server configuration including database settings
 - [Pattern Processing](pattern-processing.md) - Enrichment pipeline using this data layer
 

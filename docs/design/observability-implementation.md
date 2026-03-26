@@ -2,7 +2,7 @@
 
 > Back to [Design Documents](README.md) | [Project README](../../README.md)
 
-**Note:** This document reflects the post-pivot implementation following the architectural change from routing to knowledge graph + tooling sync (see [2026-02-14-mnemonic-pivot-knowledge-sync.md](../plans/2026-02-14-mnemonic-pivot-knowledge-sync.md)).
+**Note:** This document reflects the post-pivot implementation following the architectural change from routing to knowledge graph + tooling sync (see 2026-02-14-mnemonic-pivot-knowledge-sync.md (in source repository)).
 
 > **Note:** Routing engine, route handler, and routing rule repository instrumentation was removed during the [2026-02-15 architectural pivot](design-changelog.md#2026-02-15-architectural-pivot). Current instrumentation covers MCP tool handlers and Admin API handlers only.
 
@@ -26,9 +26,9 @@
 
 ## Overview
 
-> **Architecture Reference:** [Observability Architecture](../../architecture/07-observability-architecture.md) | [Requirements - Quality Attributes](../mnemonic-requirements.md#quality-attributes)
+> **Architecture Reference:** [Observability Architecture](../architecture/system/07-observability-architecture.md) | [Requirements](../requirements.md)
 
-This document provides the detailed Go implementation design for MVP observability in Mnemonic, as defined in the [Observability Architecture](../../architecture/07-observability-architecture.md).
+This document provides the detailed Go implementation design for MVP observability in Mnemonic, as defined in the [Observability Architecture](../architecture/system/07-observability-architecture.md).
 
 **MVP Scope:**
 
@@ -73,7 +73,7 @@ src/mnemonic/
 
 ## otelx Package Integration
 
-> **Architecture Reference:** [Observability Architecture - Observability Stack](../../architecture/07-observability-architecture.md#observability-stack)
+> **Architecture Reference:** [Observability Architecture - Observability Stack](../architecture/system/07-observability-architecture.md#observability-stack)
 
 ### Package Capabilities
 
@@ -108,7 +108,7 @@ The `otelgin` package provides the tracing middleware that otelx does not includ
 
 ## Initialization and Configuration
 
-> **Architecture Reference:** [Observability Architecture](../../architecture/07-observability-architecture.md) | [Deployment Architecture - Operational Considerations](../../architecture/06-deployment-architecture.md#operational-considerations)
+> **Architecture Reference:** [Observability Architecture](../architecture/system/07-observability-architecture.md) | [Deployment Architecture - Operational Considerations](../architecture/system/06-deployment-architecture.md#operational-considerations)
 >
 > **Note:** This configuration aligns with the established patterns in [Configuration Design](configuration.md). Environment variables use the `MNEMONIC_OBSERVABILITY_*` prefix for observability settings.
 
@@ -383,7 +383,7 @@ The `main.go` remains simple and delegates to the server package.
 
 ## Distributed Tracing Implementation
 
-> **Architecture Reference:** [Observability Architecture - Distributed Tracing (Jaeger)](../../architecture/07-observability-architecture.md#distributed-tracing-jaeger)
+> **Architecture Reference:** [Observability Architecture - Distributed Tracing (Jaeger)](../architecture/system/07-observability-architecture.md#distributed-tracing-jaeger)
 
 ### Trace Structure
 
@@ -524,7 +524,7 @@ func SearchPatterns(c *gin.Context) {
 
 ## Metrics Implementation
 
-> **Architecture Reference:** [Observability Architecture - Metrics (Prometheus)](../../architecture/07-observability-architecture.md#metrics-prometheus)
+> **Architecture Reference:** [Observability Architecture - Metrics (Prometheus)](../architecture/system/07-observability-architecture.md#metrics-prometheus)
 
 > **Prometheus naming:** OpenTelemetry uses dot-separated metric names (e.g., `mnemonic.http.request.count`), but Prometheus converts dots to underscores when scraping and appends a `_total` suffix to counters. For example, `mnemonic.http.request.count` becomes `mnemonic_http_request_count_total` in PromQL, and `mnemonic.http.request.duration` becomes `mnemonic_http_request_duration_milliseconds`. Keep this conversion in mind when writing PromQL queries or configuring alert rules.
 
@@ -809,7 +809,7 @@ func (m *Pattern) RecordQuery(ctx context.Context, database string, duration tim
 
 ### Tooling Metrics
 
-> **Architecture Reference:** [Observability Architecture - Metrics](../../architecture/07-observability-architecture.md#metrics) (Tooling metrics section)
+> **Architecture Reference:** [Observability Architecture - Metrics](../architecture/system/07-observability-architecture.md#metrics) (Tooling metrics section)
 
 Create `internal/metrics/tooling.go`:
 
@@ -986,7 +986,7 @@ func (m *Database) RecordError(ctx context.Context, database, operation string) 
 
 ## Enrichment Worker Observability
 
-> **Architecture Reference:** [Observability Architecture - Metrics](../../architecture/07-observability-architecture.md#metrics) | [Pattern Enrichment](pattern-processing.md)
+> **Architecture Reference:** [Observability Architecture - Metrics](../architecture/system/07-observability-architecture.md#metrics) | [Pattern Enrichment](pattern-processing.md)
 
 The enrichment worker runs as a background goroutine processing pattern enrichment jobs (embedding generation, concept extraction, graph node creation). It requires dedicated metrics, tracing spans, and structured logging to provide visibility into asynchronous processing.
 
@@ -1338,7 +1338,7 @@ func NewRegistry(meter metric.Meter) (*Registry, error) {
 
 ## Structured Logging Implementation
 
-> **Architecture Reference:** [Observability Architecture - Logs (Loki)](../../architecture/07-observability-architecture.md#logs-loki)
+> **Architecture Reference:** [Observability Architecture - Logs (Loki)](../architecture/system/07-observability-architecture.md#logs-loki)
 
 ### Using otelx Gin Middleware
 
@@ -1453,7 +1453,7 @@ All log entries automatically include (via otelx):
 
 ## Handler Instrumentation Patterns
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic) | [Observability Architecture - Key Takeaways](../../architecture/07-observability-architecture.md#key-takeaways)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Observability Architecture - Key Takeaways](../architecture/system/07-observability-architecture.md#key-takeaways)
 
 ### Handler Dependencies
 
@@ -1572,7 +1572,7 @@ func SetupHandlers(r *gin.Engine, deps *handlers.Dependencies) {
 
 ## Database Instrumentation
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic) | [Observability Architecture - Metrics (Prometheus)](../../architecture/07-observability-architecture.md#metrics-prometheus)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Observability Architecture - Metrics (Prometheus)](../architecture/system/07-observability-architecture.md#metrics-prometheus)
 
 ### Postgres/PGVector Instrumentation
 
@@ -1828,7 +1828,7 @@ func StartPoolStatsRecorder(ctx context.Context, pool *postgres.InstrumentedPool
 
 ## Health Check Implementation
 
-> **Architecture Reference:** [Observability Architecture - Health Check Endpoint](../../architecture/07-observability-architecture.md#health-check-endpoint)
+> **Architecture Reference:** [Observability Architecture - Health Check Endpoint](../architecture/system/07-observability-architecture.md#health-check-endpoint)
 
 Mnemonic uses the [`github.com/twistingmercury/heartbeat`](https://github.com/twistingmercury/heartbeat) package for health checks. The health endpoint is registered at `GET /health` on the Admin API (:8080).
 

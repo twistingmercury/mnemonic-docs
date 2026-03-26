@@ -61,7 +61,7 @@
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [System Architecture - Mnemonic Server](../architecture/02-system-architecture.md#mnemonic-server) | [Data Architecture - Data Flow Patterns](../architecture/04-data-architecture.md#data-flow-patterns)
+> **Architecture Reference:** [System Architecture - Mnemonic Server](../architecture/system/02-system-architecture.md#mnemonic-server) | [Data Architecture - Data Flow Patterns](../architecture/system/04-data-architecture.md#data-flow-patterns)
 
 The service layer sits between the transport handlers (REST and MCP) and the data repositories. It is responsible for:
 
@@ -907,7 +907,7 @@ func (s *patternService) FindRelated(ctx context.Context, patternID uuid.UUID, l
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture - Transaction Handling](../architecture/04-data-architecture.md#transaction-handling) | [Data Architecture - Cross-Database Consistency](../architecture/04-data-architecture.md#cross-database-consistency)
+> **Architecture Reference:** [Data Architecture - Transaction Handling](../architecture/system/04-data-architecture.md#transaction-handling) | [Data Architecture - Cross-Database Consistency](../architecture/system/04-data-architecture.md#cross-database-consistency)
 
 This section specifies which operations are atomic and how they compose.
 
@@ -1051,7 +1051,7 @@ Repository methods accept the `DBTX` interface (which both `*pgxpool.Pool` and `
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture - Cross-Database Consistency](../architecture/04-data-architecture.md#cross-database-consistency)
+> **Architecture Reference:** [Data Architecture - Cross-Database Consistency](../architecture/system/04-data-architecture.md#cross-database-consistency)
 
 Mnemonic uses Postgres and Neo4j. They cannot share a transaction. The coordination pattern is:
 
@@ -1247,7 +1247,7 @@ func handleGetPattern(deps ToolDependencies) func(ctx context.Context, req *mcp.
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture - Similarity Search with Agent Filter](../architecture/04-data-architecture.md#pgvector-configuration) | [MCP Server - search_patterns](mcp-server.md#search_patterns)
+> **Architecture Reference:** [Data Architecture - Similarity Search with Agent Filter](../architecture/system/04-data-architecture.md#pgvector-configuration) | [MCP Server - search_patterns](mcp-server.md#search_patterns)
 
 The `search_patterns` tool (and the REST `GET /v1/api/patterns/search` endpoint) supports an optional `agent` parameter to restrict results to patterns associated with a specific agent.
 
@@ -1845,8 +1845,8 @@ The Configuration Reference table needs two new rows for `enrichment.completed_r
 
 **Architecture Documents:**
 
-- [System Architecture](../architecture/02-system-architecture.md) - Component overview and data flow
-- [Data Architecture](../architecture/04-data-architecture.md) - Data model, transaction handling, cross-database consistency
+- [System Architecture](../architecture/system/02-system-architecture.md) - Component overview and data flow
+- [Data Architecture](../architecture/system/04-data-architecture.md) - Data model, transaction handling, cross-database consistency
 
 **Design Documents:**
 
@@ -1854,7 +1854,7 @@ The Configuration Reference table needs two new rows for `enrichment.completed_r
 - [MCP Server](mcp-server.md) - MCP tool handlers and ToolDependencies placeholder
 - [Pattern Processing](pattern-processing.md) - Enrichment pipeline steps and OpenAI integration
 - [Configuration](configuration.md) - Server configuration including OpenAI and enrichment settings
-- [API Specification](../../api/openapi/mnemonic-v1.yaml) - REST API contract
+- API Specification (mnemonic-v1.yaml, in source repository) - REST API contract
 
 ---
 

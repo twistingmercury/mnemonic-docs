@@ -30,7 +30,7 @@
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [System Architecture - Component Breakdown](../../architecture/02-system-architecture.md#component-breakdown) | [Deployment Architecture - Component Deployment](../../architecture/06-deployment-architecture.md#component-deployment)
+> **Architecture Reference:** [System Architecture - Component Breakdown](../architecture/system/02-system-architecture.md#component-breakdown) | [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment)
 
 > **Note:** MVP-1 runs as a single deployable process. The dual-server configuration (separate admin and MCP listeners) is retained for future decomposition into independent deployables.
 
@@ -84,7 +84,7 @@ Viper's `MergeInConfig()` is NOT used. Configuration is loaded with `ReadInConfi
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../../architecture/02-system-architecture.md#mnemonic) | [Deployment Architecture - Mnemonic](../../architecture/06-deployment-architecture.md#mnemonic)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Deployment Architecture - Mnemonic](../architecture/system/06-deployment-architecture.md#mnemonic)
 
 The Mnemonic server reads configuration from YAML files.
 
@@ -534,7 +534,7 @@ func setDefaults(v *viper.Viper) {
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Security Architecture - Token Storage](../../architecture/01-security-architecture.md#token-storage) | [Communication Patterns - Security Considerations](../../architecture/03-communication-patterns.md#security-considerations)
+> **Architecture Reference:** [Security Architecture - Token Storage](../architecture/system/01-security-architecture.md#token-storage) | [Communication Patterns - Security Considerations](../architecture/system/03-communication-patterns.md#security-considerations)
 
 ### Secrets Handling
 
@@ -566,7 +566,7 @@ export MNEMONIC_DATABASE_POSTGRES_PASSWORD="secure-password"
 export MNEMONIC_OPENAI_API_KEY="sk-openai-key"
 ```
 
-**Secret management integrations** (Post-MVP; see [Deployment Architecture](../architecture/06-deployment-architecture.md)):
+**Secret management integrations** (Post-MVP; see [Deployment Architecture](../architecture/system/06-deployment-architecture.md)):
 
 - AWS Secrets Manager
 - HashiCorp Vault
@@ -977,9 +977,9 @@ classDiagram
 
 [Table of Contents](#table-of-contents)
 
-- [Architecture Overview](../../architecture/README.md) - System context
-- [System Architecture](../../architecture/02-system-architecture.md) - Component layout
-- [Deployment Architecture](../../architecture/06-deployment-architecture.md) - Deployment environments
+- [Architecture Overview](../architecture/system/README.md) - System context
+- [System Architecture](../architecture/system/02-system-architecture.md) - Component layout
+- [Deployment Architecture](../architecture/system/06-deployment-architecture.md) - Deployment environments
 - [Pattern Processing](pattern-processing.md) - OpenAI configuration for enrichment
 - [Observability Implementation](observability-implementation.md) - otelx integration details
 - [Viper](https://github.com/spf13/viper) - Configuration library used by Mnemonic

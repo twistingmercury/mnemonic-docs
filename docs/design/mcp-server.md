@@ -30,7 +30,7 @@
 
 ## Overview
 
-> **Architecture Reference:** [System Architecture - Mnemonic Server](../architecture/02-system-architecture.md#mnemonic-server) | [MCP Tools](../architecture/08-mcp-tools.md) | [Communication Patterns - Claude Code to MCP Server](../architecture/03-communication-patterns.md#claude-code-to-mcp-server-communication)
+> **Architecture Reference:** [System Architecture - Mnemonic Server](../architecture/system/02-system-architecture.md#mnemonic-server) | [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) | [Communication Patterns - Claude Code to MCP Server](../architecture/system/03-communication-patterns.md#claude-code-to-mcp-server-communication)
 
 Mnemonic exposes 3 read-only pattern search tools over the Model Context Protocol (MCP). The MCP server listens on port 8081 via Streamable HTTP and serves JSON-RPC 2.0 requests. Claude Code discovers tools via `tools/list` and invokes them via `tools/call`.
 
@@ -704,9 +704,9 @@ If Claude Code or other MCP clients benefit from richer schema introspection (e.
 
 ## Architecture References
 
-- [MCP Tools](../architecture/08-mcp-tools.md) -- authoritative tool definitions, parameters, response formats, error handling
-- [System Architecture](../architecture/02-system-architecture.md) -- component breakdown and data flow
-- [Communication Patterns](../architecture/03-communication-patterns.md) -- MCP protocol overview and request flow
+- [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) -- authoritative tool definitions, parameters, response formats, error handling
+- [System Architecture](../architecture/system/02-system-architecture.md) -- component breakdown and data flow
+- [Communication Patterns](../architecture/system/03-communication-patterns.md) -- MCP protocol overview and request flow
 - [Configuration Design](configuration.md) -- `MCPServerConfig` struct and defaults
 - [Observability Implementation](observability-implementation.md) -- span naming conventions, MCP metrics, structured logging
 
