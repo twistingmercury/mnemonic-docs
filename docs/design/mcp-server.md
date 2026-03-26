@@ -57,7 +57,7 @@ Create the MCP server with Mnemonic's implementation metadata. The version strin
 ```go
 import (
     "github.com/modelcontextprotocol/go-sdk/mcp"
-    "github.com/twistingmercury/mnemonic/internal/version"
+    "github.com/twistingmercury/mnemonic-mcp/internal/version"
 )
 
 server := mcp.NewServer(&mcp.Implementation{
@@ -99,7 +99,7 @@ import (
     "fmt"
     "net/http"
 
-    "github.com/twistingmercury/mnemonic/internal/config"
+    "github.com/twistingmercury/mnemonic-mcp/internal/config"
 )
 
 // NewMCPHTTPServer creates the net/http.Server for the MCP endpoint.
@@ -665,7 +665,7 @@ MCP server code lives in `internal/mcpserver/` (not `internal/mcp/`). The packag
 Filesystem paths relative to the repository root:
 
 ```text
-src/mnemonic/internal/mcpserver/
+src/internal/mcpserver/
     server.go       -- NewMCPServer, NewMCPHTTPServer, RegisterTools
     tools.go        -- Tool definitions (mcp.Tool vars)
     handlers.go     -- Handler functions for all 3 tools

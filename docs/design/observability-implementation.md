@@ -47,27 +47,27 @@ The otelx package provides unified OpenTelemetry initialization with:
 - OTLP gRPC trace exporter
 - Gin middleware for HTTP request instrumentation
 
-### Current Mnemonic Architecture
+> **Note:** The observability patterns described here apply to all three Mnemonic services (`mnemonic-mcp`, `mnemonic-api`, `mnemonic-enricher`). Each service initializes its own telemetry independently with a distinct `service_name`.
+
+### Service Codebase Layout
+
+Each service repo follows the same `src/` layout. Example for `mnemonic-mcp`:
 
 ```text
-src/mnemonic/
+src/
 ├── cmd/
 │   ├── main/main.go           # Application entrypoint
 │   └── version/version.go     # Version information
 └── internal/
     ├── handlers/
-    │   ├── agents/            # Agent CRUD endpoints (Admin API)
-    │   ├── patterns/          # Pattern CRUD endpoints (Admin API)
-    │   ├── skills/            # Skill CRUD endpoints (Admin API)
-    │   ├── search/            # Search endpoints (Admin API)
     │   └── operations/        # Health and version endpoints
     ├── mcpserver/             # MCP server handlers
-    └── server/server.go       # HTTP server setup (Admin API + MCP)
+    └── server/server.go       # HTTP server setup
 ```
 
-**Key Integration Points:**
+**Key Integration Points (per service):**
 
-1. `internal/server/server.go` - Telemetry initialization, shutdown, and middleware registration (Admin API and MCP listeners)
+1. `internal/server/server.go` - Telemetry initialization, shutdown, and middleware registration
 2. `cmd/main/main.go` - Calls `server.ListenAndServe()` which internally initializes telemetry
 3. All handler packages - Span creation and logging
 
@@ -199,9 +199,9 @@ import (
     "fmt"
 
     "github.com/rs/zerolog"
-    "github.com/twistingmercury/mnemonic/internal/config"
-    "github.com/twistingmercury/mnemonic/internal/metrics"
-    "github.com/twistingmercury/mnemonic/internal/version"
+    "github.com/twistingmercury/mnemonic-mcp/internal/config"
+    "github.com/twistingmercury/mnemonic-mcp/internal/metrics"
+    "github.com/twistingmercury/mnemonic-mcp/internal/version"
     "github.com/twistingmercury/otelx"
     "go.opentelemetry.io/otel"
     "go.opentelemetry.io/otel/metric"
@@ -1351,8 +1351,8 @@ package server
 
 import (
     "github.com/gin-gonic/gin"
-    "github.com/twistingmercury/mnemonic/internal/middleware"
-    "github.com/twistingmercury/mnemonic/internal/telemetry"
+    "github.com/twistingmercury/mnemonic-mcp/internal/middleware"
+    "github.com/twistingmercury/mnemonic-mcp/internal/telemetry"
     otelxgin "github.com/twistingmercury/otelx/middleware/gin"
 )
 
@@ -1401,7 +1401,7 @@ package agents
 import (
     "github.com/gin-gonic/gin"
     otelgin "github.com/twistingmercury/otelx/middleware/gin"
-    "github.com/twistingmercury/mnemonic/internal/telemetry"
+    "github.com/twistingmercury/mnemonic-mcp/internal/telemetry"
 )
 
 func ListAgents(c *gin.Context, tel *telemetry.Telemetry) {
@@ -1463,8 +1463,8 @@ Create `internal/handlers/deps.go`:
 package handlers
 
 import (
-    "github.com/twistingmercury/mnemonic/internal/metrics"
-    "github.com/twistingmercury/mnemonic/internal/telemetry"
+    "github.com/twistingmercury/mnemonic-mcp/internal/metrics"
+    "github.com/twistingmercury/mnemonic-mcp/internal/telemetry"
     "go.opentelemetry.io/otel/trace"
 )
 
@@ -1501,7 +1501,7 @@ import (
     "go.opentelemetry.io/otel/attribute"
     "go.opentelemetry.io/otel/codes"
 
-    "github.com/twistingmercury/mnemonic/internal/handlers"
+    "github.com/twistingmercury/mnemonic-mcp/internal/handlers"
 )
 
 // SearchPatterns handles GET /v1/api/patterns/search with full observability.
@@ -1561,7 +1561,7 @@ package search
 
 import (
     "github.com/gin-gonic/gin"
-    "github.com/twistingmercury/mnemonic/internal/handlers"
+    "github.com/twistingmercury/mnemonic-mcp/internal/handlers"
 )
 
 // SetupHandlers registers search handlers with dependencies.
@@ -1594,7 +1594,7 @@ import (
     "go.opentelemetry.io/otel/codes"
     "go.opentelemetry.io/otel/trace"
 
-    "github.com/twistingmercury/mnemonic/internal/metrics"
+    "github.com/twistingmercury/mnemonic-mcp/internal/metrics"
 )
 
 var tracer = otel.Tracer("mnemonic/repository/postgres")
@@ -1737,7 +1737,7 @@ import (
     "go.opentelemetry.io/otel/codes"
     "go.opentelemetry.io/otel/trace"
 
-    "github.com/twistingmercury/mnemonic/internal/metrics"
+    "github.com/twistingmercury/mnemonic-mcp/internal/metrics"
 )
 
 var tracer = otel.Tracer("mnemonic/repository/neo4j")
@@ -1846,7 +1846,7 @@ import (
 
     "github.com/gin-gonic/gin"
     "github.com/twistingmercury/heartbeat"
-    "github.com/twistingmercury/mnemonic/internal/version"
+    "github.com/twistingmercury/mnemonic-mcp/internal/version"
 )
 
 // SetupHandlers associates the handlers related to operations endpoints
@@ -1870,7 +1870,7 @@ package health
 
 import (
     "github.com/twistingmercury/heartbeat"
-    "github.com/twistingmercury/mnemonic/internal/config"
+    "github.com/twistingmercury/mnemonic-mcp/internal/config"
 )
 
 func Initialize(conf *config.MnemonicConfig) error {
@@ -1926,7 +1926,7 @@ The health endpoint `/health` is included in `DefaultSkipPaths` to exclude it fr
 ### Recommended Package Structure
 
 ```text
-src/mnemonic/internal/
+src/internal/
 ├── config/
 │   └── config.go              # Configuration including observability
 ├── telemetry/

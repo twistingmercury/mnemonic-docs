@@ -1288,6 +1288,11 @@ RETURN count(c) AS deletedCount;
 
 > **Note:** These are interface definitions only. Implementation is handled by the go-software-engineer.
 
+> **Note:** Each service contains only the repositories relevant to its responsibilities:
+> - `mnemonic-mcp`: PatternRepository (read), AgentRepository (read), GraphRepository (read)
+> - `mnemonic-api`: All repositories (full CRUD)
+> - `mnemonic-enricher`: PatternRepository (write embeddings/status), GraphRepository (write), EnrichmentJobRepository
+
 ### AgentRepository
 
 ```go
