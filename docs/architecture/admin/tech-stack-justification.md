@@ -5,7 +5,7 @@ UI in plain language. It is written for project planning and decision review,
 not just for frontend implementation.
 
 Related decision record:
-[0001-frontend-stack.md](/Users/doublej/dev/mnemonic-admin/docs/adr/0001-frontend-stack.md)
+[0001-frontend-stack.md](0001-frontend-stack.md)
 
 ## Objective
 

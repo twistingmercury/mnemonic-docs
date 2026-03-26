@@ -131,7 +131,7 @@ erDiagram
 |---|---|---|---|
 | `idx_agents_definition` | `agents` | GIN | Fast JSONB queries against agent definition |
 | `idx_patterns_enriched` | `patterns` | B-tree | Filter patterns by enrichment status |
-| `idx_patterns_embedding` | `patterns` | IVFFlat | Vector similarity search on pattern embeddings |
+| `idx_patterns_embedding` | `patterns` | IVFFlat | Vector similarity search on pattern embeddings (deprecated — superseded by `idx_pattern_chunks_embedding` in migration 000009) |
 | `idx_pattern_chunks_embedding` | `pattern_chunks` | HNSW | Vector similarity search on chunk embeddings (vector(2000)) |
 | Various on `enrichment_jobs` | `enrichment_jobs` | B-tree | Status and retry queries |
 

@@ -731,7 +731,7 @@ Before deploying pattern enrichment, verify:
 - [ ] Rate limits appropriate for expected load
 - [ ] Cost monitoring/alerting configured
 - [ ] Network egress to `api.openai.com` allowed
-- [ ] PGVector dimensions match configured embedding dimensions (1536)
+- [ ] PGVector dimensions match configured embedding dimensions (2000)
 - [ ] Enrichment job table created in Postgres
 - [ ] Neo4j instance provisioned and accessible
 - [ ] Neo4j credentials configured

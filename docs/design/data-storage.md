@@ -425,7 +425,7 @@ create table if not exists patterns (
 );
 
 comment on table patterns is 'Reusable context patterns for prompt enrichment';
-comment on column patterns.embedding is 'Vector embedding (1536d) for semantic similarity search';
+comment on column patterns.embedding is 'Vector embedding (2000d, text-embedding-3-large with Matryoshka truncation) for semantic similarity search';
 comment on column patterns.enrichment_status is 'Processing state: pending, enriched, or failed';
 ```
 

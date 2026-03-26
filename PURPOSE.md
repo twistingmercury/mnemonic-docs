@@ -1,4 +1,4 @@
-# PMNEMONIC DOCS
+# Mnemonic Docs
 
 ## PROBLEM
 
