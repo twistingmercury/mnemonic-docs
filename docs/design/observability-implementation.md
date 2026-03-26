@@ -4,11 +4,7 @@
 
 **Note:** This document reflects the post-pivot implementation following the architectural change from routing to knowledge graph + tooling sync (see [2026-02-14-mnemonic-pivot-knowledge-sync.md](../plans/2026-02-14-mnemonic-pivot-knowledge-sync.md)).
 
-> **Pre-pivot code pending removal:** The following packages still exist in the codebase but are slated for removal. Do **not** instrument them:
-> - `internal/routing/` (routing engine)
-> - `internal/handlers/routes/` (route handlers)
-> - `internal/repository/routingrule/` (routing rule repository)
-> - `RoutingConfig` in `internal/config/config.go`
+> **Note:** Routing engine, route handler, and routing rule repository instrumentation was removed during the [2026-02-15 architectural pivot](design-changelog.md#2026-02-15-architectural-pivot). Current instrumentation covers MCP tool handlers and Admin API handlers only.
 
 > **Note:** This document describes the target observability implementation. The current codebase has not been fully migrated to match this specification. Code will be updated to conform to this design during implementation phases.
 
