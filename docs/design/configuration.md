@@ -9,9 +9,13 @@
   - [Precedence Rules](#precedence-rules)
   - [Loading Behavior](#loading-behavior)
 - [Configuration File](#configuration-file)
+  - [MCP Server](#mcp-server-mnemonic-mcpconfigyaml)
+  - [Admin API](#admin-api-mnemonic-apiconfigyaml)
+  - [Enricher](#enricher-mnemonic-enricherconfigyaml)
 - [Environment Variables](#environment-variables)
 - [OpenTelemetry Standard Variables](#opentelemetry-standard-variables)
 - [otelx Dependency](#otelx-dependency)
+- [RabbitMQ Configuration](#rabbitmq-configuration)
 - [Configuration Reference](#configuration-reference)
 - [Environment Variable Naming Conventions](#environment-variable-naming-conventions)
 - [File Discovery Order](#file-discovery-order)
@@ -32,17 +36,19 @@
 
 > **Architecture Reference:** [System Architecture - Component Breakdown](../architecture/system/02-system-architecture.md#component-breakdown) | [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment)
 
-> **Note:** MVP-1 runs as a single deployable process. The dual-server configuration (separate admin and MCP listeners) is retained for future decomposition into independent deployables.
+Each Mnemonic service (`mnemonic-mcp`, `mnemonic-api`, `mnemonic-enricher`) uses the same layered configuration system built on Viper, but each service has its own configuration file containing only the settings relevant to that service.
 
-The Mnemonic server uses a layered configuration system built on [`github.com/spf13/viper`](https://github.com/spf13/viper). Viper provides unified support for multiple configuration sources with well-defined precedence. This design enables:
+The configuration system is built on [`github.com/spf13/viper`](https://github.com/spf13/viper). Viper provides unified support for multiple configuration sources with well-defined precedence. This design enables:
 
 - **Sensible defaults**: Work out of the box with minimal configuration (via `viper.SetDefault()`)
 - **File-based configuration**: Persistent settings in YAML format (via `viper.ReadInConfig()`)
 - **Environment overrides**: Container and CI/CD friendly (via `viper.AutomaticEnv()` with the `MNEMONIC_` prefix)
 
-| Component | Config Prefix | Config File                 | Primary Use Case           |
-| --------- | ------------- | --------------------------- | -------------------------- |
-| Mnemonic  | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | Server deployment settings |
+| Service              | Config Prefix | Config File                 | Primary Use Case                          |
+| -------------------- | ------------- | --------------------------- | ----------------------------------------- |
+| `mnemonic-mcp`       | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | MCP server and read-only database access  |
+| `mnemonic-api`       | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | Admin API, publishing, and OpenAI access  |
+| `mnemonic-enricher`  | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | Queue consumer, enrichment, and OpenAI    |
 
 Admin operations use curl or similar HTTP clients against the REST API. No separate CLI is planned for MVP.
 
@@ -86,148 +92,104 @@ Viper's `MergeInConfig()` is NOT used. Configuration is loaded with `ReadInConfi
 
 > **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [Deployment Architecture - Mnemonic](../architecture/system/06-deployment-architecture.md#mnemonic)
 
-The Mnemonic server reads configuration from YAML files.
+Each Mnemonic service reads configuration from its own YAML file. Each file contains only the settings relevant to that service.
 
 **Default location**: `/etc/mnemonic/config.yaml` (production) or `./config.yaml` (development)
 
+### MCP Server (`mnemonic-mcp/config.yaml`)
+
 ```yaml
-# Mnemonic server configuration file
-# /etc/mnemonic/config.yaml
-
-# HTTP server settings (post-pivot: two listeners)
 server:
-  # REST Admin API listener
-  admin:
-    host: 0.0.0.0
-    port: 8080
-    read_timeout: 30s
-    write_timeout: 30s
-    idle_timeout: 120s
-    shutdown_timeout: 5s
-
-    # TLS configuration (optional, typically handled by reverse proxy)
-    tls:
-      enabled: false
-      cert_file: ""
-      key_file: ""
-
-  # MCP endpoint listener (Streamable HTTP)
   mcp:
-    host: 0.0.0.0
     port: 8081
-    read_timeout: 30s
-    write_timeout: 120s # Longer for SSE streaming
-    idle_timeout: 120s
-    shutdown_timeout: 5s
-    session_timeout: 30m # MCP session timeout
-
-    # TLS configuration (optional, typically handled by reverse proxy)
-    tls:
-      enabled: false
-      cert_file: ""
-      key_file: ""
-
-# Database connections
+    session_timeout: "30m"
 database:
   postgres:
-    host: localhost
+    host: "localhost"
     port: 5432
-    database: mnemonic
-    username: mnemonic
-    # password should be set via MNEMONIC_DATABASE_POSTGRES_PASSWORD
+    user: "mnemonic"
     password: ""
-    ssl_mode: prefer
-    max_open_conns: 25
-    max_idle_conns: 5
-    conn_max_lifetime: 5m
-    # Post-MVP: when running multiple Mnemonic instances, ensure
-    # N x max_open_conns does not exceed the database connection limit.
-
-  # Neo4j is REQUIRED (post-pivot: no longer optional)
+    database: "mnemonic"
+    max_connections: 10
   neo4j:
-    uri: bolt://localhost:7687
-    username: neo4j
-    # password should be set via MNEMONIC_DATABASE_NEO4J_PASSWORD
+    uri: "bolt://localhost:7687"
+    user: "neo4j"
     password: ""
-    database: neo4j
-    max_connection_pool_size: 50
-    connection_acquisition_timeout: 60s
-
-# External services
-openai:
-  # API key should be set via MNEMONIC_OPENAI_API_KEY
-  api_key: ""
-  embedding_model: text-embedding-3-large
-  embedding_dimensions: 2000
-  extraction_model: gpt-4o-mini
-  max_requests_per_minute: 500
-  retry_attempts: 3
-  retry_delay: 1s
-
-# Rate limiting
-# NOTE: Post-MVP feature - Server-side rate limiting will be available in a later phase
-rate_limit:
-  enabled: false
-  requests_per_second: 100
-  burst_size: 200
-
-  # Per-user rate limits
-  per_user:
-    requests_per_minute: 60
-    burst_size: 10
-
-# Enrichment worker
-enrichment:
-  # Number of concurrent workers
-  worker_count: 2
-
-  # How often to poll for new jobs
-  poll_interval: 5s
-
-  # Maximum retry attempts for failed jobs
-  max_attempts: 3
-
-  # Delay between retry attempts
-  retry_delay: 30s
-
-  # Job timeout (stuck jobs are reclaimed after this duration)
-  job_timeout: 5m
-
-  # Minimum similarity for creating RELATED_TO edges (0.0-1.0)
-  related_to_min_similarity: 0.3
-
-  # Retention periods for completed/failed enrichment jobs
-  completed_retention: 168h # 7 days
-  failed_retention: 720h # 30 days
-
-# Logging
-logging:
-  # Log level: debug, info, warn, error
-  level: info
-
-  # Log format: json, text
-  format: json
-
-  # Include caller information
-  include_caller: false
-
-# Observability
+    database: "neo4j"
 observability:
-  log_db_statements: false
-  metrics:
-    enabled: true
-    path: /metrics
-    port: 9090
+  service_name: "mnemonic-mcp"
+  log_level: "info"
+  log_format: "json"
+```
 
-  health:
-    enabled: true
-    path: /health
+### Admin API (`mnemonic-api/config.yaml`)
 
-  tracing:
-    enabled: false
-    endpoint: ""
-    sample_rate: 0.1
-    otlp_insecure: true
+```yaml
+server:
+  admin:
+    port: 8080
+database:
+  postgres:
+    host: "localhost"
+    port: 5432
+    user: "mnemonic"
+    password: ""
+    database: "mnemonic"
+    max_connections: 10
+  neo4j:
+    uri: "bolt://localhost:7687"
+    user: "neo4j"
+    password: ""
+    database: "neo4j"
+rabbitmq:
+  url: "amqp://guest:guest@localhost:5672/"
+  exchange: "mnemonic.enrichment"
+  routing_key: "enrichment.job"
+  publisher_confirms: true
+openai:
+  api_key: ""
+  embedding_model: "text-embedding-3-large"
+  embedding_dimensions: 2000
+observability:
+  service_name: "mnemonic-api"
+  log_level: "info"
+  log_format: "json"
+```
+
+### Enricher (`mnemonic-enricher/config.yaml`)
+
+```yaml
+database:
+  postgres:
+    host: "localhost"
+    port: 5432
+    user: "mnemonic"
+    password: ""
+    database: "mnemonic"
+    max_connections: 10
+  neo4j:
+    uri: "bolt://localhost:7687"
+    user: "neo4j"
+    password: ""
+    database: "neo4j"
+rabbitmq:
+  url: "amqp://guest:guest@localhost:5672/"
+  queue: "mnemonic.enrichment.jobs"
+  prefetch_count: 5
+  consumer_tag: "enricher-1"
+openai:
+  api_key: ""
+  embedding_model: "text-embedding-3-large"
+  embedding_dimensions: 2000
+  extraction_model: "gpt-4o-mini"
+enrichment:
+  max_retries: 3
+  retry_delay: "30s"
+  related_to_min_similarity: 0.3
+observability:
+  service_name: "mnemonic-enricher"
+  log_level: "info"
+  log_format: "json"
 ```
 
 ## Environment Variables
@@ -237,10 +199,8 @@ observability:
 All Mnemonic configuration options can be set via environment variables using the `MNEMONIC_` prefix.
 
 ```bash
-# Server (post-pivot: two listeners)
-export MNEMONIC_SERVER_ADMIN_HOST="0.0.0.0"
+# Server
 export MNEMONIC_SERVER_ADMIN_PORT="8080"
-export MNEMONIC_SERVER_MCP_HOST="0.0.0.0"
 export MNEMONIC_SERVER_MCP_PORT="8081"
 export MNEMONIC_SERVER_MCP_SESSION_TIMEOUT="30m"
 
@@ -248,12 +208,13 @@ export MNEMONIC_SERVER_MCP_SESSION_TIMEOUT="30m"
 export MNEMONIC_DATABASE_POSTGRES_PASSWORD="secret"
 export MNEMONIC_DATABASE_NEO4J_PASSWORD="secret"
 
-# OpenAI (required)
-export MNEMONIC_OPENAI_API_KEY="sk-..."
+# RabbitMQ (Admin API and Enricher)
+export MNEMONIC_RABBITMQ_URL="amqp://guest:guest@localhost:5672/"
+export MNEMONIC_RABBITMQ_EXCHANGE="mnemonic.enrichment"
+export MNEMONIC_RABBITMQ_QUEUE="mnemonic.enrichment.jobs"
 
-# Rate limiting
-export MNEMONIC_RATE_LIMIT_ENABLED="false"
-export MNEMONIC_RATE_LIMIT_REQUESTS_PER_SECOND="100"
+# OpenAI (required for Admin API and Enricher)
+export MNEMONIC_OPENAI_API_KEY="sk-..."
 
 # Logging
 export MNEMONIC_LOGGING_LEVEL="debug"
@@ -286,6 +247,24 @@ Mnemonic uses the `github.com/twistingmercury/otelx` package (v1.0.0) to simplif
 - **Gin middleware**: Request logging with automatic trace context propagation
 
 The otelx package handles the complexity of OpenTelemetry SDK setup, allowing Mnemonic to focus on emitting telemetry rather than configuring exporters. For detailed implementation patterns using otelx, see [Observability Implementation Design](observability-implementation.md).
+
+## RabbitMQ Configuration
+
+[Table of Contents](#table-of-contents)
+
+RabbitMQ is used for asynchronous communication between the Admin API (publisher) and the Enricher (consumer). The Admin API publishes enrichment jobs to an exchange; the Enricher consumes from a bound queue.
+
+Publisher settings apply only to `mnemonic-api`. Consumer settings apply only to `mnemonic-enricher`. The connection URL is shared by both.
+
+| Key | Type | Default | Env Var | Description |
+| --- | ---- | ------- | ------- | ----------- |
+| `rabbitmq.url` | string | `amqp://guest:guest@localhost:5672/` | `MNEMONIC_RABBITMQ_URL` | AMQP connection string |
+| `rabbitmq.exchange` | string | `mnemonic.enrichment` | `MNEMONIC_RABBITMQ_EXCHANGE` | Exchange name (Admin API publisher) |
+| `rabbitmq.routing_key` | string | `enrichment.job` | `MNEMONIC_RABBITMQ_ROUTING_KEY` | Routing key (Admin API publisher) |
+| `rabbitmq.queue` | string | `mnemonic.enrichment.jobs` | `MNEMONIC_RABBITMQ_QUEUE` | Queue name (Enricher consumer) |
+| `rabbitmq.prefetch_count` | integer | `5` | `MNEMONIC_RABBITMQ_PREFETCH_COUNT` | Consumer prefetch count (Enricher) |
+| `rabbitmq.consumer_tag` | string | `enricher-1` | `MNEMONIC_RABBITMQ_CONSUMER_TAG` | Consumer identifier (Enricher) |
+| `rabbitmq.publisher_confirms` | boolean | `true` | `MNEMONIC_RABBITMQ_PUBLISHER_CONFIRMS` | Enable publisher confirms (Admin API) |
 
 ## Configuration Reference
 
@@ -327,6 +306,13 @@ The otelx package handles the complexity of OpenTelemetry SDK setup, allowing Mn
 | `database.neo4j.database`                       | string   | `neo4j`                  | `MNEMONIC_DATABASE_NEO4J_DATABASE`                       | Neo4j database                                                                              |
 | `database.neo4j.max_connection_pool_size`       | int      | `50`                     | `MNEMONIC_DATABASE_NEO4J_MAX_CONNECTION_POOL_SIZE`       | Neo4j max connection pool size                                                              |
 | `database.neo4j.connection_acquisition_timeout` | duration | `60s`                    | `MNEMONIC_DATABASE_NEO4J_CONNECTION_ACQUISITION_TIMEOUT` | Neo4j connection acquisition timeout                                                        |
+| `rabbitmq.url`                                  | string   | `amqp://guest:guest@localhost:5672/` | `MNEMONIC_RABBITMQ_URL`                          | AMQP connection string                                                                      |
+| `rabbitmq.exchange`                             | string   | `mnemonic.enrichment`    | `MNEMONIC_RABBITMQ_EXCHANGE`                             | Exchange name (Admin API publisher)                                                         |
+| `rabbitmq.routing_key`                          | string   | `enrichment.job`         | `MNEMONIC_RABBITMQ_ROUTING_KEY`                          | Routing key (Admin API publisher)                                                           |
+| `rabbitmq.queue`                                | string   | `mnemonic.enrichment.jobs` | `MNEMONIC_RABBITMQ_QUEUE`                              | Queue name (Enricher consumer)                                                              |
+| `rabbitmq.prefetch_count`                       | int      | `5`                      | `MNEMONIC_RABBITMQ_PREFETCH_COUNT`                       | Consumer prefetch count (Enricher)                                                          |
+| `rabbitmq.consumer_tag`                         | string   | `enricher-1`             | `MNEMONIC_RABBITMQ_CONSUMER_TAG`                         | Consumer identifier (Enricher)                                                              |
+| `rabbitmq.publisher_confirms`                   | bool     | `true`                   | `MNEMONIC_RABBITMQ_PUBLISHER_CONFIRMS`                   | Enable publisher confirms (Admin API)                                                       |
 | `openai.api_key`                                | string   | `""`                     | `MNEMONIC_OPENAI_API_KEY`                                | OpenAI API key                                                                              |
 | `openai.embedding_model`                        | string   | `text-embedding-3-large` | `MNEMONIC_OPENAI_EMBEDDING_MODEL`                        | Embedding model                                                                             |
 | `openai.embedding_dimensions`                   | int      | `2000`                   | `MNEMONIC_OPENAI_EMBEDDING_DIMENSIONS`                   | Embedding dimensions                                                                        |
@@ -378,6 +364,7 @@ All Mnemonic environment variables use the `MNEMONIC_` prefix with the following
 | `server.admin.port`          | `MNEMONIC_SERVER_ADMIN_PORT`          |
 | `server.mcp.port`            | `MNEMONIC_SERVER_MCP_PORT`            |
 | `database.postgres.password` | `MNEMONIC_DATABASE_POSTGRES_PASSWORD` |
+| `rabbitmq.url`               | `MNEMONIC_RABBITMQ_URL`              |
 | `openai.api_key`             | `MNEMONIC_OPENAI_API_KEY`             |
 
 **Special Cases**:
@@ -487,6 +474,15 @@ func setDefaults(v *viper.Viper) {
     v.SetDefault("database.neo4j.max_connection_pool_size", 50)
     v.SetDefault("database.neo4j.connection_acquisition_timeout", "60s")
 
+    // RabbitMQ defaults
+    v.SetDefault("rabbitmq.url", "amqp://guest:guest@localhost:5672/")
+    v.SetDefault("rabbitmq.exchange", "mnemonic.enrichment")
+    v.SetDefault("rabbitmq.routing_key", "enrichment.job")
+    v.SetDefault("rabbitmq.queue", "mnemonic.enrichment.jobs")
+    v.SetDefault("rabbitmq.prefetch_count", 5)
+    v.SetDefault("rabbitmq.consumer_tag", "enricher-1")
+    v.SetDefault("rabbitmq.publisher_confirms", true)
+
     // OpenAI defaults
     v.SetDefault("openai.embedding_model", "text-embedding-3-large")
     v.SetDefault("openai.embedding_dimensions", 2000)
@@ -543,6 +539,7 @@ func setDefaults(v *viper.Viper) {
 | Secret             | Storage Method                         |
 | ------------------ | -------------------------------------- |
 | Database passwords | Environment variable or secret manager |
+| RabbitMQ URL       | Environment variable or secret manager |
 | OpenAI API key     | Environment variable or secret manager |
 | TLS private keys   | File with restricted permissions       |
 
@@ -684,6 +681,7 @@ import "time"
 type MnemonicConfig struct {
     Server        ServerConfigs      `mapstructure:"server"`
     Database      DatabaseConfig     `mapstructure:"database"`
+    RabbitMQ      RabbitMQConfig     `mapstructure:"rabbitmq"`
     OpenAI        OpenAIConfig       `mapstructure:"openai"`
     RateLimit     RateLimitConfig    `mapstructure:"rate_limit"`
     Enrichment    EnrichmentConfig   `mapstructure:"enrichment"`
@@ -751,6 +749,19 @@ type Neo4jConfig struct {
     Database                     string        `mapstructure:"database"`
     MaxConnectionPoolSize        int           `mapstructure:"max_connection_pool_size"`
     ConnectionAcquisitionTimeout time.Duration `mapstructure:"connection_acquisition_timeout"`
+}
+
+// RabbitMQConfig defines AMQP connection and messaging parameters.
+// Publisher settings (Exchange, RoutingKey, PublisherConfirms) are used by mnemonic-api.
+// Consumer settings (Queue, PrefetchCount, ConsumerTag) are used by mnemonic-enricher.
+type RabbitMQConfig struct {
+    URL               string `mapstructure:"url"`
+    Exchange          string `mapstructure:"exchange"`
+    RoutingKey        string `mapstructure:"routing_key"`
+    Queue             string `mapstructure:"queue"`
+    PrefetchCount     int    `mapstructure:"prefetch_count"`
+    ConsumerTag       string `mapstructure:"consumer_tag"`
+    PublisherConfirms bool   `mapstructure:"publisher_confirms"`
 }
 
 type OpenAIConfig struct {
@@ -890,6 +901,16 @@ classDiagram
         +time.Duration ConnectionAcquisitionTimeout
     }
 
+    class RabbitMQConfig {
+        +string URL
+        +string Exchange
+        +string RoutingKey
+        +string Queue
+        +int PrefetchCount
+        +string ConsumerTag
+        +bool PublisherConfirms
+    }
+
     class OpenAIConfig {
         +string APIKey
         +string EmbeddingModel
@@ -956,6 +977,7 @@ classDiagram
 
     MnemonicConfig *-- ServerConfigs : Server
     MnemonicConfig *-- DatabaseConfig : Database
+    MnemonicConfig *-- RabbitMQConfig : RabbitMQ
     MnemonicConfig *-- OpenAIConfig : OpenAI
     MnemonicConfig *-- RateLimitConfig : RateLimit
     MnemonicConfig *-- EnrichmentConfig : Enrichment
