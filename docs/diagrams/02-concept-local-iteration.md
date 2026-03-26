@@ -28,3 +28,7 @@ flowchart TB
   mcp_server -->|read only| pg
   mcp_server -->|read only| neo4j
 ```
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

@@ -63,3 +63,7 @@ This matrix maps each requirement to the architecture and design documents that 
 | Identity management belongs to infrastructure layer                           | [01: Security Model Overview](architecture/system/01-security-architecture.md#security-model-overview) · [01: Architectural Decisions](architecture/system/01-security-architecture.md#architectural-decisions)                                                         |
 | All interaction is programmatic                                               | [00: ADR-002](architecture/system/00-architectural-decisions.md#adr-002) · [03: Overview](architecture/system/03-communication-patterns.md#overview)                                                                                                                    |
 | Primary data store is source of truth; secondary stores eventually consistent | [04: Cross-Database Consistency](architecture/system/04-data-architecture.md#cross-database-consistency) · [04: Key Takeaways](architecture/system/04-data-architecture.md#key-takeaways)                                                                               |
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

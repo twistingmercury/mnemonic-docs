@@ -359,3 +359,7 @@ Two areas to review when scaling out:
 - **Background enrichment workers**: The enrichment worker uses `FOR UPDATE SKIP LOCKED` when claiming jobs, which is already part of the MVP design. This ensures safe concurrent access across instances without duplicate processing.
 
 **Next:** [Communication Patterns](03-communication-patterns.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

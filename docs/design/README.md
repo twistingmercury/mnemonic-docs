@@ -15,3 +15,7 @@ These complement the architecture documents in `../architecture/` — architectu
 | [Pattern Processing](pattern-processing.md) | Enrichment pipeline: chunking, embeddings, entity extraction, Neo4j relationships, job queue |
 | [Service Layer](service-layer.md) | Service interfaces, dependency injection, business logic organization |
 | [Design Changelog](design-changelog.md) | History of design decisions and iterations |
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

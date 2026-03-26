@@ -92,3 +92,7 @@ flowchart TD
 - `enrichment_status` is always set to `pending` on insert; enrichment happens asynchronously.
 - Neo4j graph sync (`syncNeo4j`) is best-effort — failures are logged but do not fail the request.
 - Per-chunk enrichment jobs are created only when `chunkRepo` is non-nil (i.e., chunking is enabled in config).
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

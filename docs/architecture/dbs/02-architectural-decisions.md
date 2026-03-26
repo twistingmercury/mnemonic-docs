@@ -135,3 +135,7 @@ _Negative:_
 - Switching to Enterprise Edition later requires re-running the build with migration 002 included
 
 **Next:** [Deployment Architecture](05-deployment-architecture.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

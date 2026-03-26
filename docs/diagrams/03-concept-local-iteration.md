@@ -35,3 +35,7 @@ flowchart TB
   mcp_server -->|read only| aws_pg
   mcp_server -->|read only| aws_neptune
 ```
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

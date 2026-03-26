@@ -848,3 +848,7 @@ Pattern content:
 - [Architecture Overview](../../architecture/README.md)
 - [System Architecture](../../architecture/02-system-architecture.md) - Storage stack details
 - [Mnemonic OpenAPI Spec](../../../api/openapi/mnemonic-v1.yaml) - Full API definition
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

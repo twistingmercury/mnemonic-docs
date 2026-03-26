@@ -185,3 +185,7 @@ Current version: **3** (set by `003_create_indexes.cypher`).
 - **Rollback:** Pull a prior image tag. No down migration files are maintained.
 - **Testing:** BATS test suites in `src/tests/bats/` verify schema state after initialization. CI gates image pushes on passing tests.
 - **Adding migrations:** Add new SQL/Cypher files with the next sequence number, add corresponding BATS assertions, open a PR.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

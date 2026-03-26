@@ -64,3 +64,7 @@ flowchart TB
   mcp_server -->|READ ONLY| pg
   mcp_server -->|READ ONLY| neptune
 ```
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

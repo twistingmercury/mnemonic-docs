@@ -27,3 +27,7 @@ Start here:
 Architecture docs describe **what** and **why**. Design docs describe **how** and remain in each component repo.
 
 <!-- design docs remain in each component repo's docs/design/ -->
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

@@ -229,3 +229,7 @@ graph TB
 - All LLM calls go directly from Claude Code to Anthropic API
 
 **Next:** [Data Architecture](04-data-architecture.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

@@ -504,3 +504,7 @@ See also:
 - [Deployment Architecture](06-deployment-architecture.md) for scaling patterns
 
 **Next:** [Deployment Architecture](06-deployment-architecture.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

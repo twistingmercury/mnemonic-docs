@@ -60,3 +60,7 @@ flowchart TD
 
     N -->|Yes push| O
 ```
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

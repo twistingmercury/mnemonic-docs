@@ -118,3 +118,7 @@ docker pull ghcr.io/twistingmercury/mnemonic-neo4j:v1.0.0
 ```
 
 **Next:** [Data Architecture](08-data-architecture.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

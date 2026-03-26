@@ -382,3 +382,7 @@ unusual architecture later.
 Adopt the recommended stack and Docker-first build approach as the
 implementation baseline for phase 1 and use them as the assumption for the PRD
 and task breakdown.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

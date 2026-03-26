@@ -148,3 +148,7 @@ npm run e2e
 - The canonical build and CI path will be container-based.
 - The repository will need Docker build and workflow files in addition to the
   frontend application code.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

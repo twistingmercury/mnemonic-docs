@@ -144,4 +144,4 @@ Each entry includes:
 
 ---
 
-Copyright (c) 2026 Jeremy K. Johnson. All rights reserved.
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

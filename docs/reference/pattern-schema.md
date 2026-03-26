@@ -206,3 +206,7 @@ config passing, environment variable overrides, and clear precedence rules.
 10. The `## Overview` section is present.
 
 Unknown frontmatter fields are ignored.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

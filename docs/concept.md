@@ -184,3 +184,7 @@ The architecture docs go deeper on each of these pieces. Start with the
 [System Architecture](architecture/system/02-system-architecture.md) if you want to understand how
 Mnemonic is built, or the [Communication Patterns](architecture/system/03-communication-patterns.md)
 if you want to understand the MCP and REST surfaces in detail.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

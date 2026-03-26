@@ -23,3 +23,7 @@ flowchart TB
     n7@{ shape: cyl}
     n8@{ shape: cyl}
 ```
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

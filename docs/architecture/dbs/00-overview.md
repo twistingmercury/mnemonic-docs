@@ -74,3 +74,7 @@ graph LR
 | 08 | [Data Architecture](08-data-architecture.md) | PostgreSQL and Neo4j schema reference | Current |
 
 **Next:** [Architectural Decisions](02-architectural-decisions.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

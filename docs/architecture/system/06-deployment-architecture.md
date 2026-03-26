@@ -375,3 +375,7 @@ graph TB
 | Databases | Migration-aware, data preservation      |
 
 **Next:** [Observability Architecture](07-observability-architecture.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

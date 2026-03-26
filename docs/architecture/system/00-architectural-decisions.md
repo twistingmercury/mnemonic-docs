@@ -421,3 +421,7 @@ Recovery relies on the `pending` status in the `enrichment_jobs` table. A future
 <!-- design docs remain in each component repo's docs/design/ -->
 
 **Next:** [System Architecture](02-system-architecture.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

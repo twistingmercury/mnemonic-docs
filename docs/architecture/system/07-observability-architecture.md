@@ -432,4 +432,4 @@ For sampling configuration, see operations documentation (TBD).
 
 ---
 
-Copyright (c) 2025 Jeremy K. Johnson. All rights reserved.
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

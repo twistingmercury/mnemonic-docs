@@ -1049,4 +1049,6 @@ See also:
 - <!-- Pattern Processing: design docs remain in mnemonic/docs/design/ -->
 - [Deployment Architecture](06-deployment-architecture.md) for scaling patterns
 
-Copyright (c) 2025
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

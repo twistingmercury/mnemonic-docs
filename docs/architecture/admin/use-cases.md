@@ -73,3 +73,7 @@ flowchart LR
 - Separate agent management screens.
 - Separate skill management screens.
 - Repository-wide or folder-based ingestion jobs.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

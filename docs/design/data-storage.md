@@ -1862,3 +1862,7 @@ export MNEMONIC_DATABASE_NEO4J_DATABASE="neo4j"
 - [pgvector](https://github.com/pgvector/pgvector) - Vector similarity search extension
 - [neo4j-go-driver](https://github.com/neo4j/neo4j-go-driver) - Neo4j driver for Go
 - [Claude Code Agent Skills Spec](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/skills) - Skill definition format
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

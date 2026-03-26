@@ -712,4 +712,4 @@ If Claude Code or other MCP clients benefit from richer schema introspection (e.
 
 ---
 
-Copyright (c) 2025 Jeremy K. Johnson. All rights reserved.
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

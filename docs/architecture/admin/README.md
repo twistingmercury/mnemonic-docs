@@ -17,4 +17,4 @@ For system-level architecture spanning all components, see the [Architecture Sys
 
 ---
 
-Copyright (c) 2025 Jeremy K. Johnson. All rights reserved.
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

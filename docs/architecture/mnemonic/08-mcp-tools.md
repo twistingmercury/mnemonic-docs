@@ -133,4 +133,4 @@ For protocol problems, Mnemonic returns a JSON-RPC error response. These use sta
 
 ---
 
-Copyright (c) 2025 Jeremy K. Johnson. All rights reserved.
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

@@ -580,3 +580,7 @@ See also:
 
 - [Architecture Overview](README.md) for the full document index
 - [Deployment Architecture](06-deployment-architecture.md) for deployment patterns
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

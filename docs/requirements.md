@@ -126,3 +126,7 @@ what the system is responsible for:
 - Mnemonic does not enforce multi-tenancy. A single deployment serves one team.
 
 **Next:** [Architectural Decisions](architecture/system/00-architectural-decisions.md)
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

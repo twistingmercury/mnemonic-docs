@@ -984,3 +984,7 @@ classDiagram
 - [Observability Implementation](observability-implementation.md) - otelx integration details
 - [Viper](https://github.com/spf13/viper) - Configuration library used by Mnemonic
 - [Data Storage - Connection Configuration](data-storage.md#connection-configuration) - PostgresConfig and Neo4jConfig struct definitions
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

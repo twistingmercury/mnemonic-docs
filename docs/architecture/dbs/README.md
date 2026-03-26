@@ -12,3 +12,7 @@ Start here: [Architecture Overview](00-overview.md)
 | 08 | [Data Architecture](08-data-architecture.md) | PostgreSQL and Neo4j schema reference |
 
 For system-level architecture spanning all components, see the [Architecture System Overview](../system/README.md).
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.

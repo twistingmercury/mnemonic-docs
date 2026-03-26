@@ -221,3 +221,7 @@ flowchart TD
 - Import success: confirmation shown and workspace can refresh.
 - Import conflict: existing-pattern warning shown.
 - Import failure: API problem detail shown with actionable message.
+
+---
+
+Copyright (c) 2025-2026 Jeremy K. Johnson. All rights reserved.
