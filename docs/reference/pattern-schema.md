@@ -1,5 +1,7 @@
 # Pattern File Schema
 
+> Back to [Project README](../../README.md)
+
 This document defines the schema for Mnemonic pattern files.
 
 Pattern files are Markdown documents with YAML frontmatter. The body uses `[//]: pattern` decorators to mark which sections are indexed as searchable chunks in Mnemonic. Only decorated sections are stored — all other content, including the `## Overview` section, is discarded by the chunker. The H1 title is never indexed.

@@ -1,6 +1,14 @@
 # Pattern Enrichment
 
-[Back to Architecture Overview](../../architecture/README.md) | [Back to Project README](../../../README.md)
+> Back to [Design Documents](README.md) | [Project README](../../README.md)
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Enrichment Model](#enrichment-model)
+- [Automatic Enrichment Flow](#automatic-enrichment-flow)
+- [Enrichment Pipeline](#enrichment-pipeline)
+- [Enrichment Worker Deployment](#enrichment-worker-deployment)
 
 ## Overview
 

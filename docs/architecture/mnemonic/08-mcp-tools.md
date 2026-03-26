@@ -1,10 +1,6 @@
 # MCP Tools
 
-> **Source:** mnemonic/docs/architecture/08-mcp-tools.md, mnemonic-api/docs/architecture/08-mcp-tools.md, mnemonic-enricher/docs/architecture/08-mcp-tools.md
-> All three versions identical; mnemonic used as baseline.
-> **Last reconciled:** 2026-03-23
-
-[Back to Architecture Overview](README.md)
+> Back to [MCP Service Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

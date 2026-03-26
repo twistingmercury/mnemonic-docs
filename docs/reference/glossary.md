@@ -1,5 +1,7 @@
 # Glossary
 
+> Back to [Project README](../../README.md)
+
 Definitions of key terms used throughout the Mnemonic documentation. Terms are listed alphabetically.
 
 ---

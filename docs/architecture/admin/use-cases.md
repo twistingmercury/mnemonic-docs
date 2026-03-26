@@ -1,5 +1,7 @@
 # Pattern UI Use Case Diagram
 
+> Back to [Admin UI Architecture](README.md) | [Project README](../../../README.md)
+
 This diagram captures the agreed phase-1 scope for the Mnemonic Admin web UI.
 The primary user is a technical curator or engineer who explores patterns and,
 when needed, imports a single pattern file into the system.

@@ -1,10 +1,6 @@
 # Mnemonic Requirements
 
-> **Source:** Reconciled from `mnemonic/docs/mnemonic-requirements.md`, `mnemonic-api/docs/mnemonic-requirements.md`, `mnemonic-enricher/docs/mnemonic-requirements.md`
-> **Component-specific divergences:** None detected — all three versions are identical
-> **Last reconciled:** 2026-03-23
-
-[Back to Architecture Overview](architecture/system/README.md) | [Back to Project README](../README.md)
+> Back to [Project README](../README.md)
 
 ## Table of Contents
 

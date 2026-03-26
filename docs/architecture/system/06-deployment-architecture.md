@@ -1,8 +1,6 @@
 # Deployment Architecture
 
-> **Source:** `mnemonic/docs/architecture/06-deployment-architecture.md`, `mnemonic-api/docs/architecture/06-deployment-architecture.md`, `mnemonic-enricher/docs/architecture/06-deployment-architecture.md`
-> All three versions are identical. `mnemonic` used as baseline.
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

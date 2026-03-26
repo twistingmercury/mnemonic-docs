@@ -1,7 +1,6 @@
 # POST /v1/api/patterns — Activity Diagram
 
-> **Source:** Copied from `mnemonic/docs/diagrams/`, `mnemonic-api/docs/diagrams/`, and `mnemonic-enricher/docs/diagrams/` (identical)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../README.md)
 
 ```mermaid
 flowchart TD

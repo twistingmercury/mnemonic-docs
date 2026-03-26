@@ -1,7 +1,6 @@
 # Mnemonic Service Architecture
 
-> **Source:** mnemonic-docs (authored)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../../README.md)
 
 This subdirectory documents the MCP service component of the mnemonic system. The MCP service exposes pattern search tools via Claude Code integration.
 

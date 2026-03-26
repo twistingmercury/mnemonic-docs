@@ -1,8 +1,6 @@
 # Architecture
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/README.md`, `mnemonic-api/docs/architecture/README.md`, `mnemonic-enricher/docs/architecture/README.md`
-> **Component-specific divergences:** None — all three versions are identical
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../../README.md)
 
 Start here:
 

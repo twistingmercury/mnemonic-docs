@@ -1,8 +1,6 @@
 # System Architecture
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/02-system-architecture.md`, `mnemonic-api/docs/architecture/02-system-architecture.md`, `mnemonic-enricher/docs/architecture/02-system-architecture.md`
-> **Component-specific divergences:** None — all three versions are identical
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

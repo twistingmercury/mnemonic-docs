@@ -1,8 +1,6 @@
 # Architectural Decisions
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/00-architectural-decisions.md`, `mnemonic-api/docs/architecture/00-architectural-decisions.md`, `mnemonic-enricher/docs/architecture/00-architectural-decisions.md`
-> **Component-specific divergences:** `mnemonic-api` contains ADR-008 and ADR-009 (RabbitMQ enrichment pipeline); included as system-level additions
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

@@ -1,11 +1,6 @@
 # What Is Mnemonic?
 
-> **Source:** Reconciled from `mnemonic/docs/mnemonic-concept.md`, `mnemonic-api/docs/mnemonic-concept.md`, `mnemonic-enricher/docs/mnemonic-concept.md`
-> **Component-specific divergences:** None detected — all three versions are identical
-> **Last reconciled:** 2026-03-23
-
-[Back to Architecture Overview](architecture/system/README.md) |
-[Back to Project README](../README.md)
+> Back to [Project README](../README.md)
 
 ## The problem it solves
 

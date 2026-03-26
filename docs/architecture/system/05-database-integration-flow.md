@@ -1,8 +1,6 @@
 # Database Integration Flow
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/05-database-integration-flow.md`, `mnemonic-api/docs/architecture/05-database-integration-flow.md`, `mnemonic-enricher/docs/architecture/05-database-integration-flow.md`
-> **Component-specific divergences:** None — all three versions are identical
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

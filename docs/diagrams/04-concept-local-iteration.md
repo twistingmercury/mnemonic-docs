@@ -1,7 +1,6 @@
 # MVP 4
 
-> **Source:** Copied from `mnemonic/docs/diagrams/` and `mnemonic-enricher/docs/diagrams/` (identical)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../README.md)
 
 MVP 4 introduces local Kubernetes deployment and explicit authentication/authorization controls.
 

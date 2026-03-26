@@ -1,9 +1,6 @@
 # mnemonic-dbs — Data Architecture
 
-> **Source:** `mnemonic-dbs/docs/architecture/08-data-architecture.md`
-> **Last reconciled:** 2026-03-23
-
-[Back to Overview](00-overview.md)
+> Back to [Database Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

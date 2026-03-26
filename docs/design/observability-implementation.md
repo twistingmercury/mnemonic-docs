@@ -1,6 +1,6 @@
 # Observability Implementation Design
 
-[Back to Architecture Overview](../../architecture/README.md) | [Back to Project README](../../../README.md)
+> Back to [Design Documents](README.md) | [Project README](../../README.md)
 
 **Note:** This document reflects the post-pivot implementation following the architectural change from routing to knowledge graph + tooling sync (see [2026-02-14-mnemonic-pivot-knowledge-sync.md](../plans/2026-02-14-mnemonic-pivot-knowledge-sync.md)).
 

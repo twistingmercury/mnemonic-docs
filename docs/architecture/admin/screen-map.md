@@ -1,5 +1,7 @@
 # Pattern UI Screen Map
 
+> Back to [Admin UI Architecture](README.md) | [Project README](../../../README.md)
+
 This document maps the phase-1 use cases into concrete screens, panels, and
 interaction states for the Mnemonic Admin web UI.
 

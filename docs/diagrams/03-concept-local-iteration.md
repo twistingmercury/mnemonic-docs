@@ -1,7 +1,6 @@
 # MVP 3
 
-> **Source:** Copied from `mnemonic/docs/diagrams/` and `mnemonic-enricher/docs/diagrams/` (identical)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../README.md)
 
 Iteration 3 moves stateful infrastructure to managed AWS services while keeping application runtime local:
 

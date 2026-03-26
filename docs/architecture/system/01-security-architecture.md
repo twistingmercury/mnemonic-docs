@@ -1,8 +1,6 @@
 # Security Architecture
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/01-security-architecture.md`, `mnemonic-api/docs/architecture/01-security-architecture.md`, `mnemonic-enricher/docs/architecture/01-security-architecture.md`
-> **Component-specific divergences:** None — all three versions are identical
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 > **MVP stance:** Mnemonic runs in a trusted network environment without authentication ([SE-1](../../requirements.md#se-1)). The MCP interface is read-only ([SE-4](../../requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../../requirements.md#se-6)). This document describes the Post-MVP production security architecture.
 

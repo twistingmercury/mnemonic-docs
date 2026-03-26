@@ -1,6 +1,6 @@
 # MCP Server Implementation Design
 
-[Back to Architecture Overview](../architecture/README.md) | [Back to Project README](../../README.md)
+> Back to [Design Documents](README.md) | [Project README](../../README.md)
 
 ## Table of Contents
 

@@ -1,8 +1,6 @@
 # Data Architecture
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/04-data-architecture.md`, `mnemonic-api/docs/architecture/04-data-architecture.md`, `mnemonic-enricher/docs/architecture/04-data-architecture.md`
-> **Component-specific divergences:** None — all three versions identical
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

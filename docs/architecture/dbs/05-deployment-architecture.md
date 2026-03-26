@@ -1,9 +1,6 @@
 # mnemonic-dbs — Deployment Architecture
 
-> **Source:** `mnemonic-dbs/docs/architecture/05-deployment-architecture.md`
-> **Last reconciled:** 2026-03-23
-
-[Back to Overview](00-overview.md)
+> Back to [Database Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

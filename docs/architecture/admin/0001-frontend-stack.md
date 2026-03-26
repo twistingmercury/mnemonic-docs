@@ -1,7 +1,6 @@
 # ADR 0001: Frontend Stack and Build Strategy
 
-> **Source:** `mnemonic-admin/docs/adr/0001-frontend-stack.md`
-> **Last reconciled:** 2026-03-23
+> Back to [Admin UI Architecture](README.md) | [Project README](../../../README.md)
 
 ## Status
 

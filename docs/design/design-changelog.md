@@ -1,8 +1,15 @@
 # Mnemonic Design Change Log
 
+> Back to [Design Documents](README.md) | [Project README](../../README.md)
+
 This document tracks changes to design documents when implementation differs from original design. Each entry explains what changed and why.
 
 > **Architecture Reference:** [Observability Architecture](../architecture/07-observability-architecture.md) | [Deployment Architecture](../architecture/06-deployment-architecture.md)
+
+## Table of Contents
+
+- [Format](#format)
+- [Change Log](#change-log)
 
 ## Format
 

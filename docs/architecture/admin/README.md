@@ -1,7 +1,6 @@
 # Admin UI Architecture
 
-> **Source:** mnemonic-docs (authored)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../../README.md)
 
 This subdirectory documents the admin web UI component of the mnemonic system — a pattern-centric internal application for pattern management, search, and import.
 

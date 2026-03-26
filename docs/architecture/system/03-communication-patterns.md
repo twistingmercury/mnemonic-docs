@@ -1,8 +1,6 @@
 # Communication Patterns
 
-> **Source:** Reconciled from `mnemonic/docs/architecture/03-communication-patterns.md`, `mnemonic-api/docs/architecture/03-communication-patterns.md`, `mnemonic-enricher/docs/architecture/03-communication-patterns.md`
-> **Component-specific divergences:** None — all three versions are identical
-> **Last reconciled:** 2026-03-23
+> Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
 ## Table of Contents
 

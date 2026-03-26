@@ -1,7 +1,6 @@
 # Build Pipeline Diagram
 
-> **Source:** Copied from `mnemonic/docs/diagrams/`, `mnemonic-api/docs/diagrams/`, and `mnemonic-enricher/docs/diagrams/` (identical)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../README.md)
 
 This diagram shows how `src/mnemonic/build/build.sh` drives both local builds and CI builds.
 <!-- Reference diagram remains in mnemonic/_draft-skills/docker-first-ci-cd-implementation/references/docker-first-ci-cd-diagram.md -->

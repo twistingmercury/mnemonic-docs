@@ -1,5 +1,7 @@
 # Frontend Tech Stack Justification
 
+> Back to [Admin UI Architecture](README.md) | [Project README](../../../README.md)
+
 This document explains the proposed frontend stack for the Mnemonic Admin web
 UI in plain language. It is written for project planning and decision review,
 not just for frontend implementation.

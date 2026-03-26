@@ -1,10 +1,6 @@
 # Requirements Traceability Matrix
 
-> **Source:** Reconciled from `mnemonic/docs/requirements-traceability.md`, `mnemonic-enricher/docs/requirements-traceability.md`
-> **Component-specific divergences:** None detected — both versions are identical; `mnemonic-api` does not contain this file
-> **Last reconciled:** 2026-03-23
-
-[Back to Architecture Overview](architecture/system/README.md) | [Back to Requirements](requirements.md)
+> Back to [Project README](../README.md)
 
 This matrix maps each requirement to the architecture and design documents that address it.
 

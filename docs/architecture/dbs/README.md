@@ -1,7 +1,6 @@
 # mnemonic-dbs Architecture
 
-> **Source:** `mnemonic-dbs/docs/architecture/README.md`
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../../README.md)
 
 Start here: [Architecture Overview](00-overview.md)
 

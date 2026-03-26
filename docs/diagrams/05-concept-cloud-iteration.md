@@ -1,7 +1,6 @@
 # MVP 5
 
-> **Source:** Copied from `mnemonic/docs/diagrams/` and `mnemonic-enricher/docs/diagrams/` (identical)
-> **Last reconciled:** 2026-03-23
+> Back to [Project README](../../README.md)
 
 Iteration 5 is the cloud end state for runtime deployment and infrastructure automation:
 
