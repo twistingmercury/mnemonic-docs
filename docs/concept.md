@@ -77,65 +77,16 @@ An embedding is a numeric representation of text that captures its semantic mean
 
 ### Why 2000 dimensions?
 
-Mnemonic uses OpenAI's text-embedding-3-large model with Matryoshka truncation at 2000 dimensions. The full model outputs 3072 dimensions, but Matryoshka embeddings allow truncating to a shorter prefix while preserving most of the quality. 2000 dimensions is a sweet spot balancing quality, cost, and performance for our use case.
+OpenAI's `text-embedding-3-large` model outputs 3072 dimensions, but PGVector's HNSW index type has a maximum supported dimension of 2000. Mnemonic uses Matryoshka truncation to reduce the full 3072-dimension embedding to 2000 dimensions, preserving most of the quality while staying within PGVector's index limits.
 
-Different embedding models have different native dimensions:
+If Mnemonic moves to a dedicated vector database in the future, the full 3072 dimensions could be used without truncation.
 
-- OpenAI text-embedding-3-small: 1536
-- OpenAI text-embedding-3-large: 3072 (Mnemonic truncates to 2000)
-- Cohere embed-english-v3.0: 1024
-- Sentence Transformers all-MiniLM-L6-v2: 384
+For reference, other common embedding dimensions:
 
-### How similarity works: the arrow analogy
-
-Think of embeddings like arrows pointing in a direction. Each arrow has 2000 components, but conceptually it's pointing somewhere in meaning-space.
-
-When two pieces of text have similar meanings, their embeddings are like arrows pointing in roughly the same direction. When texts are unrelated, their arrows point in very different directions.
-
-Cosine similarity measures the angle between these arrows:
-
-- Small angle = Arrows point the same way = High similarity
-- Large angle = Arrows point different directions = Low similarity
-
-**Similarity scores:**
-
-- 1.0 = Identical direction (same meaning)
-- 0.7-1.0 = Small angle (highly relevant, typical threshold for pattern matching)
-- 0.5-0.7 = Medium angle (somewhat related)
-- 0.0-0.5 = Large angle (unrelated or opposite meaning)
-
-**Example:**
-
-```text
-Query: "Help me optimize this SQL query"
-Embedding: [0.023, -0.145, 0.087, ..., 0.034] (2000 values)
-
-Pattern 1: "Database query optimization techniques"
-Embedding: [0.025, -0.142, 0.091, ..., 0.036] (2000 values)
-Similarity: 0.94 (arrows pointing nearly the same direction)
-
-Pattern 2: "Go error handling best practices"
-Embedding: [-0.081, 0.234, -0.052, ..., -0.123] (2000 values)
-Similarity: 0.31 (arrows pointing in different directions)
-```
-
-### Who calculates what?
-
-- **OpenAI API**: Generates the embedding (turns text into 2000 numbers)
-- **PGVector**: Stores the embedding and calculates similarity using the `<=>` operator
-- **Mnemonic**: Orchestrates everything (calls APIs, queries databases, assembles responses)
-
-Mnemonic never touches vector arithmetic directly. It just asks PGVector "which patterns are similar to this embedding?" and PGVector does the math.
-
-### How IVFFlat indexes speed things up
-
-When you have thousands of patterns, comparing against every single one is slow. That's where IVFFlat indexes come in.
-
-IVFFlat uses k-means clustering to create "buckets" of similar patterns. Think of it like organizing a library into sections. When someone asks for a book about SQL, you don't search the entire library. You go to the database section first, then search there.
-
-During index creation, k-means finds "centroids" (bucket centers) and each pattern gets assigned to its nearest centroid. At query time, Mnemonic compares the query embedding to centroids first, then searches only the nearest buckets — skipping distant ones that won't be relevant.
-
-The default configuration searches roughly 10% of patterns per query, which dramatically improves performance while maintaining accuracy. The key insight is that relevant patterns cluster together in embedding space, so searching nearby buckets catches what we need.
+- OpenAI `text-embedding-3-small`: 1536
+- OpenAI `text-embedding-3-large`: 3072 (Mnemonic truncates to 2000)
+- Cohere `embed-english-v3.0`: 1024
+- Sentence Transformers `all-MiniLM-L6-v2`: 384
 
 ## How patterns connect to each other
 
@@ -172,11 +123,11 @@ Think of it this way: embeddings find "sounds like" matches. The graph finds "co
 
 ## What lives where
 
-| What | Where it lives | Who owns it |
-| --- | --- | --- |
-| Patterns (team knowledge) | Mnemonic | Your team, via the REST API |
-| Workflow decisions | You | Always |
-| AI inference | Claude Code / Anthropic | Mnemonic never does inference |
+| What                      | Where it lives          | Who owns it                   |
+| ------------------------- | ----------------------- | ----------------------------- |
+| Patterns (team knowledge) | Mnemonic                | Your team, via the REST API   |
+| Workflow decisions        | You                     | Always                        |
+| AI inference              | Claude Code / Anthropic | Mnemonic never does inference |
 
 ---
 
