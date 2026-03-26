@@ -142,6 +142,39 @@ During index creation, k-means finds "centroids" (bucket centers) and each patte
 
 The default configuration searches roughly 10% of patterns per query, which dramatically improves performance while maintaining accuracy. The key insight is that relevant patterns cluster together in embedding space, so searching nearby buckets catches what we need.
 
+## How patterns connect to each other
+
+Embeddings are great at finding patterns that *sound like* what you asked for. But sometimes two patterns are related for reasons that have nothing to do with how similar their text is. A pattern about Go error handling and a pattern about API error responses might use completely different language, but they clearly connect — they both deal with error handling.
+
+Mnemonic captures those connections explicitly using a knowledge graph stored in Neo4j.
+
+### Concepts: the dots on the map
+
+During enrichment, Mnemonic does not just generate an embedding. It also uses AI to extract **concepts** from each pattern — the technologies, practices, and domains the pattern touches. A pattern about Go error handling might produce concepts like "error handling", "Go", and "sentinel errors". A pattern about API error responses might produce "error handling", "REST APIs", and "HTTP status codes".
+
+These concepts become nodes in a graph. Each pattern gets linked to its concepts, and patterns that share a concept become connected — not because their text is similar, but because they genuinely deal with the same ideas.
+
+### What the graph looks like
+
+```mermaid
+graph LR
+    P1["go-error-handling"] -->|HAS_CONCEPT| C1(["error handling"])
+    P2["api-error-responses"] -->|HAS_CONCEPT| C1
+    P1 -->|HAS_CONCEPT| C2(["Go"])
+    P2 -->|HAS_CONCEPT| C3(["REST APIs"])
+    P1 -.-|RELATED_TO| P2
+```
+
+The `go-error-handling` and `api-error-responses` patterns both link to the "error handling" concept. That shared concept creates a relationship between the two patterns — even though their embeddings might point in quite different directions.
+
+### Why this matters for search
+
+This is what powers the `find_related_patterns` MCP tool. Given a pattern, Mnemonic walks the graph to find connected patterns rather than relying on vector similarity alone. It follows the concept links outward: this pattern is about these concepts, what other patterns share them?
+
+That catches relationships embeddings miss. Two patterns might discuss completely different topics but both mention the same internal service, the same deployment strategy, or the same compliance requirement. Embeddings won't see the connection. The graph will.
+
+Think of it this way: embeddings find "sounds like" matches. The graph finds "connects to" matches. Together, they cover both kinds of relevance.
+
 ## What lives where
 
 | What | Where it lives | Who owns it |
