@@ -62,30 +62,29 @@ Mnemonic uses a polyglot persistence strategy where each database technology is 
 - **PGVector** for vector embeddings and semantic search
 - **Neo4j** for knowledge graph relationships
 
-Mnemonic is stateless; all persistent state lives in these external databases. This separation enables horizontal scaling of Mnemonic instances while maintaining data consistency.
+All three services (MCP Server, Admin API, Enricher) are stateless; all persistent state lives in these external databases. This separation enables horizontal scaling of each service independently while maintaining data consistency.
 
 ```mermaid
-graph TB
-    subgraph "Mnemonic (Stateless)"
-        MCP[MCP Server Handler]
-        ADMIN[Admin API Handler]
-        PATTERN[Pattern Enrichment Service]
-    end
-
-    subgraph "Data Layer"
-        PG[(PostgreSQL<br/>Relational Data)]
-        PGV[(PGVector<br/>Embeddings)]
-        NEO[(Neo4j<br/>Knowledge Graph)]
-    end
-
-    MCP --> PG
-    MCP --> PGV
-    MCP --> NEO
-    ADMIN --> PG
-    ADMIN --> NEO
-    PATTERN --> PG
-    PATTERN --> PGV
-    PATTERN --> NEO
+flowchart LR
+  subgraph services["Application Services"]
+    mcp["MCP Server\n(read-only)"]
+    api["Admin API\n(read-write)"]
+    enricher["Enricher\n(write)"]
+  end
+  subgraph storage["Storage Layer"]
+    pg[("PostgreSQL\n+ PGVector")]
+    neo4j[("Neo4j")]
+  end
+  subgraph messaging["Messaging"]
+    rabbit[("RabbitMQ")]
+  end
+  mcp -->|read| pg
+  mcp -->|read| neo4j
+  api -->|read/write| pg
+  api -->|publish| rabbit
+  rabbit -->|consume| enricher
+  enricher -->|write| pg
+  enricher -->|write| neo4j
 ```
 
 ### Database Technology Stack
@@ -108,7 +107,7 @@ graph TB
 
 **Constraint Level:** ACID transactions, foreign keys with CASCADE deletes, NOT NULL constraints on required columns.
 
-**Connection:** psycopg3 (async) with connection pooling and explicit transaction boundaries. See [Connection Pool Configuration](#connection-pool-configuration).
+**Connection:** pgx v5 (`github.com/jackc/pgx/v5`) with connection pooling and explicit transaction boundaries. See [Connection Pool Configuration](#connection-pool-configuration).
 
 #### PGVector
 
@@ -135,7 +134,7 @@ graph TB
 
 **Consistency Model:** Eventual consistency; Neo4j is a read-only projection. Write always goes to Postgres first; Neo4j updates are best-effort.
 
-**Connection:** Python driver with connection pooling.
+**Connection:** Go driver (`github.com/neo4j/neo4j-go-driver/v5`) with connection pooling.
 
 ### Data Model Design
 
@@ -265,7 +264,7 @@ erDiagram
 | `language`            | VARCHAR     | YES      | 'go', 'python', 'sql', or NULL for general  |
 | `domain`              | VARCHAR     | YES      | 'backend', 'testing', 'infra', or NULL      |
 | `tags`                | JSONB       | YES      | Array of strings; e.g., `["retry", "error-handling"]` |
-| `enrichment_status`   | VARCHAR     | NO       | 'pending', 'processing', 'enriched', 'failed' |
+| `enrichment_status`   | VARCHAR     | NO       | 'pending', 'enriched', 'failed'               |
 | `enrichment_error`    | TEXT        | YES      | Error message if `enrichment_status='failed'` |
 | `created_at`          | TIMESTAMPTZ | NO       | Application set                             |
 | `updated_at`          | TIMESTAMPTZ | NO       | Application set                             |
@@ -528,37 +527,36 @@ The Postgres CASCADE removes `pattern_agent_associations` and `enrichment_jobs` 
 ```mermaid
 sequenceDiagram
     participant ADMIN as Admin Tool
-    participant API as Mnemonic Admin API
+    participant API as Admin API
     participant PG as Postgres
-    participant WORKER as Background Worker
+    participant MQ as RabbitMQ
+    participant ENRICHER as Enricher
     participant OPENAI as OpenAI API
-    participant PGV as PGVector
     participant NEO as Neo4j
 
     ADMIN->>API: POST /v1/api/patterns
     API->>PG: INSERT pattern (status: pending)
-    API->>PG: INSERT enrichment_job
+    API->>MQ: Publish enrichment job
     API-->>ADMIN: 202 Accepted
 
-    Note over WORKER,PG: Async Processing
-    WORKER->>PG: Claim job (FOR UPDATE SKIP LOCKED)
-    WORKER->>PG: Load pattern content
-    WORKER->>WORKER: Split content at H2 headings into chunks
+    Note over ENRICHER,MQ: Async Processing
+    MQ-->>ENRICHER: Consume job message
+    ENRICHER->>PG: Load pattern content
+    ENRICHER->>ENRICHER: Split content at H2 headings into chunks
     loop For each chunk
-        WORKER->>OPENAI: Generate chunk embedding
-        OPENAI-->>WORKER: vector(2000)
-        WORKER->>PGV: Store chunk embedding in pattern_chunks
+        ENRICHER->>OPENAI: Generate chunk embedding
+        OPENAI-->>ENRICHER: vector(2000)
+        ENRICHER->>PG: Store chunk + embedding in pattern_chunks
     end
-    WORKER->>PG: UPDATE pattern (status: enriched)
-    WORKER->>PG: UPDATE enrichment_job (status: completed)
+    ENRICHER->>PG: UPDATE pattern (status: enriched)
 
     alt Neo4j available
-        WORKER->>NEO: MERGE (p:Pattern {id: $id}) SET p.name = $name
-        WORKER->>NEO: Extract concepts and create Concept nodes
-        WORKER->>NEO: CREATE (c)-[:MENTIONED_IN]->(p) for each concept
-        NEO-->>WORKER: OK
+        ENRICHER->>NEO: MERGE (p:Pattern {id: $id}) SET p.name = $name
+        ENRICHER->>NEO: Extract concepts and create Concept nodes
+        ENRICHER->>NEO: CREATE (c)-[:MENTIONED_IN]->(p) for each concept
+        NEO-->>ENRICHER: OK
     else Neo4j unavailable
-        Note over WORKER,NEO: Log warning; reconciliation will retry
+        Note over ENRICHER,NEO: Log warning; reconciliation will retry
     end
 ```
 
@@ -608,7 +606,7 @@ sequenceDiagram
 
 #### Transaction Handling
 
-**Postgres:** All writes use explicit transactions (`BEGIN`/`COMMIT`). Admin API and background workers use the same connection pool. Idle transactions timeout after 1 minute (prevent connection leak).
+**Postgres:** All writes use explicit transactions (`BEGIN`/`COMMIT`). Each service (Admin API, Enricher) maintains its own connection pool. Idle transactions timeout after 1 minute (prevent connection leak).
 
 **Neo4j:** Best-effort writes (see [Cross-Database Consistency](#cross-database-consistency)). Failures do not block Postgres commits.
 
@@ -847,7 +845,7 @@ WHERE definition @> '{"tags": ["go"]}'::jsonb;
 - **Postgres is source of truth** - All primary data lives in Postgres; other databases contain projections
 - **Eventual consistency for graphs** - Neo4j sync is best-effort; failures logged and retried
 - **Enrichment is asynchronous** - Pattern processing happens in background to avoid API latency
-- **Stateless Mnemonic** - All state in external databases enables horizontal scaling
+- **Stateless services** - All state in external databases enables independent horizontal scaling of MCP Server, Admin API, and Enricher
 - **Forward-compatible migrations** - Schema changes designed for zero-downtime deployments
 - **Defense in depth** - Constraints at database level, validation at application level
 
