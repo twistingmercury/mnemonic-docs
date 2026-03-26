@@ -55,7 +55,6 @@ Implementation-level design documents shared across Go services:
 
 Reference diagrams for conceptual understanding:
 
-- `docs/diagrams/concept.md` — High-level system concept
 - `docs/diagrams/01-04-concept-local-iteration.md` — Concept iterations (local deployment)
 - `docs/diagrams/05-concept-cloud-iteration.md` — Concept iteration (cloud deployment)
 - `docs/diagrams/post-pattern-flow.md` — End-to-end pattern flow after initial match
