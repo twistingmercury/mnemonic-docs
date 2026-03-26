@@ -81,6 +81,8 @@ Key considerations:
 
 ### Decision
 
+> **Amended by ADR-008:** The single-server topology described below was superseded in MVP 2. The MCP server and Admin API are now separate services in independent repositories (`mnemonic-mcp` and `mnemonic-api`), and the enricher is a standalone service (`mnemonic-enricher`). The core MCP protocol decisions (Streamable HTTP, read-only tools, three tool registrations) remain in effect.
+
 **Use MCP (Model Context Protocol) over Streamable HTTP for Claude Code integration.**
 
 Architecture:
@@ -97,13 +99,15 @@ MCP tools (3 pattern search tools):
 
 ### Consequences
 
+> **Note:** Consequences marked with ~~strikethrough~~ are superseded by the service decomposition in ADR-008.
+
 **Positive:**
 
 - No separate CLI repository needed
 - Native Claude Code integration via MCP
 - Read-only MCP pattern keeps Claude Code safe
 - Admin REST API for data loading via curl/scripts
-- Single server simplifies deployment
+- ~~Single server simplifies deployment~~
 
 **Negative:**
 
@@ -168,6 +172,8 @@ This pattern disallows consecutive hyphens and trailing hyphens, ensuring clean 
 Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, skills) which use JSONB documents, patterns require relational columns for vector search, enrichment tracking, and graph relationships. The enrichment pipeline must generate embeddings via an external API (OpenAI text-embedding-3-large) and extract entities for the Neo4j knowledge graph.
 
 ### Decision
+
+> **Amended by ADR-008 and ADR-009:** Enrichment dispatch now uses RabbitMQ as the primary queue. The Postgres-backed `enrichment_jobs` table with `FOR UPDATE SKIP LOCKED` remains as a recovery mechanism for jobs that fail to publish to RabbitMQ. The pattern storage design (relational columns, two-phase enrichment) remains in effect.
 
 **Patterns use relational columns (not JSONB) with async enrichment via a Postgres-backed job queue.**
 
