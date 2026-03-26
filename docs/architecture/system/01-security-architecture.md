@@ -2,7 +2,7 @@
 
 > Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
-> **MVP stance:** Mnemonic runs in a trusted network environment without authentication ([SE-1](../../requirements.md#se-1)). The MCP interface is read-only ([SE-4](../../requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../../requirements.md#se-6)). This document describes the Post-MVP production security architecture.
+> **MVP stance:** The Mnemonic services run in a trusted network environment without authentication ([SE-1](../../requirements.md#se-1)). The MCP interface is read-only ([SE-4](../../requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../../requirements.md#se-6)). This document describes the Post-MVP production security architecture.
 
 ## Table of Contents
 
@@ -16,7 +16,7 @@
   - [RBAC Model](#rbac-model)
   - [OPA Policy Structure](#opa-policy-structure)
 - [Component Architecture](#component-architecture)
-- [Admin Authentication Flow (Phase 2 Only)](#admin-authentication-flow-phase-2-only)
+- [Admin Authentication Flow (Post-MVP Only)](#admin-authentication-flow-post-mvp-only)
   - [Device Code Flow](#device-code-flow)
   - [Token Storage](#token-storage)
 - [Identity Headers](#identity-headers)
@@ -27,14 +27,14 @@
 
 ## Introduction
 
-Phase 2 (Production Deployment) adds enterprise-grade security to Mnemonic using infrastructure-layer components. Authentication and authorization are handled outside Mnemonic's application code, keeping the service lightweight and focused on team knowledge synchronization.
+Post-MVP (Production Deployment) adds enterprise-grade security to Mnemonic using infrastructure-layer components. Authentication and authorization are handled outside the application code, keeping the services lightweight and focused on team knowledge synchronization.
 
 This approach follows the principle of separation of concerns: security infrastructure handles identity verification and access control, while Mnemonic remains focused on its core responsibilities.
 
 **Security Scope:**
 
 - **Admin REST API** (`:8080`): Protected by Envoy + OPA for write operations (patterns, agents, skills)
-- **MCP Server** (`:8081`): Read-only access in trusted environment (no authentication for MVP/Phase 2)
+- **MCP Server** (`:8081`): Read-only access in trusted environment (no authentication for MVP or Post-MVP)
 
 ## Security Model Overview
 
@@ -53,7 +53,7 @@ The security stack consists of:
 
 ```mermaid
 graph TB
-    subgraph "Admin Workstation (Phase 2)"
+    subgraph "Admin Workstation (Post-MVP)"
         ADMIN[Admin curl/scripts]
         STORE[(Token Store)]
     end
@@ -69,7 +69,9 @@ graph TB
         end
 
         subgraph "Application Layer"
-            MN[Mnemonic]
+            MCP[MCP Server]
+            API[Admin API]
+            ENR[Enricher]
         end
 
         subgraph "External"
@@ -83,7 +85,7 @@ graph TB
     ADMIN -->|"2. REST + JWT"| ENV
     ENV -->|"3. ext_authz"| OPA
     OPA -->|"Load"| BUNDLE
-    ENV -->|"4. Headers"| MN
+    ENV -->|"4. Headers"| API
 ```
 
 ## Authentication
@@ -134,7 +136,7 @@ API keys provide authentication for service-to-service communication and automat
 
 ### Supported Identity Providers
 
-Mnemonic supports standard OAuth2/OIDC identity providers. The choice depends on organizational requirements.
+Envoy supports standard OAuth2/OIDC identity providers for JWT validation. The choice depends on organizational requirements.
 
 | Provider | Use Case                | Complexity | Notes                                   |
 | -------- | ----------------------- | ---------- | --------------------------------------- |
@@ -149,7 +151,7 @@ Authorization determines what authenticated users can do. OPA (Open Policy Agent
 
 ### RBAC Model
 
-Mnemonic uses Role-Based Access Control with team-scoped resources.
+Access control uses Role-Based Access Control with team-scoped resources.
 
 **Scope Hierarchy:**
 
@@ -158,12 +160,8 @@ graph TB
     ORG[Organization]
     ORG --> TEAM1[Team A]
     ORG --> TEAM2[Team B]
-    TEAM1 --> R1[Agents]
-    TEAM1 --> R2[Patterns]
-    TEAM1 --> R3[Skills]
-    TEAM2 --> R4[Agents]
-    TEAM2 --> R5[Patterns]
-    TEAM2 --> R6[Skills]
+    TEAM1 --> R1[Patterns]
+    TEAM2 --> R2[Patterns]
 ```
 
 **Roles:**
@@ -171,16 +169,14 @@ graph TB
 | Role      | Permissions                                        |
 | --------- | -------------------------------------------------- |
 | admin     | Full access to team resources, manage team members |
-| developer | Create, update, delete agents and patterns         |
-| viewer    | Read-only access to agents and patterns            |
+| developer | Create, update, delete patterns                    |
+| viewer    | Read-only access to patterns                       |
 
 **Resource Types:**
 
 | Resource | Description                                      |
 | -------- | ------------------------------------------------ |
-| agents   | Agent definitions and configurations             |
-| patterns | Context patterns for prompt enrichment           |
-| skills   | Reusable Claude Code skills                      |
+| patterns | Engineering patterns for semantic search         |
 
 ### OPA Policy Structure
 
@@ -200,11 +196,11 @@ allow if {
     input.user.team_id != ""
 }
 
-# Admin operations require admin role
+# Pattern write operations require developer or admin role
 allow if {
     input.method in ["PUT", "DELETE", "POST"]
     startswith(input.path[0], "v1")
-    "admin" in input.user.roles
+    input.user.roles[_] in {"admin", "developer"}
 }
 
 # Response headers to inject
@@ -237,7 +233,7 @@ The security components integrate with the existing Mnemonic architecture.
 
 ```mermaid
 graph TB
-    subgraph "Admin Workstation (Phase 2)"
+    subgraph "Admin Workstation (Post-MVP)"
         ADMIN[Admin curl/scripts]
         TS[(Token Store)]
     end
@@ -249,12 +245,15 @@ graph TB
         end
 
         subgraph "Application Layer"
-            MN[Mnemonic]
+            MCP[MCP Server]
+            API[Admin API]
+            ENR[Enricher]
         end
 
         subgraph "Data Layer"
             PG[(Postgres + PGVector)]
             NEO[(Neo4j)]
+            RMQ[(RabbitMQ)]
         end
 
         subgraph "External Services"
@@ -268,9 +267,13 @@ graph TB
     ENV <-->|"ext_authz"| OPA
     OPA <-->|"Load"| BUNDLES
     ENV <-->|"Validate JWT"| IDP
-    ENV -->|"Headers"| MN
-    MN <--> PG
-    MN <--> NEO
+    ENV -->|"Headers"| API
+    MCP <--> PG
+    MCP <--> NEO
+    API <--> PG
+    API <--> NEO
+    API --> RMQ
+    ENR <--> RMQ
 ```
 
 **Component Responsibilities:**
@@ -279,13 +282,15 @@ graph TB
 | ----------------- | --------------------------------------------------------------------- |
 | Envoy Proxy       | TLS termination, JWT validation, API key validation, header injection |
 | OPA Sidecar       | Policy evaluation, RBAC enforcement, header generation                |
-| Mnemonic          | Trust identity headers, apply business logic                          |
-| Identity Provider | User authentication, token issuance, JWKS hosting                     |
+| Admin API         | Trust identity headers, apply business logic for pattern management   |
+| MCP Server        | Read-only pattern serving; operates outside the security perimeter    |
+| Enricher          | Internal consumer; not exposed through Envoy                          |
+| Identity Provider | User authentication, token issuance, JWKS hosting                    |
 | Policy Bundles    | Store and distribute Rego policies                                    |
 
-## Admin Authentication Flow (Phase 2 Only)
+## Admin Authentication Flow (Post-MVP Only)
 
-> **Note:** This section describes authentication for the Admin REST API in Phase 2 (Production Deployment). MVP uses Claude Code via MCP with no CLI and no authentication.
+> **Note:** This section describes authentication for the Admin REST API in Post-MVP (Production Deployment). MVP uses the Admin UI directly with no token-based authentication.
 
 ### Device Code Flow
 
@@ -352,7 +357,7 @@ stateDiagram-v2
 
 ## Identity Headers
 
-After successful authentication and authorization, Envoy injects identity headers that Mnemonic trusts.
+After successful authentication and authorization, Envoy injects identity headers that the Admin API trusts.
 
 | Header       | Description                   | Example            |
 | ------------ | ----------------------------- | ------------------ |
@@ -362,18 +367,18 @@ After successful authentication and authorization, Envoy injects identity header
 
 **Trust Model:**
 
-- Mnemonic only accepts traffic from Envoy (network isolation)
+- The Admin API only accepts traffic from Envoy (network isolation)
 - Headers are set by Envoy, not forwarded from client
 - Client-provided identity headers are stripped by Envoy
 
 ```mermaid
 graph LR
     ADMIN[Admin Tool] -->|"Authorization: Bearer ..."| ENV[Envoy]
-    ENV -->|"X-User-ID, X-Team-ID, X-User-Roles"| MN[Mnemonic]
+    ENV -->|"X-User-ID, X-Team-ID, X-User-Roles"| API[Admin API]
 
     style ADMIN fill:#f9f
     style ENV fill:#9f9
-    style MN fill:#99f
+    style API fill:#99f
 ```
 
 ## Architectural Decisions
@@ -382,11 +387,11 @@ graph LR
 
 **Context:** Mnemonic needs authentication and authorization for multi-tenant operation.
 
-**Decision:** Handle authentication and authorization at infrastructure layer using Envoy and OPA. Mnemonic receives only pre-validated identity headers.
+**Decision:** Handle authentication and authorization at infrastructure layer using Envoy and OPA. The Admin API receives only pre-validated identity headers.
 
 **Rationale:**
 
-- Mnemonic stays lightweight and focused on knowledge synchronization
+- Services stay lightweight and focused on pattern knowledge management
 - Security policies update without application deployment
 - Consistent security across all endpoints
 - Clear separation of concerns
@@ -445,121 +450,132 @@ graph TB
     subgraph "Single Host"
         ENV[Envoy]
         OPA[OPA]
-        MN[Mnemonic]
+        MCP[MCP Server]
+        API[Admin API]
+        ENR[Enricher]
     end
 
     subgraph "External"
         IDP[Identity Provider]
         PG[(Postgres)]
         NEO[(Neo4j)]
+        RMQ[(RabbitMQ)]
     end
 
     ENV --> OPA
-    ENV --> MN
-    MN --> PG
-    MN --> NEO
+    ENV --> API
+    MCP --> PG
+    MCP --> NEO
+    API --> PG
+    API --> NEO
+    API --> RMQ
+    ENR --> RMQ
     ENV <--> IDP
 ```
 
 **Characteristics:**
 
-- Single container host with all components
+- Single container host with all application components
 - External managed databases
 - External identity provider (Auth0, Okta)
 - Suitable for small teams (less than 20 users)
 
-### Kubernetes Deployment
+### AWS Fargate Deployment
 
-For production environments with high availability requirements.
+For production environments with high availability requirements (MVP 5 target).
 
 ```mermaid
 graph TB
-    subgraph "Kubernetes Cluster"
-        subgraph "Ingress"
-            ING[Ingress Controller]
+    subgraph "AWS Fargate"
+        subgraph "Edge"
+            ENV[Envoy Proxy]
         end
 
-        subgraph "Pod"
-            ENV[Envoy Sidecar]
+        subgraph "Tasks"
             OPA[OPA Sidecar]
-            MN[Mnemonic]
+            MCP[MCP Server]
+            API[Admin API]
+            ENR[Enricher]
         end
+    end
 
-        subgraph "Services"
-            REDIS[(Redis<br/>Decision Cache)]
-        end
+    subgraph "AWS Managed Services"
+        IDP[Identity Provider]
+        SQS[(SQS<br/>Enrichment Queue)]
+        S3[(S3<br/>Policy Bundles)]
     end
 
     subgraph "External"
-        IDP[Identity Provider]
         PG[(Postgres)]
-        NEO[(Neo4j)]
-        S3[(S3/GCS<br/>Policy Bundles)]
+        NEO[(Neptune)]
     end
 
-    ING --> ENV
     ENV --> OPA
-    ENV --> MN
-    OPA --> REDIS
+    ENV --> API
     OPA --> S3
-    MN --> PG
-    MN --> NEO
+    MCP --> PG
+    MCP --> NEO
+    API --> PG
+    API --> NEO
+    API --> SQS
+    ENR --> SQS
     ENV <--> IDP
 ```
 
 **Characteristics:**
 
-- Envoy as sidecar or ingress
-- OPA as sidecar per pod
-- Redis for decision caching
-- Policy bundles from S3/GCS
-- Horizontal scaling with load balancing
+- Envoy proxy at the edge for authentication
+- OPA sidecar for authorization policy evaluation
+- Policy bundles loaded from S3
+- SQS replaces RabbitMQ for managed queue delivery
+- Neptune replaces self-hosted Neo4j for graph storage
+- Horizontal scaling via Fargate task definitions
 
 ### Failure Modes
 
 | Failure                   | Impact                                             | Mitigation                                         |
 | ------------------------- | -------------------------------------------------- | -------------------------------------------------- |
 | Envoy unavailable         | All requests fail                                  | Expected behavior, load balancer health checks     |
-| OPA unavailable           | All requests denied (fail-closed)                  | OPA sidecar per pod, decision caching              |
+| OPA unavailable           | All requests denied (fail-closed)                  | OPA sidecar per task, policy bundle caching        |
 | IdP unavailable           | New logins fail, existing tokens work until expiry | Token refresh, offline validation with cached JWKS |
-| Policy bundle unavailable | OPA uses cached policies                           | Bundle caching, multiple bundle sources            |
+| Policy bundle unavailable | OPA uses cached policies                           | Bundle caching in OPA, durable S3 storage          |
 
 ## Migration Path
 
-Security can be added incrementally to an existing Mnemonic deployment.
+Security can be added incrementally to an existing deployment.
 
 ```mermaid
 graph LR
-    S1[Phase 1<br/>Add Envoy] --> S2[Phase 2<br/>Add JWT Auth]
-    S2 --> S3[Phase 3<br/>Add OPA]
-    S3 --> S4[Phase 4<br/>Enforce]
+    S1[Step 1<br/>Add Envoy] --> S2[Step 2<br/>Add JWT Auth]
+    S2 --> S3[Step 3<br/>Add OPA]
+    S3 --> S4[Step 4<br/>Enforce]
 ```
 
-### Phase 1: Add Envoy as Reverse Proxy
+### Step 1: Add Envoy as Reverse Proxy
 
-- Deploy Envoy in front of Mnemonic
+- Deploy Envoy in front of the Admin API
 - No authentication, pass-through mode
 - Verify traffic flows correctly
 - Establish TLS termination
 
-### Phase 2: Add JWT Authentication
+### Step 2: Add JWT Authentication
 
 - Configure identity provider
 - Provide admin authentication mechanism
 - Configure Envoy JWT validation
 - Allow both authenticated and unauthenticated requests
 
-### Phase 3: Add OPA Authorization
+### Step 3: Add OPA Authorization
 
 - Deploy OPA sidecar
 - Start with permissive policies (allow all authenticated)
 - Add logging for authorization decisions
 - Refine policies based on access patterns
 
-### Phase 4: Enforce Security
+### Step 4: Enforce Security
 
 - Require authentication for all Admin API requests
-- Remove direct Mnemonic access
+- Remove direct Admin API access
 - Enable fail-closed mode
 - Monitor and alert on authorization failures
 
