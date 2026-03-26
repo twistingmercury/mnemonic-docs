@@ -60,7 +60,7 @@ This document provides implementation details for the Mnemonic data storage laye
 | Relational Storage | PostgreSQL 15+ | Document tables (JSONB), patterns, jobs |
 | Vector Storage | PGVector extension | Pattern embeddings for semantic search |
 | Graph Storage | Neo4j 5.x | Knowledge graph relationships |
-| Migrations | golang-migrate CLI | Schema versioning and deployment (run externally, not embedded in Mnemonic) |
+| Migrations | Docker entrypoint scripts | Schema pre-applied at image build time via `docker-entrypoint-initdb.d` (Postgres) and `cypher-shell` (Neo4j); no runtime migration tool |
 
 **JSONB Document Model:**
 
@@ -268,49 +268,28 @@ For database-level JSONB schema validation, consider the [pg_jsonschema](https:/
 
 ### Migration File Structure
 
-All PostgreSQL migrations follow the golang-migrate flat file convention. Migrations are run by the golang-migrate CLI as a deployment step; Mnemonic does not run or manage migrations at runtime.
+All PostgreSQL migrations are `.up.sql` files applied at Docker image build time via `docker-entrypoint-initdb.d`. Mnemonic does not run or manage migrations at runtime. There are no `.down.sql` files — rollback is accomplished by pulling a prior image tag (see [dbs ADR-001](../architecture/dbs/02-architectural-decisions.md)).
 
 ```text
 src/migrations/
 ├── postgres/
 │   ├── 000001_extensions.up.sql
-│   ├── 000001_extensions.down.sql
 │   ├── 000002_create_agents.up.sql
-│   ├── 000002_create_agents.down.sql
 │   ├── 000003_create_patterns.up.sql
-│   ├── 000003_create_patterns.down.sql
 │   ├── 000004_create_pattern_agent_associations.up.sql
-│   ├── 000004_create_pattern_agent_associations.down.sql
 │   ├── 000005_create_enrichment_jobs.up.sql
-│   ├── 000005_create_enrichment_jobs.down.sql
 │   ├── 000006_create_performance_indexes.up.sql
-│   ├── 000006_create_performance_indexes.down.sql
 │   ├── 000007_create_skills.up.sql
-│   ├── 000007_create_skills.down.sql
-│   ├── 000008_create_skill_files.up.sql
-│   └── 000008_create_skill_files.down.sql
+│   └── 000008_create_skill_files.up.sql
 └── neo4j/
     ├── 001_create_constraints.cypher
     ├── 002_create_existence_constraints.cypher
     └── 003_create_indexes.cypher
 ```
 
-golang-migrate requires a single flat directory with paired `.up.sql` and `.down.sql` files. The 6-digit zero-padded prefix (e.g., `000001`) matches the output of `migrate create -ext sql -dir src/migrations/postgres -seq <name>`. The `-path` flag points to this directory.
+PostgreSQL migration files use a 6-digit zero-padded prefix (e.g., `000001`) to guarantee execution order. The Docker entrypoint runs all `.up.sql` files from `/docker-entrypoint-initdb.d/` in filename-sorted order on first container start.
 
-Neo4j migrations are not managed by golang-migrate. They are numbered `.cypher` files applied manually via `cypher-shell` (see [Manual Constraint Creation](#startup-constraint-validation)).
-
-**Running Migrations:**
-
-```bash
-# Apply all pending migrations
-migrate -path src/migrations/postgres -database "$DATABASE_URL" up
-
-# Rollback last migration
-migrate -path src/migrations/postgres -database "$DATABASE_URL" down 1
-
-# Check current version
-migrate -path src/migrations/postgres -database "$DATABASE_URL" version
-```
+Neo4j migrations are numbered `.cypher` files applied via `cypher-shell` during Docker image build (see [Manual Constraint Creation](#startup-constraint-validation)).
 
 ### Migration 001: Extensions
 
@@ -1731,7 +1710,6 @@ export MNEMONIC_DATABASE_NEO4J_DATABASE="neo4j"
 
 **External References:**
 
-- [golang-migrate](https://github.com/golang-migrate/migrate) - Migration tool
 - [pgx](https://github.com/jackc/pgx) - PostgreSQL driver for Go
 - [pgvector](https://github.com/pgvector/pgvector) - Vector similarity search extension
 - [neo4j-go-driver](https://github.com/neo4j/neo4j-go-driver) - Neo4j driver for Go
