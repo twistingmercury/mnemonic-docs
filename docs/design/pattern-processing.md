@@ -372,7 +372,7 @@ Where `graph_score` would consider direct agent association relevance, hop dista
 
 ## Enrichment Worker Deployment
 
-> **Architecture Reference:** [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment) | [Deployment Architecture - Scaling Considerations](../architecture/system/06-deployment-architecture.md#scaling-considerations)
+> **Architecture Reference:** [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment) | [Deployment Architecture - Post-MVP](../architecture/system/06-deployment-architecture.md#post-mvp)
 
 ### Standalone Enrichment Service
 

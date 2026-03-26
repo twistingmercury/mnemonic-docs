@@ -241,9 +241,9 @@ import (
     "time"
 
     "github.com/google/uuid"
-    patternrepo "github.com/twistingmercury/mnemonic/internal/repository/pattern"
-    enrichmentrepo "github.com/twistingmercury/mnemonic/internal/repository/enrichmentjob"
-    graphrepo "github.com/twistingmercury/mnemonic/internal/repository/graph"
+    patternrepo "github.com/twistingmercury/mnemonic-api/internal/repository/pattern"
+    enrichmentrepo "github.com/twistingmercury/mnemonic-api/internal/repository/enrichmentjob"
+    graphrepo "github.com/twistingmercury/mnemonic-api/internal/repository/graph"
 )
 
 // PatternService manages pattern lifecycle including enrichment orchestration.
@@ -384,7 +384,7 @@ The `Create` method returns the created pattern with `enrichment_status: pending
 import (
     "context"
 
-    agentrepo "github.com/twistingmercury/mnemonic/internal/repository/agent"
+    agentrepo "github.com/twistingmercury/mnemonic-api/internal/repository/agent"
 )
 
 // AgentService manages agent lifecycle with Neo4j synchronization.
@@ -454,7 +454,7 @@ import (
     "context"
 
     "github.com/google/uuid"
-    skillrepo "github.com/twistingmercury/mnemonic/internal/repository/skill"
+    skillrepo "github.com/twistingmercury/mnemonic-api/internal/repository/skill"
 )
 
 // SkillService manages skill lifecycle.
@@ -527,7 +527,7 @@ import (
     "context"
 
     "github.com/google/uuid"
-    skillfilerepo "github.com/twistingmercury/mnemonic/internal/repository/skillfile"
+    skillfilerepo "github.com/twistingmercury/mnemonic-api/internal/repository/skillfile"
 )
 
 // SkillFileService manages child files belonging to skills.
@@ -586,7 +586,7 @@ import (
     "context"
 
     "github.com/google/uuid"
-    enrichmentrepo "github.com/twistingmercury/mnemonic/internal/repository/enrichmentjob"
+    enrichmentrepo "github.com/twistingmercury/mnemonic-api/internal/repository/enrichmentjob"
 )
 
 // EnrichmentService has two distinct usages across the Mnemonic services:
@@ -728,9 +728,9 @@ import (
     "context"
 
     "github.com/google/uuid"
-    patternrepo "github.com/twistingmercury/mnemonic/internal/repository/pattern"
-    patternsvc "github.com/twistingmercury/mnemonic/internal/service/pattern"
-    searchsvc "github.com/twistingmercury/mnemonic/internal/service/search"
+    patternrepo "github.com/twistingmercury/mnemonic-api/internal/repository/pattern"
+    patternsvc "github.com/twistingmercury/mnemonic-mcp/internal/service/pattern"
+    searchsvc "github.com/twistingmercury/mnemonic-mcp/internal/service/search"
 )
 
 // ToolDependencies defines the interface that MCP tool handlers require.

@@ -988,7 +988,7 @@ func (m *Database) RecordError(ctx context.Context, database, operation string) 
 
 > **Architecture Reference:** [Observability Architecture - Metrics](../architecture/system/07-observability-architecture.md#metrics) | [Pattern Enrichment](pattern-processing.md)
 
-The enrichment worker runs as a background goroutine processing pattern enrichment jobs (embedding generation, concept extraction, graph node creation). It requires dedicated metrics, tracing spans, and structured logging to provide visibility into asynchronous processing.
+The enricher (`mnemonic-enricher`) is a standalone service consuming enrichment jobs from RabbitMQ. It processes embedding generation, concept extraction, and graph node creation. It requires dedicated metrics, tracing spans, and structured logging to provide visibility into asynchronous processing.
 
 ### Enrichment Metrics
 

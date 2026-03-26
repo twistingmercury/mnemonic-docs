@@ -202,7 +202,7 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 **Positive:**
 
 - PGVector index operates directly on the embedding column (no JSONB extraction)
-- Enrichment queue requires no external message broker
+- ~~Enrichment queue requires no external message broker~~ (superseded by ADR-008: RabbitMQ is now the primary dispatch)
 - Concurrent enrichment workers are safe via `SKIP LOCKED`
 - Pattern deletion cascades to jobs (no orphans)
 
