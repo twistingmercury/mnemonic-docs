@@ -1562,7 +1562,7 @@ for {
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [OpenAPI Spec - Pagination](../../api/openapi/mnemonic-v1.yaml)
+> **Architecture Reference:** OpenAPI Spec - Pagination (in source repository: `mnemonic-api/api/openapi/mnemonic-v1.yaml`)
 
 The OpenAPI spec defines cursor-based pagination with opaque base64 cursors. The repository layer uses `ListOptions{Offset, Limit}`. The translation between wire cursors and repository offsets lives in the **handler layer**, not the service layer.
 

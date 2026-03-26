@@ -288,7 +288,7 @@ graph TB
 ### Cross-Cutting Concerns
 
 - **Observability**: Mnemonic emits structured logs, exposes a health check endpoint, and publishes metrics on both interfaces. See [Observability Architecture](07-observability-architecture.md).
-- **Schema migration**: Migrations are applied externally by `golang-migrate` CLI as a deployment step. Mnemonic verifies schema compatibility at startup but does not run migrations. See [Data Architecture - Migration Strategy](04-data-architecture.md#migration-strategy).
+- **Schema migration**: Migrations are pre-applied at Docker image build time via entrypoint scripts. Mnemonic verifies schema compatibility at startup but does not run migrations. See [Data Architecture - Migration Strategy](04-data-architecture.md#migration-strategy).
 
 ## Post-MVP
 

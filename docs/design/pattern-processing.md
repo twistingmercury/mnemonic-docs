@@ -12,7 +12,7 @@
 
 ## Overview
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [ADR-004: Unified Backend with REST API](../architecture/system/00-architectural-decisions.md#adr-004-unified-backend-with-rest-api)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [ADR-004: Unified Backend with REST API](../architecture/system/00-architectural-decisions.md#adr-004-unified-backend-with-rest-api)
 
 Pattern enrichment transforms raw pattern content into searchable, interconnected knowledge. When a pattern is created or updated, Mnemonic automatically enriches it to enable:
 
@@ -108,7 +108,7 @@ Key characteristics:
 
 ## Enrichment Pipeline
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Concept](../concept.md)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [Concept](../concept.md)
 
 ### Write-time Enrichment
 
@@ -594,7 +594,7 @@ flowchart TB
 
 ## External Service Dependencies
 
-> **Architecture Reference:** [Requirements - Non-Goals](../mnemonic-requirements.md#non-goals) | [System Architecture - Boundary Definitions](../architecture/system/02-system-architecture.md#boundary-definitions)
+> **Architecture Reference:** [Requirements - Scope Boundaries](../requirements.md#scope-boundaries) | [System Architecture - Boundary Definitions](../architecture/system/02-system-architecture.md#boundary-definitions)
 
 Pattern enrichment requires external API calls for embedding generation and entity extraction.
 
@@ -772,7 +772,7 @@ The pattern service should expose a health check that validates enrichment capab
 
 ## Internal Dependencies
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server)
 
 ### PGVector Configuration
 

@@ -51,7 +51,7 @@
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [Data Architecture](../architecture/system/04-data-architecture.md) | [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic)
+> **Architecture Reference:** [Data Architecture](../architecture/system/04-data-architecture.md) | [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server)
 
 This document provides implementation details for the Mnemonic data storage layer. It translates the architectural specifications from [Data Architecture](../architecture/system/04-data-architecture.md) into concrete SQL migrations, Cypher queries, and Go interface definitions.
 

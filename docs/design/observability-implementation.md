@@ -1453,7 +1453,7 @@ All log entries automatically include (via otelx):
 
 ## Handler Instrumentation Patterns
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Observability Architecture - Key Takeaways](../architecture/system/07-observability-architecture.md#key-takeaways)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [Observability Architecture - Key Takeaways](../architecture/system/07-observability-architecture.md#key-takeaways)
 
 ### Handler Dependencies
 
@@ -1572,7 +1572,7 @@ func SetupHandlers(r *gin.Engine, deps *handlers.Dependencies) {
 
 ## Database Instrumentation
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Observability Architecture - Metrics (Prometheus)](../architecture/system/07-observability-architecture.md#metrics-prometheus)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [Observability Architecture - Metrics (Prometheus)](../architecture/system/07-observability-architecture.md#metrics-prometheus)
 
 ### Postgres/PGVector Instrumentation
 

@@ -84,7 +84,7 @@ Viper's `MergeInConfig()` is NOT used. Configuration is loaded with `ReadInConfi
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic) | [Deployment Architecture - Mnemonic](../architecture/system/06-deployment-architecture.md#mnemonic)
+> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [Deployment Architecture - Mnemonic](../architecture/system/06-deployment-architecture.md#mnemonic)
 
 The Mnemonic server reads configuration from YAML files.
 

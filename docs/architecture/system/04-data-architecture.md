@@ -54,7 +54,7 @@
 
 [Back to Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [System Architecture - Mnemonic](02-system-architecture.md#mnemonic) | [ADR-001: Team Knowledge Graph](00-architectural-decisions.md#adr-001) | [ADR-003: Entity Storage](00-architectural-decisions.md#adr-003) | [ADR-004: Pattern Storage](00-architectural-decisions.md#adr-004)
+> **Architecture Reference:** [System Architecture - Mnemonic](02-system-architecture.md#mnemonic-server) | [ADR-001: Team Knowledge Graph](00-architectural-decisions.md#adr-001) | [ADR-003: Entity Storage](00-architectural-decisions.md#adr-003) | [ADR-004: Pattern Storage](00-architectural-decisions.md#adr-004)
 
 Mnemonic uses a polyglot persistence strategy where each database technology is chosen for its strengths:
 
@@ -659,7 +659,7 @@ sequenceDiagram
 
 #### Schema Versioning
 
-**Migration Tool:** golang-migrate CLI, run as a deployment pipeline step external to Mnemonic. Mnemonic does not embed or invoke golang-migrate; it never manages DDL or runs migrations directly.
+**Migration Tool:** Docker entrypoint scripts. PostgreSQL migrations are `.up.sql` files applied via `docker-entrypoint-initdb.d` at image build time. Neo4j migrations are `.cypher` files applied via `cypher-shell` during image build. Mnemonic never manages DDL or runs migrations directly. See [dbs ADR-001](../dbs/02-architectural-decisions.md) for the rationale behind this approach.
 
 **Directory Structure:**
 
@@ -688,7 +688,7 @@ src/migrations/
 
 **Version Tracking:**
 
-Migration state is tracked by golang-migrate in a `schema_migrations` table.
+Migration state is implicit in the Docker image tag — each image version contains a known set of migrations applied at build time. Rollback is accomplished by pulling a prior image tag.
 
 #### Forward-Compatible Migrations
 

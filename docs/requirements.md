@@ -99,7 +99,7 @@ multiple instances can run without coordination.
 
 <a id="dp-3"></a>**DP-3.** Mnemonic must verify schema compatibility at startup (e.g., by checking that the database
 schema version is compatible with the running version). Mnemonic does not manage schema versioning or
-run migrations. Migrations are applied externally by the golang-migrate CLI as a deployment step,
+run migrations. Migrations are pre-applied at Docker image build time via entrypoint scripts,
 independent of the application lifecycle.
 
 ## Scope Boundaries
