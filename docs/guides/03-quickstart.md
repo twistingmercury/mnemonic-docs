@@ -11,7 +11,16 @@ Before you start, you need:
 - Claude Code, Claude Web, or another MCP-compatible AI coding assistant
 - curl (for loading a test pattern)
 
-## Step 1: Start the Stack
+## Step 1: Clone the Docs Repository
+
+The `mnemonic-docs` repository includes a Docker Compose file that runs the full Mnemonic stack. Clone it and change into the repo root:
+
+```bash
+git clone git@github.com:twistingmercury/mnemonic-docs.git
+cd mnemonic-docs
+```
+
+## Step 2: Start the Stack
 
 Export your OpenAI API key and start all services:
 
@@ -32,7 +41,7 @@ This starts seven services:
 
 Wait about 30 seconds for all services to be healthy.
 
-## Step 2: Verify the Stack is Healthy
+## Step 3: Verify the Stack is Healthy
 
 Check that all containers are running:
 
@@ -49,7 +58,7 @@ curl -s http://localhost:8081/health | jq .
 
 Both should return HTTP 200 with a status object.
 
-## Step 3: Load a Test Pattern
+## Step 4: Load a Test Pattern
 
 POST a single test pattern to the API to populate the knowledge base:
 
@@ -69,7 +78,9 @@ curl -X POST http://localhost:8080/v1/api/patterns \
 
 The API returns HTTP 202 Accepted. The pattern is now queued for enrichment.
 
-## Step 4: Wait for Enrichment
+> **Tip:** Instead of loading a single test pattern, you can use the [mnemonic-patterns](https://github.com/twistingmercury/mnemonic-patterns) repository to load a curated set of pre-defined patterns. Clone it and run `make load` to validate and upload them all to the API.
+
+## Step 5: Wait for Enrichment
 
 Enrichment adds semantic embeddings to the pattern so it can be found via natural language search. This takes a few seconds. Check the enrichment status:
 
@@ -79,7 +90,7 @@ curl -s http://localhost:8080/v1/api/patterns | jq '.data[].enrichment_status'
 
 Wait until you see `"enriched"` (not `"pending"` or `"failed"`).
 
-## Step 5: Configure Your AI Coding Assistant
+## Step 6: Configure Your AI Coding Assistant
 
 ### Claude Code
 
@@ -135,7 +146,7 @@ If you're using a different AI assistant that supports MCP:
 3. Specify transport as HTTP Streamable
 4. Restart the assistant
 
-## Step 6: Verify It Works
+## Step 7: Verify It Works
 
 In Claude Code or your AI assistant, ask a question that matches the test pattern you loaded:
 
