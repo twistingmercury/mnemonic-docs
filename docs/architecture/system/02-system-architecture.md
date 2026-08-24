@@ -30,7 +30,7 @@ Mnemonic uses a decomposed service architecture with three independent services 
 
 | Service | Repository | Port | Role |
 | --- | --- | --- | --- |
-| MCP Server | `mnemonic-mcp` | 8081 | Read-only MCP interface for Claude Code |
+| MCP Server | `mnemonic-mcp` | 8081 | Sole read-only MCP interface for Claude Code |
 | Admin API | `mnemonic-api` | 8080 | REST API for pattern CRUD and administration |
 | Enricher | `mnemonic-enricher` | -- | Standalone worker for async pattern enrichment |
 
@@ -55,7 +55,7 @@ This is the MVP 2 topology. For the full evolution from monolith through cloud d
 
 ### Mnemonic MCP Server
 
-The MCP server (`mnemonic-mcp`, port 8081) provides a read-only interface for Claude Code to search the team knowledge graph.
+The MCP server (`mnemonic-mcp`, port 8081) exclusively provides the read-only MCP interface for Claude Code to search the team knowledge graph. `mnemonic-api` does not serve MCP or listen on port 8081.
 
 **Responsibilities:**
 
@@ -72,7 +72,7 @@ The MCP server (`mnemonic-mcp`, port 8081) provides a read-only interface for Cl
 
 ### Mnemonic Admin API
 
-The Admin API (`mnemonic-api`, port 8080) provides a REST interface for pattern management and administration.
+The Admin API (`mnemonic-api`, port 8080) provides a REST interface for pattern management and administration. Its operational endpoints, including health, version, metrics, and Swagger, remain part of the API service boundary.
 
 **Responsibilities:**
 

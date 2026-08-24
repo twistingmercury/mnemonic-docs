@@ -29,13 +29,13 @@ For the full vision and problem statement, see [PURPOSE.md](PURPOSE.md).
 
 ## How It Works
 
-Mnemonic is a pattern search system that integrates with Claude Code via MCP (Model Context Protocol). It stores curated engineering patterns in PostgreSQL (PGVector for embeddings) and Neo4j (concept relationships), enabling semantic search and graph traversal. Patterns are created via the admin API, enriched asynchronously via OpenAI embeddings, and served to Claude Code through MCP tools.
+Mnemonic is a pattern search system that integrates with Claude Code via MCP (Model Context Protocol). It stores curated engineering patterns in PostgreSQL (PGVector for embeddings) and Neo4j (concept relationships), enabling semantic search and graph traversal. Patterns are created through the Admin API, enriched asynchronously via OpenAI embeddings, and served to Claude Code through MCP tools exclusively by `mnemonic-mcp`.
 
 The solution spans five source repositories plus this documentation repo:
 
 | Repository                                                              | Role                                                         |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
-| [mnemonic](https://github.com/twistingmercury/mnemonic)                | MCP service exposing pattern search tools to Claude Code     |
+| [mnemonic-mcp](https://github.com/twistingmercury/mnemonic-mcp)        | Sole MCP service exposing pattern search tools to Claude Code |
 | [mnemonic-api](https://github.com/twistingmercury/mnemonic-api)        | REST API for pattern management (CRUD)                       |
 | [mnemonic-enricher](https://github.com/twistingmercury/mnemonic-enricher) | Worker that enriches patterns with embeddings and metadata   |
 | [mnemonic-dbs](https://github.com/twistingmercury/mnemonic-dbs)        | PostgreSQL + Neo4j schemas and Docker images                 |
@@ -69,7 +69,7 @@ Clone this repo alongside the other Mnemonic repositories under a shared parent 
 
 ```
 mnemonic/
-  mnemonic/          # MCP server
+  mnemonic-mcp/      # Sole MCP server
   mnemonic-api/      # Admin REST API
   mnemonic-enricher/ # Enrichment worker
   mnemonic-dbs/      # Database images
