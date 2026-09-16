@@ -47,3 +47,7 @@ $RECYCLE.BIN/
 .classpath
 .settings/
 .metadata/
+
+# Code reviews (local only)
+**/code-reviews/
+**/code_reviews/

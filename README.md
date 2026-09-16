@@ -1,7 +1,7 @@
 # Mnemonic Docs
 
-> **Maturity Level**: Emerging - Documentation is in early rough draft; structure and content are actively being organized and will change frequently.
-> **Version**: v0.2.0
+> **Maturity Level**: Emerging - Documentation is in early rough draft; structure and content are actively being organized and will change frequently.  
+> **Version**: v0.3.0
 
 ---
 
@@ -17,7 +17,7 @@
 
 This repository is the **single source of truth** for architecture, design, requirements, and reference documentation across the Mnemonic solution. Source repositories reference this repo rather than maintaining their own architecture docs.
 
-For the full vision and problem statement, see [PURPOSE.md](PURPOSE.md).
+For the full vision and problem statement, see [What Is Mnemonic?](docs/concept.md).
 
 ### Quick Navigation
 
@@ -31,28 +31,29 @@ For the full vision and problem statement, see [PURPOSE.md](PURPOSE.md).
 
 Mnemonic is a pattern search system that integrates with Claude Code via MCP (Model Context Protocol). It stores curated engineering patterns in PostgreSQL (PGVector for embeddings) and Neo4j (concept relationships), enabling semantic search and graph traversal. Patterns are created through the Admin API, enriched asynchronously via OpenAI embeddings, and served to Claude Code through MCP tools exclusively by `mnemonic-mcp`.
 
-The solution spans five source repositories plus this documentation repo:
+The solution spans six source repositories plus this documentation repo:
 
-| Repository                                                              | Role                                                         |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------ |
-| [mnemonic-mcp](https://github.com/twistingmercury/mnemonic-mcp)        | Sole MCP service exposing pattern search tools to Claude Code |
-| [mnemonic-api](https://github.com/twistingmercury/mnemonic-api)        | REST API for pattern management (CRUD)                       |
-| [mnemonic-enricher](https://github.com/twistingmercury/mnemonic-enricher) | Worker that enriches patterns with embeddings and metadata   |
-| [mnemonic-dbs](https://github.com/twistingmercury/mnemonic-dbs)        | PostgreSQL + Neo4j schemas and Docker images                 |
-| [mnemonic-admin](https://github.com/twistingmercury/mnemonic-admin)    | Web UI for pattern management and search                     |
-| [mnemonic-docs](https://github.com/twistingmercury/mnemonic-docs)      | This repo - consolidated architecture and design docs        |
+| Repository                                                                | Role                                                          |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [mnemonic-mcp](https://github.com/twistingmercury/mnemonic-mcp)           | Sole MCP service exposing pattern search tools to Claude Code |
+| [mnemonic-api](https://github.com/twistingmercury/mnemonic-api)           | REST API for pattern management (CRUD)                        |
+| [mnemonic-enricher](https://github.com/twistingmercury/mnemonic-enricher) | Worker that enriches patterns with embeddings and metadata    |
+| [mnemonic-dbs](https://github.com/twistingmercury/mnemonic-dbs)           | PostgreSQL + Neo4j schemas and Docker images                  |
+| [mnemonic-admin](https://github.com/twistingmercury/mnemonic-admin)       | Web UI for pattern management and search                      |
+| [mnemonic-patterns](https://github.com/twistingmercury/mnemonic-patterns) | Curated pattern library loaded into Mnemonic                  |
+| [mnemonic-docs](https://github.com/twistingmercury/mnemonic-docs)         | This repo - consolidated architecture and design docs         |
 
 ### Documentation Structure
 
-| Directory                     | Contents                                                        |
-| ----------------------------- | --------------------------------------------------------------- |
-| `docs/architecture/system/`   | System-wide: decisions, security, communication, deployment     |
-| `docs/architecture/mnemonic/` | MCP service: tool definitions and response patterns             |
-| `docs/architecture/dbs/`      | Database schemas, migrations, deployment                        |
-| `docs/architecture/admin/`    | Frontend stack, ADRs, screen map, use cases                     |
-| `docs/design/`                | Implementation-level design shared across Go services           |
-| `docs/reference/`             | Pattern file schema and glossary                                |
-| `docs/diagrams/`              | System evolution diagrams (MVP 1-5) and flow diagrams           |
+| Directory                     | Contents                                                          |
+| ----------------------------- | ----------------------------------------------------------------- |
+| `docs/architecture/system/`   | System-wide: decisions, security, communication, deployment       |
+| `docs/architecture/mnemonic/` | MCP service: tool definitions and response patterns               |
+| `docs/architecture/dbs/`      | Database schemas, migrations, deployment                          |
+| `docs/architecture/admin/`    | Frontend stack, ADRs, screen map, use cases                       |
+| `docs/design/`                | Implementation-level design shared across Go services             |
+| `docs/reference/`             | Pattern file schema and glossary                                  |
+| `docs/diagrams/`              | System evolution diagrams (MVP 1-5) and flow diagrams             |
 | `docs/guides/`                | User-facing guides: introduction, concepts, quickstart, authoring |
 
 ## Key Considerations
@@ -67,13 +68,14 @@ The solution spans five source repositories plus this documentation repo:
 
 Clone this repo alongside the other Mnemonic repositories under a shared parent directory:
 
-```
+```text
 mnemonic/
   mnemonic-mcp/      # Sole MCP server
   mnemonic-api/      # Admin REST API
   mnemonic-enricher/ # Enrichment worker
   mnemonic-dbs/      # Database images
   mnemonic-admin/    # Web UI
+  mnemonic-patterns/ # Curated pattern library
   mnemonic-docs/     # This repo
 ```
 

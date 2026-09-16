@@ -695,7 +695,7 @@ drop table if exists skill_files;
 
 **Purpose:** Introduce chunk-based semantic search by creating the `pattern_chunks` table, moving embeddings from patterns to per-chunk rows, adding structured metadata columns to patterns, and updating enrichment jobs to support chunk-level processing.
 
-> **Architecture Reference:** [Data Architecture - Pattern Chunks](../../architecture/dbs/08-data-architecture.md#tables) | [Pattern Enrichment - Generate Embeddings](pattern-processing.md#step-2-generate-embeddings)
+> **Architecture Reference:** [Data Architecture - Pattern Chunks](../architecture/dbs/08-data-architecture.md#tables) | [Pattern Enrichment - Generate Embeddings](pattern-processing.md#step-2-generate-embeddings)
 
 ```sql
 -- src/migrations/postgres/000009_pattern_schema_chunks.up.sql
@@ -807,7 +807,7 @@ Key changes in this migration:
 
 **Purpose:** Update `pattern_chunks.embedding` from `vector(1536)` to `vector(2000)` to support `text-embedding-3-large` with Matryoshka truncation at 2000 dimensions.
 
-> **Architecture Reference:** [Data Architecture - Embedding Dimensions](../../architecture/dbs/08-data-architecture.md#embedding-dimensions) | [Pattern Enrichment - OpenAI Embeddings](pattern-processing.md#openai-api-embeddings)
+> **Architecture Reference:** [Data Architecture - Embedding Dimensions](../architecture/dbs/08-data-architecture.md#embedding-dimensions) | [Pattern Enrichment - OpenAI Embeddings](pattern-processing.md#openai-api-embeddings)
 
 ```sql
 -- src/migrations/postgres/000010_update_embedding_dimensions.up.sql

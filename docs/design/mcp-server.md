@@ -486,7 +486,7 @@ return nil, nil, fmt.Errorf("pattern %s not found", id)
 
 ### Application Error Types
 
-Define sentinel errors in the mcpserver package for the 3 application-level error patterns from [08-mcp-tools.md](../architecture/08-mcp-tools.md#application-level-errors):
+Define sentinel errors in the mcpserver package for the 3 application-level error patterns from [08-mcp-tools.md](../architecture/mnemonic/08-mcp-tools.md#application-level-errors):
 
 ```go
 package mcpserver
@@ -526,7 +526,7 @@ Callers can use `errors.Is` to distinguish error types if needed (for example, i
 
 ### Transport-Level Errors
 
-Transport-level errors are handled by the MCP SDK and the HTTP server, not by tool handlers. These use standard JSON-RPC 2.0 error codes as documented in [08-mcp-tools.md](../architecture/08-mcp-tools.md#transport-level-errors):
+Transport-level errors are handled by the MCP SDK and the HTTP server, not by tool handlers. These use standard JSON-RPC 2.0 error codes as documented in [08-mcp-tools.md](../architecture/mnemonic/08-mcp-tools.md#transport-level-errors):
 
 | Code   | Meaning          | Handled By |
 | ------ | ---------------- | ---------- |
@@ -540,7 +540,7 @@ No custom implementation is needed for transport-level errors.
 
 ## Observability Integration
 
-> **Architecture Reference:** [Observability Implementation](observability-implementation.md) | [Observability Architecture](../architecture/07-observability-architecture.md)
+> **Architecture Reference:** [Observability Implementation](observability-implementation.md) | [Observability Architecture](../architecture/system/07-observability-architecture.md)
 
 ### Receiving Middleware
 
