@@ -4,7 +4,7 @@ This guide teaches you how to write patterns that work well with semantic search
 
 ## What is a Pattern?
 
-A pattern is a Markdown document with YAML frontmatter that captures a piece of team knowledge: a coding convention, architectural decision, best practice, or technique. Patterns are loaded into Mnemonic, semantically enriched (embedded), and served to AI coding assistants via MCP search.
+A pattern is a Markdown document with YAML frontmatter that captures a piece of team knowledge: a coding convention, architectural decision, best practice, or technique. Patterns are loaded into Mnemonic through the REST API (`POST /v1/api/patterns`), semantically enriched (embedded), and served to AI coding assistants via MCP search. The frontmatter fields become fields of the create request and the Markdown body becomes its `content`.
 
 When Claude Code or another AI assistant searches Mnemonic with a question, it finds patterns by semantic similarity — understanding the concepts you're asking about, not just keyword matching. Well-written patterns are discoverable, precise, and actionable.
 
@@ -27,7 +27,7 @@ Here's the overall shape:
 
 ## Overview
 
-[Overview section - never indexed]
+[Overview section - not decorated, so not indexed]
 
 [//]: pattern
 ## [Section 1]
@@ -42,23 +42,31 @@ Here's the overall shape:
 
 ## Frontmatter Schema
 
+These are the rules the API enforces on create and update (`mnemonic-api` `internal/handlers/patterns`). A violation returns `400` with a field-level error; see [Pattern File Schema](../reference/pattern-schema.md) for the full table.
+
 ### Required Fields
 
 | Field | Type | Format | Constraints |
 | --- | --- | --- | --- |
-| `name` | string | kebab-case | Machine identifier. Regex: `^[a-z][a-z0-9-]*$`. Max 128 characters. Must be unique. |
-| `entity_type` | string | kebab-case | Category. Examples: `best-practice`, `cli-pattern`, `api-specification`, `architectural-decision`, `technique`. |
+| `name` | string | kebab-case | Machine identifier. Regex: `^[a-z][a-z0-9-]*$`. Max 128 characters. Must be unique (a duplicate returns `409 Conflict`). |
+| `entity_type` | string | kebab-case | Category. Regex: `^[a-z][a-z0-9-]*$`. Max 100 characters. Free value, not a fixed list. Examples: `best-practice`, `cli-pattern`, `api-specification`, `architectural-decision`, `technique`. |
 | `language` | string | enum | One of the supported languages (see below). |
 | `domain` | string | enum | One of the supported domains (see below). |
-| `description` | string | free text | Non-empty. Used for search and UI display. Max 500 characters. Should be a complete sentence or short paragraph. |
+| `content` | string | Markdown | The body of the file. Non-empty, at most 100,000 bytes. |
+
+`description` is optional for the API but strongly recommended (and required by the mnemonic-patterns validator): free text, max 500 characters, used for keyword search and UI display. Write a complete sentence or short paragraph.
 
 ### Supported Language Values
+
+These are the API defaults (`vocabulary.languages` in mnemonic-api's config); an operator can replace the list in the API's config file.
 
 `agnostic`, `bash`, `c`, `cpp`, `csharp`, `cql`, `cypher`, `dart`, `delphi`, `docker`, `elixir`, `erlang`, `go`, `json`, `java`, `javascript`, `kotlin`, `lua`, `markdown`, `matlab`, `mql`, `objective-c`, `perl`, `php`, `plsql`, `powershell`, `python`, `r`, `react`, `ruby`, `rust`, `scala`, `shell`, `sql`, `swift`, `terraform`, `toml`, `tsql`, `typescript`, `visual-basic`, `yaml`, `zig`.
 
 Use `agnostic` for patterns that apply across languages (e.g., code review practices, documentation standards).
 
 ### Supported Domain Values
+
+Defaults from `vocabulary.domains`, also replaceable in the API's config file.
 
 `api-design`, `backend`, `frontend`, `testing`, `devops`, `cli`, `data-design`, `documentation`, `data-access`, `security`, `shell-scripting`, `configuration`, `observability`, `source-management`.
 
@@ -68,34 +76,18 @@ Choose the primary domain where the pattern applies most directly. If your patte
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `agents` | array of string | Names of agents this pattern is relevant to (e.g., `go-software-engineer`, `bats-test-engineer`). Enrichment may discover and add more. When loaded via the API, these are mapped to `agent_associations` with a default relevance of `0.8`. See [Understanding the Agents Field](#understanding-the-agents-field) below. |
-| `tags` | array of string | Search keywords for filtering (e.g., `error-handling`, `cobra-cli`, `integration-testing`). Keep these specific and actionable. |
-| `version` | string | Language, framework, or spec version. Examples: `Go 1.21+`, `React 18+`, `Postgres 14+`. |
-| `related_patterns` | array of string | Names of related patterns (using the `name` field of those patterns). Enrichment may discover and add more. |
+| `description` | string | Max 500 characters. See above. |
+| `tags` | array of string | At most 20. Used as an AND filter in search and included in each chunk's embedding text. Keep these specific and actionable (e.g., `error-handling`, `cobra-cli`, `integration-testing`). |
+| `version` | string | Free-text label for the language, framework, or spec version. Examples: `Go 1.21+`, `React 18+`, `Postgres 14+`. Not a pattern revision number. |
+| `related_patterns` | array of string | Names of related patterns. Stored and returned as given; Mnemonic does not use it to build graph relationships, which come from extracted concepts. |
 
-### Understanding the Agents Field
+### Agents Are Not Supported Yet
 
-In AI coding assistants like Claude Code, **agents** are specialist subagents that handle specific types of work. A team typically defines a set of agents tailored to their stack and workflows — for example, a `go-software-engineer` agent that writes Go code, a `bats-test-engineer` that creates shell script tests, or a `devops-engineer` that manages Docker and CI/CD pipelines. Each agent has its own tools, permissions, and domain expertise.
+Earlier versions of this guide described an `agents` frontmatter field mapped to weighted "agent associations." No Mnemonic service implements this: the create request has no agent field, nothing is stored, and search has no agent filter or weighting. If your pattern files carry `agents:`, it is ignored by the API. Agent association is a possible future feature.
 
-The `agents` field in a pattern's frontmatter declares which of these specialists the pattern is most relevant to. When an agent searches Mnemonic, patterns tagged with that agent's name are weighted higher in results, making it more likely the agent finds the guidance it needs.
+### Unknown Fields
 
-For example, a pattern about Go error handling might list:
-
-```yaml
-agents:
-  - go-software-engineer
-  - go-e2e-test-engineer
-```
-
-This tells Mnemonic that both the Go engineer and the Go test engineer should see this pattern when searching for error-handling guidance.
-
-You don't need to list every possible agent — enrichment can discover additional associations automatically. Focus on the agents that would benefit most from the pattern.
-
-For a real-world example of how teams define agents and skills, see the [mnemonic-agents-skills](https://github.com/twistingmercury/mnemonic-agents-skills) repository.
-
-### Unknown Fields Are Allowed
-
-You can add custom metadata fields (e.g., `author`, `created`, `status`). Unknown fields are ignored by validation and by Mnemonic's API, but they're preserved for your own tooling and documentation.
+You can add custom metadata fields (e.g., `author`, `created`, `status`) for your own tooling. The API ignores JSON fields it does not know, so they are not stored in Mnemonic.
 
 ## The `[//]: pattern` Decorator
 
@@ -103,7 +95,7 @@ The pattern decorator is the key mechanism that controls what gets indexed for s
 
 ### How It Works
 
-Place `[//]: pattern` on its own line immediately before a heading (`##`, `###`, or deeper):
+Place `[//]: pattern` on its own line before a heading (any level: `#`, `##`, `###`, ...). Blank lines between the decorator and the heading are fine. The line must be exactly `[//]: pattern`, with no leading or trailing spaces and Unix (LF) line endings; anything else is not recognized.
 
 ```markdown
 [//]: pattern
@@ -113,23 +105,27 @@ Everything from this heading until the next decorator or end of file
 is indexed as a searchable chunk.
 ```
 
+The heading text becomes the chunk's section title (max 255 characters; a longer title makes the create fail with a server error).
+
 ### What Gets Indexed
 
 | Content | Indexed? | Why |
 | --- | --- | --- |
 | Decorated section (heading + body) | Yes | Marked explicitly for search |
-| `## Overview` section | No | Intentionally excluded; provides context, not search result |
+| Undecorated section *after* a decorated one | Yes, inside the preceding chunk | A chunk only ends at the next decorator or end of file |
+| `## Overview` before the first decorator | No | Not decorated; provides context, not search results |
 | Intro prose before first decorator | No | Supports reading but not searching |
-| Undecorated section | No | Not marked for indexing |
 | Empty decorated body | No | Silently dropped |
+
+Everything in the file is still stored and returned by `get_pattern`; the table only covers what is indexed. A pattern with no decorated sections produces no chunks, so it stays `pending` and never appears in search.
 
 ### Why Decorators Matter
 
-Decorators let you control search relevance. Content that's important for humans reading the file (introductions, changelogs, disclaimers) can be stored without polluting search rankings. This keeps search results focused on actionable guidance.
+Decorators let you control search relevance. Content that's important for humans reading the file (introductions, disclaimers) can be stored without polluting search rankings, as long as it comes before the first decorator. This keeps search results focused on actionable guidance.
 
 ### Special Case: Overview Section
 
-The `## Overview` section should never be decorated with `[//]: pattern`. By convention, Overview provides context for human readers — what the pattern is, when to use it, and why it matters — without competing in search rankings. If you omit the decorator (as you should), the Overview is not indexed.
+The `## Overview` section should never be decorated with `[//]: pattern`. By convention, Overview provides context for human readers — what the pattern is, when to use it, and why it matters — without competing in search rankings. Mnemonic has no special rule for the name "Overview": it stays out of the index only because it is undecorated and placed before the first decorator.
 
 ### Multiple Decorated Sections
 
@@ -156,7 +152,7 @@ Each decorated section becomes an independently searchable chunk. Someone search
 
 ## Required Sections
 
-Every pattern must have:
+The mnemonic-patterns validator requires these (the API itself only requires non-empty content, but without a decorated section nothing is searchable):
 
 1. **`## Overview`** — What the pattern is, when to use it, and why. Keep this concise (a few sentences to a short paragraph). It's your elevator pitch.
 
@@ -196,7 +192,7 @@ The good version includes what the pattern is, why you'd use it, and an example.
 
 ### 2. Use Descriptive Headings
 
-The section heading becomes part of the searchable content. Make it descriptive, not generic.
+The section heading becomes part of the searchable content: each chunk is embedded as `pattern name | tags | section title` followed by the body. Make it descriptive, not generic.
 
 Bad: `## Implementation`, `## Example`, `## Details`
 
@@ -292,8 +288,6 @@ entity_type: cli-pattern
 language: go
 domain: cli
 description: Configuration management with explicit config injection, environment variable overrides, and clear precedence rules for Cobra CLIs
-agents:
-  - go-software-engineer
 tags:
   - cobra
   - cli
@@ -523,6 +517,8 @@ The mnemonic-patterns repository includes a validation script that checks all pa
 
 ### What Validation Checks
 
+These checks belong to the mnemonic-patterns script, not the API (the API's own rules are in [Frontmatter Schema](#frontmatter-schema)):
+
 1. YAML frontmatter is present and parseable
 2. All required fields are present and non-empty
 3. `name` matches the regex `^[a-z][a-z0-9-]*$`
@@ -561,7 +557,7 @@ If validation fails, the script outputs clear error messages with line numbers a
 - Keep sections focused (one technique per section)
 - Use the Overview to set context
 - Tag patterns to enable precise filtering
-- Reference related patterns in frontmatter
+- Keep material you don't want indexed above the first decorator
 - Write for both humans and AI assistants
 
 ### Don't

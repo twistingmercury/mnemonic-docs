@@ -20,14 +20,21 @@ flowchart TB
   admin["admin tools"] -->|REST| admin_api["mnemonic admin API"]
 
   admin_api --> pg[("PostgreSQL + PGVector")]
-  admin_api --> queue[("RabbitMQ enrichment job queue")]
+  admin_api -->|publish job_id| queue[("RabbitMQ enrichment-jobs queue")]
   queue --> enricher["enricher"]
   enricher --> pg
   enricher --> neo4j[("Neo4j")]
+  admin_api -->|read, delete cleanup| neo4j
 
   mcp_server -->|read only| pg
   mcp_server -->|read only| neo4j
+
+  openai(["OpenAI API"])
+  admin_api & mcp_server -->|query embeddings| openai
+  enricher -->|embeddings, concept extraction| openai
 ```
+
+MVP 2 is the current topology. For ports, protocols and the detailed flows, see [System Architecture](../architecture/system/02-system-architecture.md).
 
 ---
 

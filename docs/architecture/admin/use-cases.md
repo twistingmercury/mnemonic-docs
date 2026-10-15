@@ -22,7 +22,7 @@ flowchart LR
             UC_Detail([Inspect pattern detail])
             UC_Chunks([View chunk summaries])
             UC_Related([Pivot to related pattern])
-            UC_Agents([Inspect agent associations])
+            UC_Agents(["Inspect agent associations (planned)"])
         end
 
         subgraph Import[Import]
@@ -57,11 +57,11 @@ flowchart LR
 
 - Browse the current pattern catalog without entering a search query.
 - Search patterns with semantic query support.
-- Narrow results with lightweight filters such as tag, language, domain, or agent.
+- Narrow results with lightweight filters: tag, language, or domain. (An agent filter is planned; the API does not support it.)
 - Open a pattern and inspect its full metadata and content.
 - Review chunk summaries and use result context to understand why a pattern matched.
 - Move from one pattern to another through related-pattern links.
-- Inspect agent associations as supporting context.
+- Inspect agent associations as supporting context. **Planned:** the API returns no agent data yet ([KM-6](../../requirements.md#km-6)).
 - Import one Markdown pattern file by validating it locally, translating it to the pattern create payload, and submitting it to the API.
 - See clear import outcomes, including validation failures, conflict responses, and successful creation.
 

@@ -58,6 +58,8 @@ Core capabilities:
 - Pattern_agent_associations table retained to support "which agents use this pattern" queries
 - Users must understand that Mnemonic provides knowledge, not routing decisions
 
+> **Amendment (2026-10-15):** "Single server with two listeners" was superseded by the service decomposition in [ADR-008](#adr-008): `mnemonic-mcp`, `mnemonic-api` and `mnemonic-enricher` are separate services. None of the current services (v0.4.0) reads or writes agent associations; the services manage patterns only.
+
 ## <a id="adr-002"></a>ADR-002: MCP Protocol for Claude Code Integration
 
 **Date:** 2026-02-15
@@ -126,16 +128,18 @@ Agents, skills, and skill files are first-class entities in Mnemonic (see [ADR-0
 
 ### Decision
 
+> **Amendment (2026-10-15):** Not implemented in the current services. As of v0.4.0, `mnemonic-api`, `mnemonic-mcp` and `mnemonic-enricher` have no agent, skill or skill-file entities or endpoints; patterns are the only resource. This record is kept for history and as the design to follow if entity storage returns.
+
 **Use a JSONB document model for entity definitions.** Each entity table follows a common pattern:
 
-| Column       | Type            | Purpose                                                    |
-| ------------ | --------------- | ---------------------------------------------------------- |
-| `id`         | UUID PK         | Stable reference (entities may be renamed)                 |
+| Column       | Type            | Purpose                                                                |
+| ------------ | --------------- | ---------------------------------------------------------------------- |
+| `id`         | UUID PK         | Stable reference (entities may be renamed)                             |
 | `name`       | VARCHAR UNIQUE  | Human-readable identifier, URL-safe (`^[a-z]([a-z0-9](-[a-z0-9])*)*$`) |
-| `definition` | JSONB NOT NULL  | Complete entity document (all fields)                      |
-| `crc64`      | BIGINT NOT NULL | CRC-64/ISO checksum for change detection                   |
-| `created_at` | TIMESTAMPTZ     | Row creation time                                          |
-| `updated_at` | TIMESTAMPTZ     | Last modification time                                     |
+| `definition` | JSONB NOT NULL  | Complete entity document (all fields)                                  |
+| `crc64`      | BIGINT NOT NULL | CRC-64/ISO checksum for change detection                               |
+| `created_at` | TIMESTAMPTZ     | Row creation time                                                      |
+| `updated_at` | TIMESTAMPTZ     | Last modification time                                                 |
 
 **Name conventions:**
 
@@ -174,6 +178,8 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 ### Decision
 
 > **Amended by ADR-008 and ADR-009:** Enrichment dispatch now uses RabbitMQ as the primary queue. The Postgres-backed `enrichment_jobs` table with `FOR UPDATE SKIP LOCKED` remains as a recovery mechanism for jobs that fail to publish to RabbitMQ. The pattern storage design (relational columns, two-phase enrichment) remains in effect.
+>
+> **Amendment (2026-10-15), chunked enrichment:** Embeddings are now stored per chunk in `pattern_chunks`, not in a single pattern-level `embedding` column. `mnemonic-api` splits content into chunks (one per `[//]: pattern` section) and creates one enrichment job per chunk in the same transaction as the pattern. The enricher embeds each chunk; only when the pattern's last chunk is embedded does it extract concepts and sync Neo4j, then mark the pattern `enriched`. Retries use a fixed delay (`enrichment.retry_delay`, default 30s) up to the job's `max_attempts` (default 3), not exponential backoff, and are run by the enricher's 15-second retry sweep. The API handler accepts content up to 100000 bytes; the database CHECK limit is owned by `mnemonic-dbs`.
 
 **Patterns use relational columns (not JSONB) with async enrichment via a Postgres-backed job queue.**
 
@@ -203,7 +209,7 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 
 - PGVector index operates directly on the embedding column (no JSONB extraction)
 - ~~Enrichment queue requires no external message broker~~ (superseded by ADR-008: RabbitMQ is now the primary dispatch)
-- Concurrent enrichment workers are safe via `SKIP LOCKED`
+- Concurrent enrichment workers are safe via `SKIP LOCKED` (and, since the RabbitMQ change, a conditional job start)
 - Pattern deletion cascades to jobs (no orphans)
 
 **Negative:**
@@ -214,17 +220,17 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 
 ## Decision Summary
 
-| Decision | Choice                       | Rationale                                                      | Status |
-| -------- | ---------------------------- | -------------------------------------------------------------- | ------ |
-| ADR-001  | Team knowledge graph         | Solve knowledge isolation silos                                 | ACTIVE |
-| ADR-002  | MCP protocol integration     | Native Claude Code integration, dual protocol architecture     | ACTIVE |
-| ADR-003  | JSONB document model         | Schema-agnostic entity storage, CRC-64 change detection        | ACTIVE |
-| ADR-004  | Pattern storage + enrichment | Relational columns for vectors, Postgres-backed async queue    | ACTIVE |
-| ADR-005  | Open vocabulary for language/domain | Kebab-case format only; vocabulary governed externally  | SUPERSEDED |
-| ADR-006  | 204 No Content on PUT        | Full-replacement PUT with no body; client issues GET if needed | ACTIVE |
-| ADR-007  | Config-driven vocabulary enforcement | Allow-lists in config; handler enforces; empty list = open | ACTIVE |
-| ADR-008  | RabbitMQ for enrichment dispatch | Decouple enricher from API server; best-effort publish with PG safety net | ACTIVE |
-| ADR-009  | Best-effort publish              | Failed publish logs warning; PG `pending` status is recovery source       | ACTIVE |
+| Decision | Choice                               | Rationale                                                                                      | Status     |
+| -------- | ------------------------------------ | ---------------------------------------------------------------------------------------------- | ---------- |
+| ADR-001  | Team knowledge graph                 | Solve knowledge isolation silos                                                                | ACTIVE     |
+| ADR-002  | MCP protocol integration             | Native Claude Code integration, dual protocol architecture                                     | ACTIVE     |
+| ADR-003  | JSONB document model                 | Schema-agnostic entity storage, CRC-64 change detection (no entities implemented as of v0.4.0) | ACTIVE     |
+| ADR-004  | Pattern storage + enrichment         | Relational columns for vectors, Postgres-backed async queue                                    | ACTIVE     |
+| ADR-005  | Open vocabulary for language/domain  | Kebab-case format only; vocabulary governed externally                                         | SUPERSEDED |
+| ADR-006  | 204 No Content on PUT                | Full-replacement PUT with no body; client issues GET if needed                                 | ACTIVE     |
+| ADR-007  | Config-driven vocabulary enforcement | Allow-lists in config; handler enforces; empty list = open                                     | ACTIVE     |
+| ADR-008  | RabbitMQ for enrichment dispatch     | Decouple enricher from API server; best-effort publish with PG safety net                      | ACTIVE     |
+| ADR-009  | Best-effort publish                  | Failed publish logs warning; PG `pending` status is recovery source                            | ACTIVE     |
 
 ## <a id="adr-005"></a>ADR-005: Open Vocabulary for language and domain Fields
 
@@ -294,6 +300,8 @@ Affected endpoints:
 - `PUT /v1/api/skills/:name/assets/:filename`
 - `PUT /v1/api/patterns/:id/agents`
 
+> **Amendment (2026-10-15):** Only `PUT /v1/api/patterns/:id` exists in `mnemonic-api` v0.4.0, and it returns 204 No Content. The agent and skill endpoints listed above are not implemented.
+
 Clients that need the updated representation after a PUT must issue a subsequent GET. This is consistent with the sync use case: the sync tooling already holds the canonical payload and does not need the server to echo it back.
 
 ### Consequences
@@ -333,6 +341,8 @@ Additionally, operators want to constrain deployments to their team's supported 
 - If `allowedLanguages` or `allowedDomains` is empty at runtime (not possible via normal config loading, but possible programmatically in tests), the check is skipped — any well-formed value passes.
 - Defaults ship with 38 languages and 10 domains in `defaults.go`.
 
+> **Amendment (2026-10-15):** The defaults now ship 42 languages and 14 domains (`DefaultVocabularyLanguages` and `DefaultVocabularyDomains` in `mnemonic-api` `src/internal/config/defaults.go`). The runtime bypass was removed: `validatePatternFields` always checks membership, so an empty list rejects every value, and startup still requires both lists to be non-empty. This resolves the F-04 tension noted below in favor of keeping the startup check.
+
 ### Consequences
 
 **Positive:**
@@ -367,6 +377,7 @@ The goal for Phase 2 is to decouple the enrichment worker into a standalone `mne
 After a pattern create or update, the service layer writes an `enrichment_jobs` row to PostgreSQL (durable, transactional) and then publishes `{"job_id": "<uuid>"}` to the `enrichment-jobs` queue (best-effort). The `mnemonic-enricher` service consumes the queue and reads job details from PostgreSQL by ID.
 
 Two properties were non-negotiable:
+
 1. A broker failure must not fail a pattern write — publishing is best-effort; the DB write is the commit point.
 2. Jobs written to PostgreSQL must never be silently lost — the DB row is always the recovery source.
 
@@ -381,9 +392,11 @@ RabbitMQ was chosen over alternatives (Redis Streams, Postgres LISTEN/NOTIFY, SQ
 - PostgreSQL remains the authoritative record; the queue is a delivery hint, not a source of truth.
 - The `pending` status on an unpublished job is a natural trigger for future recovery tooling.
 
+> **Amendment (2026-10-15):** The sweep now exists. `mnemonic-enricher` runs a retry sweep every 15 seconds that claims, with `FOR UPDATE SKIP LOCKED`, failed jobs whose retry is due and never-attempted jobs pending for more than 2 minutes (the grace period for an unpublished or undelivered message). Job start is conditional (`pending` and due), so a message for a job the sweep already took is acked without work. Publishes run in a producer span and carry W3C `traceparent` in the AMQP headers; the enricher continues that trace. Concurrent publishes share one channel guarded by a mutex, and a failed publish triggers a single shared reconnect.
+
 **Negative:**
 
-- A failed publish leaves the job in `pending` state with no automatic retry. Recovery requires operator intervention or a separate sweep process (not implemented in Phase 2).
+- A failed publish leaves the job in `pending` state with no automatic retry. Recovery requires operator intervention or a separate sweep process (not implemented in Phase 2). *(Superseded: see the amendment above.)*
 - The broker is a new runtime dependency; API startup fails if RabbitMQ is unavailable at `wireDependencies` time (see ADR-009 for implications).
 - A single AMQP channel is used for all publishes. This is safe under the current sequential, single-service model but will need revisiting if publish concurrency increases.
 
@@ -403,6 +416,8 @@ Three strategies were considered:
 3. **Best-effort publish with DB as safety net.** Publish after commit; log and ignore errors. Jobs that miss their publish remain `pending` in PostgreSQL and can be swept later.
 
 ### Decision
+
+> **Amendment (2026-10-15):** The "future sweep process" below is implemented in `mnemonic-enricher` rather than as a republisher: every 15 seconds it claims pending jobs directly from PostgreSQL (`FOR UPDATE SKIP LOCKED`), taking never-attempted jobs once they are 2 minutes old, and runs them without going through RabbitMQ. Publishing now happens only after the pattern, chunk and job rows commit in one transaction. The reconnect wait is a context-aware `select` held without the publisher lock, and a publish that still fails increments `mnemonic.queue.publish_failures_total`. API `/health` reports a disconnected publisher as a Warning.
 
 **Publish is best-effort. A failed publish logs a warning and is not propagated to the caller.**
 

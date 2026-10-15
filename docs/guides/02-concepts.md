@@ -8,11 +8,11 @@ A pattern is a Markdown document that captures a piece of team knowledge — a c
 
 ### Structure of a Pattern
 
-Every pattern has two parts: frontmatter (metadata) and content.
+Every pattern has two parts: metadata and content. In a pattern file the metadata is YAML frontmatter; when the file is loaded, each frontmatter field becomes a field of the API's create request and the body becomes `content`.
 
 **Frontmatter (YAML):**
 
-Patterns begin with YAML metadata that defines searchable properties:
+Patterns begin with YAML metadata:
 
 ```yaml
 ---
@@ -24,12 +24,10 @@ domain: backend
 tags:
   - error-handling
   - reliability
-agents:
-  - go-software-engineer
 ---
 ```
 
-These fields are searchable. When you ask Mnemonic "show me error handling patterns in Go," the system searches both the frontmatter and the content body.
+`language`, `domain` and `tags` can be used as search filters, and the pattern name and tags are folded into each chunk's embedding text alongside the section title and body. `name` and `description` are also matched by the API's keyword (`search`) filter on the list endpoint.
 
 **Content Body:**
 
@@ -48,9 +46,9 @@ Sections prefixed with `[//]: pattern` are indexed as independent searchable chu
 Our team uses the following approach...
 ```
 
-Sections without this decorator are stored in Mnemonic but not indexed for semantic search. This means if you add a changelog or disclaimer section, it won't pollute search results.
+The full content is stored in Mnemonic (and returned by `get_pattern`), but only decorated sections are indexed for semantic search. A decorated section runs from its heading to the next `[//]: pattern` line or the end of the file, so it also absorbs any undecorated headings after it. Put undecorated material such as an Overview before the first decorator to keep it out of search; content after the last decorated section is part of that section's chunk.
 
-**Special case:** The `## Overview` section is never indexed, even if it has a pattern decorator. This lets you write a concise summary without it competing in search rankings.
+There is no special handling for `## Overview`: it stays out of the index only because, by convention, it is not decorated. A pattern with no decorators produces no chunks and never becomes searchable.
 
 Each decorated section becomes an independently searchable chunk. If your pattern has three decorated sections, all three are indexed separately, allowing more precise matches when Claude Code searches.
 
@@ -66,8 +64,6 @@ domain: backend
 tags:
   - error-handling
   - reliability
-agents:
-  - go-software-engineer
 ---
 
 ## Overview
@@ -88,17 +84,13 @@ When propagating errors up the stack...
 ## Logging Failures
 
 We log errors at the boundary where we handle them...
-
-## Changelog
-
-- 2026-03: Updated to reflect structured logging changes
 ```
 
-In this example, three sections are indexed: "The Sentinel Error Approach," "Wrapping Errors," and "Logging Failures." The Overview and Changelog are not indexed.
+In this example, three sections are indexed: "The Sentinel Error Approach," "Wrapping Errors," and "Logging Failures." The Overview is not indexed. If you appended an undecorated `## Changelog` after "Logging Failures," it would become part of the "Logging Failures" chunk; keep such material above the first decorator instead.
 
 ## Embeddings: Making Patterns Searchable
 
-When you create a pattern, Mnemonic doesn't just store the text. It generates a semantic embedding — a numeric representation of meaning — that makes similarity search fast and relevant.
+When you create a pattern, Mnemonic doesn't just store the text. It generates a semantic embedding for each chunk — a numeric representation of meaning — that makes similarity search fast and relevant. The text embedded for a chunk is `pattern name | tags | section title` followed by the section body.
 
 ### What Is an Embedding?
 
@@ -111,8 +103,8 @@ Mnemonic uses OpenAI's `text-embedding-3-large` model to generate embeddings (wi
 When Claude Code searches Mnemonic with a query like "how do we handle errors?", here's what happens:
 
 1. Mnemonic embeds your query to a 2,000-dimensional vector
-2. It searches PGVector (a Postgres extension) to find patterns with the most similar embeddings
-3. Results are ranked by cosine similarity: how closely aligned the vectors are
+2. It searches PGVector (a Postgres extension) to find the chunks with the most similar embeddings
+3. Results are ranked by cosine similarity: how closely aligned the vectors are; each result is one chunk (section), so one pattern can appear more than once
 
 **Cosine similarity scores range from 0.0 to 1.0:**
 
@@ -121,7 +113,7 @@ When Claude Code searches Mnemonic with a query like "how do we handle errors?",
 - **0.5–0.7** = somewhat related
 - **Below 0.5** = probably unrelated
 
-The default threshold is 0.5, though it is configurable. This catches both closely related and somewhat related patterns.
+The MCP `search_patterns` tool defaults to 0.5 (`mcp.default_search_threshold`); the REST endpoint `GET /v1/api/patterns/search` defaults to 0.7. Both accept a `threshold` per request.
 
 ### Why This Matters for Pattern Authors
 
@@ -155,13 +147,12 @@ Beyond semantic similarity, you can filter results using:
 - **Tags**: Match patterns that have specific tags (AND logic: all specified tags required)
 - **Language**: Narrow to patterns for a specific language (go, python, typescript, etc.)
 - **Domain**: Filter by domain (backend, testing, frontend, devops, etc.)
-- **Agent**: Show only patterns associated with a specific agent or skill
 
-These filters work together with semantic search. Your query is still embedded and ranked by similarity, but only patterns matching all your filters are considered.
+There is no agent filter. These filters work together with semantic search. Your query is still embedded and ranked by similarity, but only patterns matching all your filters are considered.
 
 ### Similarity Threshold
 
-The default threshold is 0.5, though it is configurable. When Claude Code calls `search_patterns`, it can adjust the threshold:
+The `search_patterns` default threshold is 0.5, configurable per server with `MNEMONIC_MCP_DEFAULT_SEARCH_THRESHOLD`. When Claude Code calls `search_patterns`, it can adjust the threshold:
 
 - Higher threshold (0.7–0.9): Stricter, only highly relevant patterns
 - Lower threshold (0.3–0.5): Broader, catches more tangential ideas
@@ -176,23 +167,32 @@ When a pattern is posted to Mnemonic, it doesn't instantly become searchable. It
 
 **1. Pattern arrives via REST API**
 
-Someone (an admin, CI pipeline, or sync script) POSTs a new pattern to Mnemonic's admin API. The pattern is stored in PostgreSQL with status `pending`.
+Someone (an admin, CI pipeline, or sync script) POSTs a new pattern to Mnemonic's admin API. In one transaction the API stores the pattern with status `pending`, splits the content into chunks, and creates one enrichment job per chunk.
 
 **2. Enrichment worker claims the job**
 
-The enrichment worker (mnemonic-enricher) subscribes to a RabbitMQ queue. When the API creates a pattern, it publishes an enrichment job to the queue. The worker picks up the message and begins processing.
+After the transaction commits, the API publishes each job ID to the `enrichment-jobs` RabbitMQ queue. The enrichment worker (mnemonic-enricher) consumes the message, claims the job row in PostgreSQL, and begins processing. If publishing fails, the job row stays `pending` and the enricher's 15-second retry sweep picks it up.
 
 **3. Embedding is generated**
 
-The worker sends the pattern text to OpenAI's embedding API, which returns a 2,000-dimensional vector. This embedding is stored in PostgreSQL alongside the pattern, ready for vector search.
+The worker sends the chunk text to OpenAI's embedding API, which returns a 2,000-dimensional vector. The embedding is stored on the chunk in PostgreSQL and the chunk is marked `enriched`, ready for vector search.
 
 **4. Knowledge graph is built**
 
-The worker analyzes the pattern's concepts and relationships. It creates nodes in Neo4j representing key concepts and edges representing how patterns relate to each other. For example, if two patterns share concepts like "error handling," the enrichment worker creates a `RELATED_TO` edge between them.
+When the last chunk of a pattern is embedded, the worker sends the full pattern content to OpenAI (`gpt-4o-mini`) to extract key concepts. In Neo4j it merges a `Pattern` node, a `Concept` node per concept linked by `MENTIONED_IN`, and recomputes `RELATED_TO` edges to every pattern whose concept overlap (shared concepts divided by the larger concept count) is at least 0.3 (`enrichment.related_to_min_similarity`).
 
 **5. Pattern is marked as enriched**
 
-The worker updates the pattern status to `enriched`. Only enriched patterns appear in semantic search results.
+The worker updates the pattern status to `enriched`. Semantic search returns only chunks that are `enriched`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: POST or PUT
+    pending --> enriched: all chunks embedded and graph synced
+    pending --> failed: a chunk fails to embed
+    failed --> enriched: retry succeeds
+    enriched --> pending: PUT (content re-chunked)
+```
 
 ### Why Async?
 
@@ -200,13 +200,13 @@ Enrichment happens asynchronously (not during the HTTP POST) because calling the
 
 ### Requirements
 
-Enrichment requires an OpenAI API key. Set the `MNEMONIC_OPENAI_API_KEY` environment variable before running the enrichment worker. Without this key, patterns will remain in `pending` status and never become searchable.
+Enrichment requires an OpenAI API key. Set the `MNEMONIC_OPENAI_API_KEY` environment variable for the enricher (and for the API and MCP server, which embed search queries). With a missing or invalid key, enrichment jobs fail and patterns end up `failed` with the OpenAI error in `enrichment_error`.
 
 ### Failure Handling
 
-If enrichment fails (network timeout, API error, etc.), the job is retried automatically. The retry strategy is exponential backoff — failed jobs get retried sooner at first, then increasingly delayed intervals.
+If enrichment fails (network timeout, API error, etc.), there are two layers of retry. Each OpenAI call is retried in-process (`openai.retry_attempts`, default 3). If the job still fails, the job is rescheduled after a fixed delay (`enrichment.retry_delay`, default 30s), and the enricher's retry sweep runs it again until the job reaches its maximum attempts. A failed chunk embedding also marks the pattern `failed` (with the error in `enrichment_error`) while the retry is pending; a failed concept-extraction or Neo4j step leaves it `pending`. If a retry succeeds, the pattern moves to `enriched`.
 
-Failed patterns don't stay in `pending` forever. Eventually, an admin will notice and either fix the issue (e.g., rotate an expired API key) or delete the pattern.
+A job that exhausts its attempts stays `failed`. There is no retry endpoint: fix the cause (e.g., rotate an expired API key) and re-submit the pattern with `PUT`, which re-chunks it and creates new jobs, or delete it.
 
 ## Knowledge Graphs: Relationships Between Patterns
 
@@ -216,10 +216,18 @@ Beyond semantic embeddings, Mnemonic builds a Neo4j knowledge graph that capture
 
 The enrichment worker analyzes patterns and creates:
 
-- **Nodes**: Key concepts extracted from each pattern (e.g., "error handling," "database migration," "HTTP middleware")
-- **Edges**: Relationships between concepts (e.g., two patterns that both discuss "error handling" are related)
+- **Nodes**: one `Pattern` node per pattern, and one `Concept` node per key concept extracted from it (e.g., "error handling," "database migration," "HTTP middleware")
+- **Edges**: `(Concept)-[:MENTIONED_IN]->(Pattern)`, and `(Pattern)-[:RELATED_TO {similarity}]->(Pattern)` between patterns that share enough concepts
 
-The edge type is `RELATED_TO`, indicating general conceptual similarity.
+```mermaid
+flowchart LR
+    C1((error handling)) -->|MENTIONED_IN| P1[go-error-handling]
+    C1 -->|MENTIONED_IN| P2[http-middleware]
+    C2((wrapping)) -->|MENTIONED_IN| P1
+    P1 -->|"RELATED_TO {similarity: 0.5}"| P2
+```
+
+The `related_patterns` field you send to the API is stored with the pattern but is not used to build the graph.
 
 ### Why the Graph Matters
 
@@ -227,9 +235,9 @@ The knowledge graph serves two purposes:
 
 1. **Related pattern discovery**: Given one pattern, find others that discuss similar concepts. The `find_related_patterns` MCP tool uses the graph to traverse and return related patterns.
 
-2. **Future ranking improvements**: In later phases, Mnemonic will combine vector similarity with graph context for blended ranking. A pattern that is both semantically similar AND connected via the knowledge graph will rank higher.
+2. **Graph-expanded search**: `search_patterns` takes the top three patterns from the vector results and appends up to five more patterns reached through their `RELATED_TO` edges, in a separate "Related Patterns (via graph)" section. The vector ranking itself is not changed.
 
-For now (MVP), graph relationships are visible in the `get_pattern` and `find_related_patterns` tools, but vector search is purely embedding-based.
+Blended ranking that combines vector similarity and graph context into one score is planned, not implemented. Graph relationships are also shown by `get_pattern` and `find_related_patterns`.
 
 ## MCP: How Claude Code Talks to Mnemonic
 
@@ -237,11 +245,11 @@ MCP (Model Context Protocol) is the standard way Claude Code integrates with ext
 
 ### What MCP Is
 
-MCP is a protocol for exchanging information between AI assistants and external tools. It's not HTTP or gRPC — it's a message-based protocol designed specifically for Claude Code to call remote functions reliably.
+MCP is an open protocol for exchanging information between AI assistants and external tools. Messages are JSON-RPC 2.0, carried over a transport; Mnemonic uses the Streamable HTTP transport in stateless mode.
 
 ### The Connection
 
-Claude Code connects to Mnemonic via MCP over Streamable HTTP:
+Claude Code connects to Mnemonic via MCP over Streamable HTTP (no authentication):
 
 ```text
 Claude Code → http://localhost:8081/mcp → Mnemonic MCP Server
@@ -263,9 +271,10 @@ Semantic search over the team knowledge graph.
 - `limit` (optional, default 10, max 50): How many results to return
 - `threshold` (optional, default 0.5, range 0.0–1.0): Minimum similarity score
 - `tags` (optional, string array): Filter by tags (AND logic)
-- `agent` (optional, string): Filter by agent association
+- `language` (optional, string): Filter by pattern language
+- `domain` (optional, string): Filter by pattern domain
 
-**Returns:** Markdown text with ranked results, similarity scores, tags, and full pattern content.
+**Returns:** Markdown text with one entry per matching section: pattern name, match percentage, section title, tags, and the section content; then a "Related Patterns (via graph)" section when the graph adds any.
 
 Example: Claude Code might call this when you ask "how do we test database migrations?" and it determines that team knowledge is relevant.
 
@@ -290,7 +299,7 @@ Retrieve a specific pattern by UUID.
 
 - `id` (required, UUID): The pattern's ID
 
-**Returns:** Markdown with full pattern content, metadata, relationships, and extracted concepts.
+**Returns:** Markdown with full pattern content, metadata, related patterns, and extracted concepts. Graph details are omitted while enrichment is still pending.
 
 Example: When you ask "show me the migration pattern," Claude Code calls this tool with the ID.
 
@@ -310,15 +319,17 @@ Here's where everything runs:
 
 | Component | Port | Purpose |
 | --------- | ---- | ------- |
-| **mnemonic-mcp** | 8081 | MCP server for Claude Code |
-| **mnemonic-api** | 8080 | Admin REST API for pattern CRUD |
-| **mnemonic-enricher** | 8082 | Async enrichment worker |
+| **mnemonic-mcp** | 8081 | MCP server for Claude Code (`/mcp`) |
+| **mnemonic-api** | 8080 | Admin REST API for pattern CRUD (`/v1/api`) |
+| **mnemonic-enricher** | 8082 | Async enrichment worker (host port for its `/health`) |
 | **PostgreSQL** | 5432 | Pattern storage and PGVector indexes |
 | **Neo4j** | 7687 | Knowledge graph |
 | **RabbitMQ** | 5672 | Message queue between API and enricher |
 | **mnemonic-admin** | 3000 | Web UI for pattern management |
 
-Developers interact with the MCP server (port 8081). Admins use the REST API (port 8080) and the web UI (port 3000). The enrichment worker (port 8082) runs silently in the background.
+Ports are the host ports in the docs repo's docker-compose.yaml. Inside each container, every Mnemonic service serves `/health` and `/version` on port 8080 and Prometheus metrics on port 9090; the MCP server adds port 8081 for `/mcp`.
+
+Developers interact with the MCP server (port 8081). Admins use the REST API (port 8080) and the web UI (port 3000). The enrichment worker runs in the background; port 8082 exposes only its health and version endpoints.
 
 For deployment details, see [System Architecture](../architecture/system/02-system-architecture.md).
 
@@ -326,8 +337,8 @@ For deployment details, see [System Architecture](../architecture/system/02-syst
 
 Mnemonic is focused and purposeful. It deliberately does not:
 
-- **Perform LLM inference**: Mnemonic calls the embedding API only. It does not generate text, write code, or make decisions. That's Claude Code's job.
-- **Store user credentials**: Mnemonic never receives or stores passwords, API keys, or authentication tokens.
+- **Generate answers or code**: Mnemonic calls OpenAI only to embed text and, during enrichment, to extract a pattern's concepts (`gpt-4o-mini`). It does not generate answers, write code, or make decisions. That's Claude Code's job.
+- **Store user credentials**: Mnemonic never receives or stores user passwords or authentication tokens. Its only secrets are its own service credentials (database passwords, the OpenAI key), supplied through configuration.
 - **Execute tools or file operations**: Mnemonic cannot run commands, write files, or take actions on your system.
 - **Make workflow decisions**: Mnemonic is a memory system, not a workflow engine. You decide when and how to use the knowledge it provides.
 

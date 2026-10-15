@@ -10,6 +10,7 @@
   - [Streamable HTTP Handler](#streamable-http-handler)
   - [HTTP Server Lifecycle](#http-server-lifecycle)
   - [Server Lifecycle Diagram](#server-lifecycle-diagram)
+  - [Request Path](#request-path)
 - [Tool Registration](#tool-registration)
 - [Tool Handler Signatures](#tool-handler-signatures)
   - [search_patterns](#search_patterns)
@@ -30,179 +31,162 @@
 
 ## Overview
 
-> **Architecture Reference:** [System Architecture - Mnemonic Server](../architecture/system/02-system-architecture.md#mnemonic-server) | [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) | [Communication Patterns - Claude Code to MCP Server](../architecture/system/03-communication-patterns.md#claude-code-to-mcp-server-communication)
+> **Architecture Reference:** [System Architecture - Mnemonic MCP Server](../architecture/system/02-system-architecture.md#mnemonic-mcp-server) | [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) | [Communication Patterns - Claude Code to MCP Server](../architecture/system/03-communication-patterns.md#claude-code-to-mcp-server-communication)
 
-Mnemonic exposes 3 read-only pattern search tools over the Model Context Protocol (MCP). The MCP server listens on port 8081 via Streamable HTTP and serves JSON-RPC 2.0 requests. Claude Code discovers tools via `tools/list` and invokes them via `tools/call`.
+The `mnemonic-mcp` service exposes 3 read-only pattern search tools over the Model Context Protocol (MCP). The MCP server listens on port 8081 (`mcp.port`) and serves JSON-RPC 2.0 over Streamable HTTP at `/mcp`. Claude Code discovers tools via `tools/list` and invokes them via `tools/call`.
 
 All 3 tools are stateless: each invocation is a standalone request/response with no session state carried between calls. The tools return markdown-formatted text content.
 
-**SDK:** `github.com/modelcontextprotocol/go-sdk/mcp` v1.3.1
+**Authentication:** none. The MCP endpoint is unauthenticated in the current local, single-user phase. Do not expose port 8081 beyond localhost.
 
-**Scope:** There are only 3 MCP tools, all for pattern search. Tooling synchronization (agents and skills) uses the REST API, not MCP. This document covers the complete MCP tool surface.
+**SDK:** `github.com/modelcontextprotocol/go-sdk/mcp` v1.8.0 (see `src/go.mod`). The Go module path of the service is `github.com/twistingmercury/mnemonic`.
+
+**Scope:** There are only 3 MCP tools, all for pattern search. The MCP service has no write paths: patterns are created, updated and deleted through the REST API (`mnemonic-api`) and enriched by `mnemonic-enricher`.
 
 **Tools:**
 
-| Tool                    | Purpose                                                 | Databases Queried |
-| ----------------------- | ------------------------------------------------------- | ----------------- |
-| `search_patterns`       | Chunk-level semantic search over team knowledge patterns | PGVector (MVP); + Neo4j (post-MVP) |
-| `find_related_patterns` | Graph traversal from a given pattern                    | Neo4j             |
-| `get_pattern`           | Single pattern retrieval by UUID                        | Postgres + Neo4j  |
+| Tool                    | Purpose                                                           | Databases Queried                                          |
+| ----------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------- |
+| `search_patterns`       | Chunk-level semantic search, plus graph expansion of the top hits | PGVector + Neo4j (+ Postgres for graph-candidate metadata) |
+| `find_related_patterns` | Graph traversal from a given pattern                              | Postgres (source name) + Neo4j                             |
+| `get_pattern`           | Single pattern retrieval by UUID                                  | Postgres + Neo4j                                           |
+
+The service also runs the operations server on `server.port` (8080: `GET /health`, `GET /version`) and the Prometheus scrape endpoint on `:9090/metrics`. Those are described in [Observability Implementation](observability-implementation.md).
 
 ## Server Setup
 
+All server construction lives in `src/internal/mcpserver/server.go`; `src/internal/server/server.go` wires it.
+
 ### MCP Server Creation
 
-Create the MCP server with Mnemonic's implementation metadata. The version string comes from the existing `internal/version` package. Pass a `SchemaCache` instance to avoid repeated reflection on tool input structs across invocations.
+`NewMCPServer` creates the MCP server with Mnemonic's implementation metadata, attaches the tool telemetry middleware and registers the 3 tools. The version string comes from the `internal/version` package (set from the git tag at build time). A `SchemaCache` avoids repeated reflection on tool input structs.
 
 ```go
-import (
-    "github.com/modelcontextprotocol/go-sdk/mcp"
-    "github.com/twistingmercury/mnemonic-mcp/internal/version"
-)
+// NewMCPServer creates a configured MCP server with all 3 pattern search
+// tools registered.
+func NewMCPServer(deps ToolDependencies, logger zerolog.Logger, mcpCfg config.MCPConfig, toolMetrics *metrics.Tools) *mcp.Server {
+    server := mcp.NewServer(&mcp.Implementation{
+        Name:    "mnemonic",
+        Version: version.Version(),
+    }, &mcp.ServerOptions{
+        SchemaCache: mcp.NewSchemaCache(),
+    })
 
-server := mcp.NewServer(&mcp.Implementation{
-    Name:    "mnemonic",
-    Version: version.Version(),
-}, &mcp.ServerOptions{
-    SchemaCache: mcp.NewSchemaCache(),
-})
+    server.AddReceivingMiddleware(toolTelemetry(toolMetrics))
+    mcp.AddTool(server, searchPatternsTool, handleSearchPatterns(deps, logger, mcpCfg.DefaultSearchThreshold))
+    mcp.AddTool(server, findRelatedPatternsTool, handleFindRelatedPatterns(deps, logger))
+    mcp.AddTool(server, getPatternTool, handleGetPattern(deps, logger))
+
+    return server
+}
 ```
 
-The `SchemaCache` field accepts a `*mcp.SchemaCache` pointer. `NewSchemaCache()` creates a new cache instance that stores JSON Schemas inferred from handler input structs via reflection. Without a cache, the SDK re-reflects on every `tools/list` call. Since Mnemonic's tool schemas are static (registered once at startup), caching is safe and avoids redundant work. The cache is concurrent-safe and unbounded, but for a fixed set of 3 tools the memory footprint is negligible.
-
-After creation, tools are registered on this server instance (see [Tool Registration](#tool-registration)).
+The `SchemaCache` stores JSON Schemas inferred from handler input structs. Since the tool schemas are static (registered once at startup), caching is safe; for a fixed set of 3 tools the memory footprint is negligible.
 
 ### Streamable HTTP Handler
 
-Wrap the MCP server in a `StreamableHTTPHandler`, which implements `http.Handler` and serves JSON-RPC 2.0 over HTTP POST at `/mcp`. Enable `Stateless` mode because all 3 pattern search tools are stateless -- no session state is carried between calls.
+`NewMCPHTTPHandler` wraps the MCP server in a `StreamableHTTPHandler`, which implements `http.Handler` and serves JSON-RPC 2.0 over HTTP POST. `Stateless` mode is enabled because all 3 tools are stateless.
 
 ```go
-handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-    return server
-}, &mcp.StreamableHTTPOptions{
-    Stateless: true,
-})
+func NewMCPHTTPHandler(server *mcp.Server) *mcp.StreamableHTTPHandler {
+    return mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+        return server
+    }, &mcp.StreamableHTTPOptions{
+        Stateless: true,
+    })
+}
 ```
 
-The factory function receives each incoming HTTP request and returns the server to handle it. Since Mnemonic uses a single shared server instance (stateless tools, no per-session state), the factory always returns the same server.
+The factory always returns the same shared server instance. With `Stateless: true` the SDK does not create or track sessions, so a client may send `tools/call` without a preceding `initialize` (the integration tests do exactly this). Clients should send `Accept: application/json, text/event-stream`; the response body may be framed as a single SSE `data:` event.
 
-Setting `Stateless: true` tells the SDK to skip session creation and tracking. Each request is handled independently without allocating session state. This matches the tool semantics (every invocation is a standalone request/response) and eliminates the session lifecycle overhead that would otherwise require `session_count` and `active_sessions` metrics.
-
-**Note:** The `MCPServerConfig.SessionTimeout` field (from the [configuration design](configuration.md)) is not used in stateless mode. It exists in the config struct for future use if session-based features (e.g., streaming subscriptions) are added post-MVP.
+There is no session timeout or session configuration: `MCPConfig` has only `port`, `read_timeout`, `write_timeout`, `idle_timeout` and `default_search_threshold`.
 
 ### HTTP Server Lifecycle
 
-Mount the `StreamableHTTPHandler` on a `net/http.Server` using the existing `MCPServerConfig`.
+`NewMCPHTTPServer` mounts the handler at `/mcp` on a dedicated `net/http.Server`, wrapped in `otelhttp` so every request gets a server span (continuing any incoming W3C trace context) and the standard `http.server.*` metrics.
 
 ```go
-import (
-    "fmt"
-    "net/http"
-
-    "github.com/twistingmercury/mnemonic-mcp/internal/config"
-)
-
-// NewMCPHTTPServer creates the net/http.Server for the MCP endpoint.
-// The caller is responsible for starting and stopping the server
-// (typically via errgroup).
-func NewMCPHTTPServer(cfg config.MCPServerConfig, mcpHandler http.Handler) *http.Server {
+func NewMCPHTTPServer(mcpCfg config.MCPConfig, host string, mcpHandler http.Handler) *http.Server {
     mux := http.NewServeMux()
-    mux.Handle("/mcp", mcpHandler)
+    mux.Handle("/mcp", otelhttp.NewHandler(mcpHandler, "/mcp"))
 
     return &http.Server{
-        Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+        Addr:         mcpCfg.Address(host), // server.host + mcp.port, default 0.0.0.0:8081
         Handler:      mux,
-        ReadTimeout:  cfg.ReadTimeout,
-        WriteTimeout: cfg.WriteTimeout,
-        IdleTimeout:  cfg.IdleTimeout,
+        ReadTimeout:  mcpCfg.ReadTimeout,   // default 30s
+        WriteTimeout: mcpCfg.WriteTimeout,  // default 30s
+        IdleTimeout:  mcpCfg.IdleTimeout,   // default 120s
     }
 }
 ```
 
-The returned `*http.Server` exposes `ListenAndServe()` and `Shutdown(ctx)` for the server lifecycle coordinator to call. The coordinator (using `errgroup.WithContext`) starts the MCP server alongside the Admin API server and handles graceful shutdown with `cfg.ShutdownTimeout`.
-
-**Interface to errgroup:** The MCP server package does not manage the errgroup itself. It provides:
-
-1. `NewMCPHTTPServer` -- returns a configured `*http.Server`
-2. The caller starts it via `srv.ListenAndServe()` in an errgroup goroutine
-3. The caller stops it via `srv.Shutdown(ctx)` when the context is cancelled
+`server.ListenAndServe` (in `internal/server`) runs the operations server and the MCP server in one `errgroup`. `runMCPServer` calls `ListenAndServe()` and, when the group context is cancelled (SIGINT/SIGTERM or a sibling failure), calls `Shutdown` with a fixed 5-second timeout (`mcpShutdownTimeout`), independent of `server.shutdown_timeout`.
 
 ### Server Lifecycle Diagram
 
 ```mermaid
 sequenceDiagram
-    participant Coord as Coordinator<br/>(main/errgroup)
-    participant MCP as MCP Server<br/>(mcp.Server)
-    participant HTTP as HTTP Server<br/>(net/http.Server)
+    participant Coord as server.ListenAndServe<br/>(errgroup)
+    participant MCP as mcp.Server
+    participant HTTP as net/http.Server<br/>:8081
     participant CC as Claude Code
-    participant TH as Handler<br/>(tool handler)
+    participant TH as Tool handler
 
     note over Coord,TH: Startup
-
-    Coord->>MCP: mcp.NewServer(impl, opts)
-    activate MCP
-    Coord->>MCP: RegisterTools(server, deps)
-    MCP-->>Coord: server ready
-    deactivate MCP
-
-    Coord->>HTTP: NewMCPHTTPServer(cfg, handler)
-    activate HTTP
-    note right of HTTP: StreamableHTTPHandler<br/>mounted at /mcp<br/>(Stateless: true)
+    Coord->>Coord: open Postgres + Neo4j, init health checks
+    Coord->>MCP: NewMCPServer(deps, logger, cfg.MCP, metrics)
+    note right of MCP: middleware + 3 tools registered
+    Coord->>HTTP: NewMCPHTTPServer(cfg.MCP, host, handler)
+    note right of HTTP: otelhttp + StreamableHTTPHandler<br/>at /mcp (Stateless: true)
     Coord->>HTTP: ListenAndServe() [errgroup goroutine]
-    HTTP-->>Coord: listening on :8081
 
-    note over Coord,TH: Tool Call Flow
-
-    CC->>HTTP: POST /mcp<br/>initialize
+    note over Coord,TH: Tool call (no session needed)
+    CC->>HTTP: POST /mcp tools/list
     HTTP->>MCP: JSON-RPC dispatch
-    MCP-->>HTTP: ServerResult
-    HTTP-->>CC: 200 OK (server capabilities)
-
-    CC->>HTTP: POST /mcp<br/>tools/list
-    HTTP->>MCP: JSON-RPC dispatch
-    MCP-->>HTTP: ListToolsResult
-    HTTP-->>CC: 200 OK (3 tools)
-
-    CC->>HTTP: POST /mcp<br/>tools/call (search_patterns)
+    MCP-->>CC: 200 OK (3 tools)
+    CC->>HTTP: POST /mcp tools/call
     HTTP->>MCP: JSON-RPC dispatch
     MCP->>TH: handler(ctx, req, input)
-    activate TH
-    TH-->>MCP: (*CallToolResult, nil, nil)
-    deactivate TH
-    MCP-->>HTTP: CallToolResult
-    HTTP-->>CC: 200 OK (markdown content)
+    TH-->>MCP: CallToolResult (markdown)
+    MCP-->>CC: 200 OK
 
     note over Coord,TH: Shutdown
-
-    Coord->>Coord: context cancelled<br/>(signal or errgroup)
-    Coord->>HTTP: Shutdown(ctx)<br/>[ShutdownTimeout]
-    HTTP->>HTTP: drain in-flight requests
+    Coord->>Coord: context cancelled (signal or errgroup)
+    Coord->>HTTP: Shutdown(ctx) [5s]
     HTTP-->>Coord: nil (clean stop)
-    deactivate HTTP
+```
+
+### Request Path
+
+How one `tools/call` travels through the service:
+
+```mermaid
+flowchart LR
+    CC["Claude Code"] -->|"POST /mcp<br/>JSON-RPC tools/call"| OTEL["otelhttp handler<br/>span: /mcp"]
+    OTEL --> SH["StreamableHTTPHandler<br/>stateless"]
+    SH --> MW["toolTelemetry middleware<br/>span: tools/call &lt;tool&gt;<br/>metrics: tool_calls, tool_duration"]
+    MW --> H["tool handler<br/>defaults + validation"]
+    H --> TD["ToolDependencies<br/>(toolDeps)"]
+    TD --> SS["search.Service"]
+    TD --> PS["pattern.Service"]
+    SS --> EMB["OpenAI embeddings"]
+    SS --> PG[("Postgres<br/>pattern_chunks + patterns")]
+    SS --> NEO[("Neo4j<br/>RELATED_TO")]
+    PS --> PG
+    PS --> NEO
+    H -->|"markdown text<br/>or error → isError: true"| CC
 ```
 
 ## Tool Registration
 
-All 3 tools are registered on the server after creation. Each call to `mcp.AddTool` associates a `mcp.Tool` definition with a typed handler function. The SDK infers `InputSchema` from the handler's input struct via `jsonschema` struct tags.
+The 3 tools are registered inside `NewMCPServer` (there is no separate `RegisterTools` function). Each call to `mcp.AddTool` associates a `mcp.Tool` definition with a typed handler. The SDK infers `InputSchema` from the handler's input struct.
 
-```go
-// RegisterTools registers all 3 pattern search tools on the MCP server.
-// The deps parameter provides access to services and repositories
-// needed by tool handlers. Its concrete type will be determined by
-// the service layer design.
-func RegisterTools(server *mcp.Server, deps ToolDependencies) {
-    mcp.AddTool(server, searchPatternsTool, handleSearchPatterns(deps))
-    mcp.AddTool(server, findRelatedPatternsTool, handleFindRelatedPatterns(deps))
-    mcp.AddTool(server, getPatternTool, handleGetPattern(deps))
-}
-```
-
-Tool definitions:
+Tool definitions (`tools.go`):
 
 ```go
 var searchPatternsTool = &mcp.Tool{
     Name:        "search_patterns",
-    Description: "Semantic search over team knowledge patterns. Returns pattern chunks ranked by vector similarity. Supports filtering by language, domain, tags, and agent. Only enriched patterns appear in results.",
+    Description: "Semantic search over the team knowledge graph. Returns patterns ranked by vector similarity, with optional tag/language/domain filters.",
 }
 
 var findRelatedPatternsTool = &mcp.Tool{
@@ -218,109 +202,95 @@ var getPatternTool = &mcp.Tool{
 
 ## Tool Handler Signatures
 
-Each handler follows the SDK's `ToolHandlerFor[In, Out]` generic signature with 3 return values:
+Each handler is an `mcp.ToolHandlerFor[In, any]`:
 
 ```go
-func(ctx context.Context, req *mcp.CallToolRequest, input In) (*mcp.CallToolResult, Out, error)
+func(ctx context.Context, req *mcp.CallToolRequest, input In) (*mcp.CallToolResult, any, error)
 ```
 
-Where `In` is the handler's input struct and `Out` is the structured output type. For tools returning only text content (no structured output beyond the `CallToolResult`), `Out` is `any` and the value is `nil`.
+`In` is the tool's input struct; the structured output value is always `nil` because the tools return only text content. A successful call returns a `*mcp.CallToolResult` with a single `*mcp.TextContent` holding the markdown response.
 
-The SDK validates the incoming JSON against the schema inferred from `In` before calling the handler. If validation fails, the SDK returns a JSON-RPC `-32602 Invalid params` error without invoking the handler.
+The SDK validates the incoming arguments against the schema inferred from `In` (types and required fields) before calling the handler. Range checks (limits, threshold) and UUID parsing happen in the handler (`handlers.go`) and return `ErrInvalidInput`.
 
-When the handler returns a non-nil error, the SDK wraps it as `isError: true` in the tool result (see [Error Handling](#error-handling)).
+**Dependency injection:** each handler closure captures `ToolDependencies` and the logger; `search_patterns` also captures the configured default threshold. See [service-layer.md#tooldependencies-mcp-facade](service-layer.md#tooldependencies-mcp-facade).
 
-When the handler returns `nil` error, it must return a `*mcp.CallToolResult` with text content containing the markdown response. The second return value (`Out`) is always `nil` for these text-only tools.
-
-**Dependency injection:** Each handler is created via a closure that captures `ToolDependencies`. See [service-layer.md#tooldependencies-mcp-facade](service-layer.md#tooldependencies-mcp-facade) for the full interface definition and concrete implementation.
-
-**`jsonschema` struct tag convention:** The SDK uses `github.com/google/jsonschema-go` for schema inference. The `jsonschema` tag value is interpreted as the field's **description** string in its entirety -- it does not support comma-separated directives like `required` or `description=`. Required/optional status is controlled by the `json` tag:
-
-- Fields **without** `omitempty` on the `json` tag are **required** in the inferred schema.
-- Fields **with** `omitempty` on the `json` tag are **optional** in the inferred schema.
+**`jsonschema` struct tag convention:** the `jsonschema` tag value is the field's description in its entirety. Required/optional status comes from the `json` tag: fields without `omitempty` are required, fields with `omitempty` are optional. Pointer types (`*int`, `*float64`) distinguish "omitted" (apply default) from an explicit zero (validated, and rejected where 0 is out of range).
 
 ### search_patterns
 
-**Input struct:**
+**Input struct** (`input.go`):
 
 ```go
-// SearchPatternsInput defines the parameters for the search_patterns tool.
-// The SDK infers InputSchema from jsonschema struct tags.
-//
-// Required vs optional:
-//   - Query: required (no omitempty)
-//   - All other fields: optional (omitempty)
-//
-// Pointer types (*int, *float64) distinguish "omitted" from "explicit zero":
-//   - nil means the caller did not provide the field (apply default)
-//   - non-nil zero means the caller explicitly set the value to 0
 type SearchPatternsInput struct {
-    Query     string    `json:"query"                jsonschema:"Natural language search query"`
-    Limit     *int      `json:"limit,omitempty"      jsonschema:"Maximum number of results to return (default 10, max 50)"`
-    Threshold *float64  `json:"threshold,omitempty"   jsonschema:"Minimum cosine similarity score 0.0-1.0 (default 0.5)"`
-    Tags      []string  `json:"tags,omitempty"        jsonschema:"Conjunctive (AND) filter by tag. Pattern must contain ALL specified tags (SQL: tags @> $tags::jsonb)."`
-    Agent     string    `json:"agent,omitempty"       jsonschema:"Filter results by agent association"`
-    Language  string    `json:"language,omitempty"    jsonschema:"Filter by programming language (go, python, typescript, shell, sql, agnostic)"`
-    Domain    string    `json:"domain,omitempty"      jsonschema:"Filter by domain (backend, api-design, testing, frontend, infrastructure, data, agnostic)"`
+    Query     string   `json:"query"               jsonschema:"Natural language search query"`
+    Limit     *int     `json:"limit,omitempty"     jsonschema:"Maximum number of results to return (default 10, max 50)"`
+    Threshold *float64 `json:"threshold,omitempty" jsonschema:"Minimum cosine similarity score 0.0-1.0 (default 0.5)"`
+    Tags      []string `json:"tags,omitempty"      jsonschema:"Conjunctive (AND) filter by tag. Pattern must contain ALL specified tags."`
+    Language  string   `json:"language,omitempty"  jsonschema:"Optional: filter results by pattern language (e.g. 'go', 'python')"`
+    Domain    string   `json:"domain,omitempty"    jsonschema:"Optional: filter results by pattern domain (e.g. 'backend', 'testing')"`
 }
 ```
 
-**Handler:**
+There is no `agent` filter (agents are not implemented).
 
-```go
-// handleSearchPatterns returns a handler for the search_patterns tool.
-func handleSearchPatterns(deps ToolDependencies) func(ctx context.Context, req *mcp.CallToolRequest, input SearchPatternsInput) (*mcp.CallToolResult, any, error) {
-    return func(ctx context.Context, req *mcp.CallToolRequest, input SearchPatternsInput) (*mcp.CallToolResult, any, error) {
-        // 1. Apply defaults: limit=10 if nil, threshold=0.5 if nil
-        // 2. Validate constraints: limit 1-50, threshold 0.0-1.0
-        // 3. Generate query embedding via OpenAI
-        // 4. If Agent is set, resolve to pattern IDs:
-        //    a. Look up the agent by name to get agent_id
-        //    b. Query pattern_agent_associations for (agent_id) -> []pattern_id
-        //    c. Pass the resulting PatternIDs to SimilarityOptions.PatternIDs
-        //       (this pre-filters the PGVector search to agent-scoped patterns)
-        // 5. Filter by Language/Domain if set
-        // 6. Chunk-level PGVector cosine similarity search via FindSimilar():
-        //    - Searches pattern_chunks.embedding (not patterns.embedding)
-        //    - SimilarityOptions.Tags uses conjunctive (AND) filtering
-        //      (SQL: tags @> $tags::jsonb -- pattern must contain ALL specified tags)
-        //    - SimilarityOptions.PatternIDs restricts to agent-associated patterns (step 4)
-        // 7. Format results as markdown (ChunkMatch results with section_title)
-        // 8. Return *mcp.CallToolResult with text content, nil, nil
-        // Post-MVP: add Neo4j graph score blending
-        //
-        // On error: return nil, nil, err (SDK sets isError: true)
-    }
-}
-```
+**Handler behavior:**
 
-**Markdown response format:**
+1. Defaults: `limit` = 10; `threshold` = `mcp.default_search_threshold` (default 0.5).
+2. Validation: `limit` must be 1–50 and `threshold` 0.0–1.0, else `ErrInvalidInput`. `query` is required by the schema but is not checked for emptiness or length.
+3. Log `mcp tool invoked` with `query_preview` (first 100 bytes).
+4. `search.Service.SearchPatterns`:
+   1. Embed the query text as-is via OpenAI (failure → `ErrServiceUnavailable`).
+   2. pgvector search over `pattern_chunks` (only `enrichment_status = 'enriched'` chunks with an embedding), `1 - (embedding <=> query) >= threshold`, exact `language` / `domain` match when set, `tags @> $tags::jsonb` when set, ordered by distance, `LIMIT limit`.
+   3. **Graph expansion** (best-effort): take the top 3 distinct patterns from the vector hits as seeds, query Neo4j `RELATED_TO` for up to 5 related patterns per seed (concurrently), de-duplicate across seeds keeping the highest similarity, drop patterns already in the vector results, batch-load their metadata from Postgres, post-filter by `domain`, `tags` and `language` (here a pattern with language `agnostic` also passes), sort by similarity and cap at 5. Any Neo4j or metadata failure is logged at Warn and yields vector-only results.
+5. Format as markdown.
 
-> **Score format note:** `search_patterns` displays similarity as a percentage (e.g., "92% match") because it reflects a single vector similarity score that is intuitive as a percentage. `find_related_patterns` uses a decimal (e.g., "similarity: 0.85") because the score represents computed concept-overlap strength, where the raw value is more meaningful to the caller. `get_pattern` uses the same decimal format as `find_related_patterns` for consistency in its related patterns list.
+**Markdown response format** (`format.go`):
+
+> **Score format note:** `search_patterns` shows vector similarity as a percentage (e.g., "92% match"). `find_related_patterns`, `get_pattern` and the graph-expansion section use a two-decimal concept-overlap similarity (e.g., "similarity: 0.85").
 
 ```text
-Found N chunks matching 'query' (filtered by agent: X):
+Found 3 sections across 2 patterns matching 'error wrapping':
 
 ---
 
-## pattern-name › Section Title (92% match)
+## go-error-handling (92% match)
 
-**Tags:** go, errors, best-practices
-**Language:** go | **Domain:** backend
+**Section:** Wrapping Errors
+
+**Tags:** go, errors
 
 Chunk content here...
 
 ---
 
-## another-pattern › Another Section (85% match)
+## go-error-handling (85% match)
 
-**Tags:** go, testing
-**Language:** go | **Domain:** backend
+**Section:** Sentinel Errors
+
+**Tags:** go, errors
 
 Chunk content here...
+
+---
+
+## go-logging (71% match)
+
+**Section:** Structured Fields
+
+Chunk content here...
+
+---
+
+### Related Patterns (via graph)
+
+## go-retry-patterns (similarity: 0.60)
+
+**Found via:** go-error-handling
+**Shared concepts:** error handling, retry logic
+
 ```
 
-When no results match, the response is:
+`**Section:**` and `**Tags:**` lines are omitted when empty, as is `**Shared concepts:**`. The graph section appears only when expansion found something. When no chunk matches, the response is (graph expansion is skipped):
 
 ```text
 No patterns found matching 'query'.
@@ -331,38 +301,23 @@ No patterns found matching 'query'.
 **Input struct:**
 
 ```go
-// FindRelatedPatternsInput defines the parameters for the find_related_patterns tool.
 type FindRelatedPatternsInput struct {
-    PatternID string `json:"pattern_id"          jsonschema:"UUID of the pattern to find relations for"`
-    Limit     *int   `json:"limit,omitempty"     jsonschema:"Maximum number of related patterns to return (default 5, max 20)"`
+    PatternID string `json:"pattern_id"      jsonschema:"UUID of the pattern to find relations for"`
+    Limit     *int   `json:"limit,omitempty" jsonschema:"Maximum number of related patterns to return (default 5, max 20)"`
 }
 ```
 
-**Handler:**
+**Handler behavior:**
 
-```go
-// handleFindRelatedPatterns returns a handler for the find_related_patterns tool.
-func handleFindRelatedPatterns(deps ToolDependencies) func(ctx context.Context, req *mcp.CallToolRequest, input FindRelatedPatternsInput) (*mcp.CallToolResult, any, error) {
-    return func(ctx context.Context, req *mcp.CallToolRequest, input FindRelatedPatternsInput) (*mcp.CallToolResult, any, error) {
-        // 1. Parse and validate pattern_id as UUID
-        // 2. Apply default: limit=5 if nil
-        // 3. Validate constraints: limit 1-20
-        // 4. Traverse RELATED_TO edges in Neo4j from the source pattern
-        // 5. Order results by similarity descending
-        // 6. For each related pattern, include relationship type, similarity, shared concepts
-        // 7. Format results as markdown
-        // 8. Return *mcp.CallToolResult with text content, nil, nil
-        //
-        // On not found: return nil, nil, fmt.Errorf("%w: %s", ErrPatternNotFound, input.PatternID)
-        // On error: return nil, nil, err
-    }
-}
-```
+1. Parse `pattern_id` as a UUID, else `ErrInvalidInput`.
+2. Default `limit` = 5; must be 1–20, else `ErrInvalidInput`.
+3. `pattern.Service.FindRelatedPatterns` runs two queries concurrently: `SELECT name FROM patterns` for the source pattern (missing → `ErrPatternNotFound`) and the Neo4j `RELATED_TO` traversal (edges in either direction, ordered by `r.similarity` descending, with shared concept names collected). A Neo4j error → `ErrServiceUnavailable`.
+4. Format as markdown. Pattern content is not included.
 
 **Markdown response format:**
 
 ```text
-Found N patterns related to 'source-pattern-name':
+Found 2 patterns related to 'source-pattern-name':
 
 ---
 
@@ -371,19 +326,15 @@ Found N patterns related to 'source-pattern-name':
 **Relationship:** RELATED_TO
 **Shared concepts:** error handling, retry logic
 
-Full pattern content here...
-
 ---
 
 ## another-related (similarity: 0.72)
 
 **Relationship:** RELATED_TO
 **Shared concepts:** observability
-
-Full pattern content here...
 ```
 
-When the source pattern has no relationships:
+When the source pattern has no `RELATED_TO` edges (including a pattern that is not enriched yet):
 
 ```text
 No related patterns found for 'source-pattern-name'.
@@ -394,30 +345,17 @@ No related patterns found for 'source-pattern-name'.
 **Input struct:**
 
 ```go
-// GetPatternInput defines the parameters for the get_pattern tool.
 type GetPatternInput struct {
     ID string `json:"id" jsonschema:"Pattern UUID to fetch"`
 }
 ```
 
-**Handler:**
+**Handler behavior:**
 
-```go
-// handleGetPattern returns a handler for the get_pattern tool.
-func handleGetPattern(deps ToolDependencies) func(ctx context.Context, req *mcp.CallToolRequest, input GetPatternInput) (*mcp.CallToolResult, any, error) {
-    return func(ctx context.Context, req *mcp.CallToolRequest, input GetPatternInput) (*mcp.CallToolResult, any, error) {
-        // 1. Parse and validate id as UUID
-        // 2. Query Postgres for pattern content and metadata
-        // 3. Query Neo4j for graph relationships and extracted concepts
-        //    (omit graph section if enrichment is still pending)
-        // 4. Format as markdown with full content, metadata, relationships, concepts
-        // 5. Return *mcp.CallToolResult with text content, nil, nil
-        //
-        // On not found: return nil, nil, fmt.Errorf("%w: %s", ErrPatternNotFound, input.ID)
-        // On error: return nil, nil, err
-    }
-}
-```
+1. Parse `id` as a UUID, else `ErrInvalidInput`.
+2. `pattern.Service.GetPatternWithGraph` reads `id, name, content, tags, enrichment_status, enrichment_error, enriched_at` from Postgres (missing → `ErrPatternNotFound`).
+3. Only if `enrichment_status = 'enriched'`: fetch up to 10 related patterns and all `MENTIONED_IN` concepts from Neo4j concurrently. A Neo4j failure is logged at Warn and the pattern is returned without graph context.
+4. Format as markdown.
 
 **Markdown response format:**
 
@@ -439,20 +377,18 @@ Full pattern content here...
 
 ### Extracted Concepts
 
-- **error-wrapping**: Wrapping errors with context using fmt.Errorf and %w
-- **sentinel-errors**: Package-level error variables for comparison
+- **error handling**
+- **sentinel errors**
 ```
 
-When enrichment is pending, the "Related Patterns" and "Extracted Concepts" sections are omitted and the enrichment line reads `**Enrichment:** pending`.
-
-When enrichment has failed, the graph sections are also omitted and the enrichment line includes the error message:
+Concepts are listed by name only (lowercase, as extracted); Concept nodes have no description. The "Related Patterns" and "Extracted Concepts" sections are each omitted when empty, and both are omitted when the pattern is not enriched or Neo4j is unavailable. When enrichment is pending the status line reads `**Enrichment:** pending`. When it failed, the line includes the stored error:
 
 ```text
 ## pattern-name
 
 **ID:** 550e8400-e29b-41d4-a716-446655440001
 **Tags:** go, errors
-**Enrichment:** failed -- embedding generation timed out after 30s
+**Enrichment:** failed -- one or more chunks failed enrichment
 
 ## Content
 
@@ -463,70 +399,44 @@ Full pattern content here...
 
 ### SDK Error Wrapping
 
-When a handler returns a non-nil error, the SDK wraps it automatically:
-
-1. The SDK creates a `CallToolResult` with `IsError: true`
-2. The error message is included as text content
-3. The JSON-RPC response is a normal 200 with the error flag in the result
-
-This means handlers signal application-level errors by returning Go errors. The handler does not need to construct `CallToolResult` manually for error cases.
+When a typed tool handler returns a non-nil error, the SDK converts it into a `CallToolResult` with `IsError: true` and the error message as text content. The JSON-RPC response is a normal success response (HTTP 200) carrying the error flag.
 
 ```go
 // Handler returns a regular Go error -- SDK wraps it as isError: true
-return nil, nil, fmt.Errorf("pattern %s not found", id)
+return nil, nil, fmt.Errorf("%w: invalid UUID %q", ErrInvalidInput, input.ID)
 
 // SDK produces:
-// {"content": [{"type": "text", "text": "pattern abc-123 not found"}], "isError": true}
+// {"content": [{"type": "text", "text": "invalid input: invalid UUID \"abc\""}], "isError": true}
 ```
 
-**Important distinction:** The SDK treats regular Go `error` values and `*jsonrpc.Error` values differently:
-
-- **Regular `error`**: The SDK wraps it as an application-level error (`isError: true` in the tool result, HTTP 200). This is the correct path for not-found, invalid input, and service-unavailable conditions.
-- **`*jsonrpc.Error`**: If a handler returns a `*jsonrpc.Error` (from `github.com/modelcontextprotocol/go-sdk/jsonrpc`), the SDK propagates it as a **protocol-level** JSON-RPC error response instead of wrapping it in a tool result. Handlers should never return `*jsonrpc.Error` -- those codes are reserved for the SDK's own transport-level error handling.
+Handlers never return `*jsonrpc.Error`; protocol-level JSON-RPC errors are left to the SDK.
 
 ### Application Error Types
 
-Define sentinel errors in the mcpserver package for the 3 application-level error patterns from [08-mcp-tools.md](../architecture/mnemonic/08-mcp-tools.md#application-level-errors):
+`errors.go` defines 3 sentinels, matching [08-mcp-tools.md](../architecture/mnemonic/08-mcp-tools.md#application-level-errors):
 
 ```go
-package mcpserver
-
-import "errors"
-
-// ErrPatternNotFound is returned when a pattern ID does not exist.
-// Applies to: get_pattern, find_related_patterns.
-var ErrPatternNotFound = errors.New("pattern not found")
-
-// ErrInvalidInput is returned when handler-level validation fails
-// (constraints the SDK schema validation does not catch, such as
-// limit exceeding maximum or threshold out of range).
-// Applies to: all 3 tools.
-var ErrInvalidInput = errors.New("invalid input")
-
-// ErrServiceUnavailable is returned when a backend database
-// (Postgres, Neo4j) is unreachable.
-// Applies to: all 3 tools.
-var ErrServiceUnavailable = errors.New("service unavailable")
+var ErrPatternNotFound = errors.New("pattern not found")       // get_pattern, find_related_patterns
+var ErrInvalidInput = errors.New("invalid input")              // all 3 tools
+var ErrServiceUnavailable = errors.New("service unavailable")  // all 3 tools
 ```
 
-Handlers wrap these sentinels with context:
+Handlers produce `ErrInvalidInput` themselves. Service errors go through `mapServiceError`:
 
 ```go
-// Not found
-return nil, nil, fmt.Errorf("%w: %s", ErrPatternNotFound, id)
-
-// Invalid input
-return nil, nil, fmt.Errorf("%w: limit must be between 1 and 50, got %d", ErrInvalidInput, input.Limit)
-
-// Service unavailable
-return nil, nil, fmt.Errorf("%w: postgres connection failed: %v", ErrServiceUnavailable, err)
+func mapServiceError(err error) error {
+    if errors.Is(err, service.ErrNotFound) {
+        return fmt.Errorf("%w: %v", ErrPatternNotFound, err)
+    }
+    return fmt.Errorf("%w: %v", ErrServiceUnavailable, err)
+}
 ```
 
-Callers can use `errors.Is` to distinguish error types if needed (for example, in observability to set different span status codes or metric labels).
+So every non-not-found service failure (OpenAI embedding failure, Postgres or Neo4j error) surfaces as "service unavailable". The telemetry middleware uses `errors.Is` on these sentinels to pick the `outcome` attribute.
 
 ### Transport-Level Errors
 
-Transport-level errors are handled by the MCP SDK and the HTTP server, not by tool handlers. These use standard JSON-RPC 2.0 error codes as documented in [08-mcp-tools.md](../architecture/mnemonic/08-mcp-tools.md#transport-level-errors):
+Transport-level errors are produced by the MCP SDK and the HTTP server, not by tool handlers. They use standard JSON-RPC 2.0 error codes, as documented in [08-mcp-tools.md](../architecture/mnemonic/08-mcp-tools.md#transport-level-errors):
 
 | Code   | Meaning          | Handled By |
 | ------ | ---------------- | ---------- |
@@ -536,7 +446,7 @@ Transport-level errors are handled by the MCP SDK and the HTTP server, not by to
 | -32602 | Invalid params   | SDK        |
 | -32603 | Internal error   | SDK        |
 
-No custom implementation is needed for transport-level errors.
+No custom implementation exists for transport-level errors.
 
 ## Observability Integration
 
@@ -544,171 +454,111 @@ No custom implementation is needed for transport-level errors.
 
 ### Receiving Middleware
 
-The SDK supports `AddReceivingMiddleware` for cross-cutting concerns applied to every incoming JSON-RPC method call before it reaches the default handler. Use this for request-scoped tracing and metrics setup instead of duplicating instrumentation in each handler.
+`telemetry.go` defines `toolTelemetry`, added with `server.AddReceivingMiddleware`. It passes every method other than `tools/call` straight through. For `tools/call` it:
 
-The SDK's middleware types are:
-
-```go
-// MethodHandler handles MCP messages.
-type MethodHandler func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error)
-
-// Middleware wraps a MethodHandler.
-type Middleware func(mcp.MethodHandler) mcp.MethodHandler
-```
-
-`AddReceivingMiddleware` accepts one or more `Middleware` functions. Each wraps the inner `MethodHandler`, forming a chain. The `method` parameter is the JSON-RPC method string (e.g., `"tools/call"`, `"tools/list"`, `"initialize"`). To extract the specific tool name for a `tools/call` request, inspect the request parameters.
-
-```go
-// NewLoggingMiddleware creates MCP receiving middleware that adds tracing and metrics.
-// Logger and metrics registry are injected as constructor parameters.
-func NewLoggingMiddleware(logger zerolog.Logger, mcpMetrics *metrics.MCP, tracer trace.Tracer) mcp.Middleware {
-    return func(next mcp.MethodHandler) mcp.MethodHandler {
-        return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-            // Determine the span name. For tools/call, extract the tool name
-            // from the request params; for other methods, use the method string.
-            spanName := method
-            if method == "tools/call" {
-                if ctr, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
-                    spanName = fmt.Sprintf("mcp.%s", ctr.Name)
-                }
-            }
-
-            // Start trace span
-            ctx, span := tracer.Start(ctx, spanName)
-            defer span.End()
-
-            // Record start time for metrics
-            start := time.Now()
-
-            // Call next handler in chain
-            result, err := next(ctx, method, req)
-
-            // Record metrics (only for tool invocations)
-            if method == "tools/call" {
-                duration := float64(time.Since(start).Milliseconds())
-                toolName := strings.TrimPrefix(spanName, "mcp.")
-                mcpMetrics.RecordToolInvocation(ctx, toolName, duration)
-            }
-
-            if err != nil {
-                span.SetStatus(codes.Error, err.Error())
-            }
-
-            return result, err
-        }
-    }
-}
-
-// Usage:
-server.AddReceivingMiddleware(NewLoggingMiddleware(logger, metricsRegistry.MCP, tracer))
-```
-
-This centralizes tracing and metrics so individual tool handlers do not need boilerplate instrumentation code. Tool handlers still log domain-specific fields (query preview, pattern ID, result count) directly.
-
-**Note:** The `req.GetParams()` call returns the params as an `mcp.Params` interface. For `tools/call`, the concrete type is `*mcp.CallToolParamsRaw` which has a `Name` field containing the tool name. Middleware receives all method calls (not just tool calls), so the `method == "tools/call"` guard is needed to avoid casting errors on other methods like `initialize` or `tools/list`.
+1. Starts a span `tools/call <tool>` (child of the `/mcp` HTTP span) with attribute `mcp.tool.name`.
+2. Calls the next handler.
+3. Derives the tool error from the returned error or, since the SDK turns handler errors into results, from a `CallToolResult` with `IsError` set.
+4. Maps it to an outcome: `ok`, `invalid_input`, `not_found` or `unavailable`; sets `mcp.tool.outcome` on the span and records the error. Only `unavailable` marks the span status as Error, because invalid input and unknown patterns are caller mistakes.
+5. Records `mnemonic.mcp.tool_calls` and `mnemonic.mcp.tool_duration` by `tool` and `outcome` (when the metrics registry is non-nil).
 
 ### Tracing
 
-The MCP server operates over plain `net/http`, not Gin, so the otelgin middleware does not apply. Cross-cutting trace spans are created by the receiving middleware (see above). Tool handlers add domain-specific span attributes and create child spans for database operations.
+The MCP server runs on plain `net/http`, not Gin. Spans per request:
 
-Span naming follows the convention from the [observability design](observability-implementation.md#span-naming-conventions):
+| Span                         | Source                     | Attributes                                                                         |
+| ---------------------------- | -------------------------- | ---------------------------------------------------------------------------------- |
+| `/mcp` (server)              | `otelhttp.NewHandler`      | standard HTTP server attributes; continues incoming W3C `traceparent`/`tracestate` |
+| `tools/call <tool>`          | `toolTelemetry` middleware | `mcp.tool.name`, `mcp.tool.outcome`                                                |
+| `neo4j <Operation>` (client) | graph repository           | `db.system.name`, `db.namespace`, `db.operation.name`                              |
+| PostgreSQL query spans       | otelpgx                    | otelpgx defaults                                                                   |
+| OpenAI embedding HTTP span   | `otelhttp.NewTransport`    | retries add an `openai.embed.retry` span event                                     |
 
-| Tool                    | Span Name                   | Attributes                   |
-| ----------------------- | --------------------------- | ---------------------------- |
-| `search_patterns`       | `mcp.search_patterns`       | `tool.name`, `query.preview` |
-| `find_related_patterns` | `mcp.find_related_patterns` | `tool.name`, `pattern.id`    |
-| `get_pattern`           | `mcp.get_pattern`           | `tool.name`, `pattern.id`    |
-
-Child spans follow the conventions for database operations (`postgres.query`, `pgvector.search`, `neo4j.query`).
-
-**Trace context flow:** The MCP SDK's `StreamableHTTPHandler` receives the HTTP request and calls the tool handler with a `context.Context`. If the incoming HTTP request carries W3C Trace Context headers (`traceparent`, `tracestate`), the SDK or an outer HTTP middleware can propagate them into the context. The tool handler creates child spans from this context, linking MCP tool traces to any parent trace from the caller.
-
-For MVP (localhost, no upstream trace context), tool handler spans are trace roots.
+When the caller sends no trace context, the `/mcp` span is the trace root.
 
 ### Metrics
 
-The MCP metrics instruments are already defined in `internal/metrics/mcp.go` per the [observability design](observability-implementation.md#mcp-server-metrics). The receiving middleware records metrics for every tool invocation (see [Receiving Middleware](#receiving-middleware)).
+| Metric                                                          | Type           | Attributes        | Description                                                               |
+| --------------------------------------------------------------- | -------------- | ----------------- | ------------------------------------------------------------------------- |
+| `mnemonic.mcp.tool_calls`                                       | Counter        | `tool`, `outcome` | Number of MCP tool calls                                                  |
+| `mnemonic.mcp.tool_duration`                                    | Histogram (ms) | `tool`, `outcome` | Tool call latency; buckets 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000 |
+| `mnemonic.patterns.query_latency`, `mnemonic.patterns.returned` | Histogram      |                   | Recorded for every pgvector search                                        |
+| `http.server.*`                                                 | otelhttp       |                   | Standard HTTP server metrics for `/mcp`                                   |
 
-The relevant metrics:
-
-| Metric                          | Type      | Description                    |
-| ------------------------------- | --------- | ------------------------------ |
-| `mnemonic.mcp.tool_invocations` | Counter   | Number of MCP tool invocations |
-| `mnemonic.mcp.tool_duration`    | Histogram | Tool invocation duration (ms)  |
-
-Session metrics (`session_count`, `active_sessions`) are defined in the `internal/metrics/mcp.go` metrics registry but are not recorded in stateless mode. The instruments exist so they do not need to be added later if session-based features are introduced post-MVP, but in the current stateless configuration they remain at zero.
+There are no session metrics (stateless mode). See `src/internal/metrics/tools.go` and [Observability Implementation](observability-implementation.md#mcp-server-metrics).
 
 ### Logging
 
-Tool handlers use the zerolog logger injected at construction time. Since the MCP server uses `net/http` (not Gin), the otelx Gin logging middleware does not apply. Instead, handlers log directly:
+Handlers use the zerolog logger injected at construction. Each tool call logs one Info line, tagged with `trace_id` and `span_id` when a span is active:
 
 ```go
-// logger is injected into the handler struct or closure at construction time
-logger.Info().
+withTrace(ctx, logger).Info().
     Str("tool", "search_patterns").
     Str("query_preview", truncate(input.Query, 100)).
     Msg("mcp tool invoked")
 ```
 
-Log events for MCP tool calls:
+| Event                                                     | Level | Fields                                                         |
+| --------------------------------------------------------- | ----- | -------------------------------------------------------------- |
+| Tool invoked                                              | Info  | `tool`, `query_preview` or `pattern_id`, `trace_id`, `span_id` |
+| Graph expansion failed for a seed / metadata fetch failed | Warn  | `seed_pattern_id`, error                                       |
+| Graph context unavailable in `get_pattern`                | Warn  | `pattern_id`, error                                            |
 
-| Event          | Level | Fields                                  |
-| -------------- | ----- | --------------------------------------- |
-| Tool invoked   | Info  | `tool`, `query_preview` or `pattern_id` |
-| Tool completed | Info  | `tool`, `duration_ms`, `result_count`   |
-| Tool error     | Error | `tool`, `error`, `duration_ms`          |
+There are no per-call "completed" or "error" log lines; outcomes and latency are captured by the span and metrics.
 
 ## Package Structure
 
-MCP server code lives in `internal/mcpserver/` (not `internal/mcp/`). The package name `mcpserver` avoids colliding with the SDK's `mcp` package, which would otherwise require import aliases in every file.
-
-Filesystem paths relative to the repository root:
+MCP server code lives in `src/internal/mcpserver/`. The name `mcpserver` avoids colliding with the SDK's `mcp` package.
 
 ```text
 src/internal/mcpserver/
-    server.go       -- NewMCPServer, NewMCPHTTPServer, RegisterTools
+    server.go       -- NewMCPServer, NewMCPHTTPHandler, NewMCPHTTPServer
     tools.go        -- Tool definitions (mcp.Tool vars)
-    handlers.go     -- Handler functions for all 3 tools
-    input.go        -- Input structs (SearchPatternsInput, etc.)
-    errors.go       -- Sentinel errors (ErrPatternNotFound, etc.)
-    deps.go         -- ToolDependencies interface
-    middleware.go   -- Receiving middleware (tracing, metrics)
+    handlers.go     -- Handlers for all 3 tools, mapServiceError
+    input.go        -- Input structs
+    format.go       -- Markdown formatting
+    errors.go       -- Sentinel errors
+    deps.go         -- ToolDependencies interface and toolDeps implementation
+    telemetry.go    -- toolTelemetry receiving middleware, withTrace
 ```
 
 **File responsibilities:**
 
-| File            | Contents                                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------------------ |
-| `server.go`     | `NewMCPServer` (creates `mcp.Server`), `NewMCPHTTPServer` (creates `net/http.Server`), `RegisterTools` |
-| `tools.go`      | `searchPatternsTool`, `findRelatedPatternsTool`, `getPatternTool` variable definitions                 |
-| `handlers.go`   | `handleSearchPatterns`, `handleFindRelatedPatterns`, `handleGetPattern` closures                       |
-| `input.go`      | `SearchPatternsInput`, `FindRelatedPatternsInput`, `GetPatternInput` structs                           |
-| `errors.go`     | `ErrPatternNotFound`, `ErrInvalidInput`, `ErrServiceUnavailable` sentinels                             |
-| `deps.go`       | `ToolDependencies` interface definition                                                                |
-| `middleware.go`  | `AddObservabilityMiddleware` -- receiving middleware for tracing and metrics                            |
+| File           | Contents                                                                                                                                                                                 |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.go`    | `NewMCPServer` (creates `mcp.Server`, adds middleware, registers tools), `NewMCPHTTPHandler` (stateless Streamable HTTP), `NewMCPHTTPServer` (`net/http.Server` with otelhttp at `/mcp`) |
+| `tools.go`     | `searchPatternsTool`, `findRelatedPatternsTool`, `getPatternTool`                                                                                                                        |
+| `handlers.go`  | `handleSearchPatterns`, `handleFindRelatedPatterns`, `handleGetPattern`, limit constants, `mapServiceError`                                                                              |
+| `input.go`     | `SearchPatternsInput`, `FindRelatedPatternsInput`, `GetPatternInput`                                                                                                                     |
+| `format.go`    | `formatSearchResults`, `formatRelatedPatterns`, `formatPattern`                                                                                                                          |
+| `errors.go`    | `ErrPatternNotFound`, `ErrInvalidInput`, `ErrServiceUnavailable`                                                                                                                         |
+| `deps.go`      | `ToolDependencies`, `toolDeps`, `NewToolDependencies`                                                                                                                                    |
+| `telemetry.go` | `toolTelemetry`, `toolOutcome`, `withTrace`                                                                                                                                              |
+
+Other packages in the service: `internal/service/search` and `internal/service/pattern` (read-side services), `internal/service/openai` (embedding client only), `internal/repository/{chunk,pattern,graph}` (read-only repositories), plus `config`, `database`, `health`, `handlers/operations`, `metrics`, `middleware`, `server`, `telemetry` and `version`.
 
 ## Design Decisions
 
 ### Explicit InputSchema for richer validation (deferred)
 
-The SDK infers `InputSchema` from Go struct tags via `github.com/google/jsonschema-go`. This inferred schema does not support `minimum`, `maximum`, `maxLength`, or `pattern` constraints. In theory, providing an explicit `InputSchema` as `json.RawMessage` on the `Tool` struct would let the SDK validate these constraints before calling the handler.
+The SDK infers `InputSchema` from Go struct tags, and the inferred schema carries no `minimum`, `maximum`, `maxLength` or `pattern` constraints. An explicit `InputSchema` on the `Tool` struct would let the SDK enforce them before calling the handler.
 
-This is deferred for MVP because:
+This is deferred because:
 
-1. Handler-level validation already covers these constraints (limit range, threshold range, UUID format).
-2. The SDK's schema validation rejects structurally invalid JSON (wrong types, missing required fields), which catches the most common errors.
-3. The remaining constraints (numeric ranges, string patterns) produce clear error messages from handler-level validation that are more descriptive than generic schema violation errors.
-4. Adding explicit schemas means maintaining JSON Schema alongside Go struct tags, creating a sync risk.
+1. Handler-level validation already covers the constraints (limit range, threshold range, UUID format).
+2. The SDK's schema validation rejects structurally invalid arguments (wrong types, missing required fields).
+3. Handler errors are more descriptive than generic schema violations.
+4. Explicit schemas would have to be kept in sync with the Go structs.
 
-If Claude Code or other MCP clients benefit from richer schema introspection (e.g., to show parameter constraints in tool discovery), explicit schemas can be added later by setting `Tool.InputSchema` to a `json.RawMessage`.
+Explicit schemas can be added later if MCP clients benefit from seeing parameter constraints during tool discovery.
 
 ## Architecture References
 
-- [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) -- authoritative tool definitions, parameters, response formats, error handling
+- [MCP Tools](../architecture/mnemonic/08-mcp-tools.md) -- tool definitions, parameters, response formats, error handling
 - [System Architecture](../architecture/system/02-system-architecture.md) -- component breakdown and data flow
 - [Communication Patterns](../architecture/system/03-communication-patterns.md) -- MCP protocol overview and request flow
-- [Configuration Design](configuration.md) -- `MCPServerConfig` struct and defaults
-- [Observability Implementation](observability-implementation.md) -- span naming conventions, MCP metrics, structured logging
+- [Configuration Design](configuration.md) -- `mcp.*` settings and defaults
+- [Observability Implementation](observability-implementation.md) -- span naming, MCP metrics, structured logging
 
 ---
 

@@ -14,7 +14,7 @@
 
 `mnemonic-dbs` owns the database schema and pre-seeded Docker images for the Mnemonic project. It produces two images — `mnemonic-postgres` and `mnemonic-neo4j` — that application services pull directly instead of running migrations at startup.
 
-The repo is intentionally decoupled from the application code. Schema changes are made here, tested, built into new image tags, and consumed by `mnemonic-mcp`, `mnemonic-api`, and `mnemonic-enricher` by updating their image references. This gives schema changes their own lifecycle: reviewed, tested, and versioned independently.
+The repo is intentionally decoupled from the application code. Schema changes are made here, tested, built into new image tags, and consumed by `mnemonic-mcp`, `mnemonic-api`, and `mnemonic-enricher` by updating their image references. Today every service's `docker-compose.yaml` (local dev and `src/tests` e2e), and `mnemonic-integration-tests`, pin `ghcr.io/twistingmercury/mnemonic-postgres:v1.0.0-dev` and `ghcr.io/twistingmercury/mnemonic-neo4j:v1.0.0-dev`. This gives schema changes their own lifecycle: reviewed, tested, and versioned independently.
 
 ## Core Concept
 
@@ -30,8 +30,8 @@ graph LR
     end
 
     subgraph GHCR["GitHub Container Registry"]
-        PG_IMG["mnemonic-postgres:latest-dev"]
-        NEO_IMG["mnemonic-neo4j:latest-dev"]
+        PG_IMG["mnemonic-postgres:v1.0.0-dev"]
+        NEO_IMG["mnemonic-neo4j:v1.0.0-dev"]
         PG_BUILD --> PG_IMG
         NEO_BUILD --> NEO_IMG
     end
@@ -52,7 +52,7 @@ graph LR
 ## System Model
 
 | Component | Description |
-|---|---|
+| --- | --- |
 | `src/postgres/` | SQL schema files (`*.up.sql`) and Dockerfile for the Postgres image |
 | `src/neo4j/` | Cypher schema files and Dockerfile/build script for the Neo4j image |
 | `src/tests/` | BATS test suites and test runner scripts that verify schema correctness |
@@ -70,7 +70,7 @@ graph LR
 ## Document Navigation
 
 | # | Document | Description | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 00 | [Overview](00-overview.md) | This document | Current |
 | 02 | [Architectural Decisions](02-architectural-decisions.md) | ADR log | Current |
 | 05 | [Deployment Architecture](05-deployment-architecture.md) | Image build and CI/CD pipeline | Current |

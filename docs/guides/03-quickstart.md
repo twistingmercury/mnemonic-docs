@@ -7,9 +7,9 @@ Get your AI coding assistant connected to Mnemonic and searching team patterns i
 Before you start, you need:
 
 - Docker and Docker Compose installed and running
-- An OpenAI API key (for embedding generation via text-embedding-3-large)
-- Claude Code, Claude Web, or another MCP-compatible AI coding assistant
-- curl (for loading a test pattern)
+- An OpenAI API key (used for embeddings with `text-embedding-3-large` and concept extraction with `gpt-4o-mini`)
+- Claude Code or another MCP-compatible AI coding assistant running on the same machine (the MCP endpoint is on `localhost`)
+- curl and jq (for loading and checking a test pattern)
 
 ## Step 1: Clone the Docs Repository
 
@@ -29,15 +29,35 @@ export MNEMONIC_OPENAI_API_KEY="sk-your-key-here"
 docker compose up -d
 ```
 
-This starts seven services:
+Docker Compose pulls the `latest-dev` images from GHCR (`pull_policy: always`) and starts seven services:
 
-- PostgreSQL (port 5432) — pattern storage and embeddings
-- Neo4j (port 7474/7687) — pattern relationship graph
-- RabbitMQ (port 5672/15672) — job queue
-- MCP server (port 8081) — reads patterns via MCP tools
-- Admin API (port 8080) — REST API for pattern management
-- Enricher (port 8082) — generates embeddings asynchronously
-- Admin UI (port 3000) — web UI for pattern browsing
+| Service (compose name) | Host port(s) | What is on it |
+| --- | --- | --- |
+| PostgreSQL (`dev_postgres`) | 5432 | Pattern rows, chunks, embeddings (PGVector), enrichment jobs |
+| Neo4j (`dev_neo4j`) | 7474 (browser), 7687 (Bolt) | Concept and `RELATED_TO` graph |
+| RabbitMQ (`dev_rabbitmq`) | 5672 (AMQP), 15672 (management UI) | `enrichment-jobs` queue |
+| MCP server (`dev_mcp`) | 8081 | Streamable HTTP MCP endpoint at `/mcp` only |
+| Admin API (`dev_api`) | 8080 | REST API at `/v1/api`, plus `/health`, `/version`, `/swagger/index.html` |
+| Enricher (`dev_enricher`) | 8082 (container port 8080) | `/health` and `/version` only; the worker itself has no API |
+| Admin UI (`dev_admin`) | 3000 | Web UI for pattern browsing |
+
+The MCP server's own `/health` and `/version` listen on its container port 8080, which this compose file does not publish. No service publishes its Prometheus metrics port (9090).
+
+```mermaid
+flowchart LR
+    CC[Claude Code] -->|"POST /mcp :8081"| MCP[dev_mcp]
+    You[curl / CI] -->|"/v1/api :8080"| API[dev_api]
+    API -->|enrichment job| MQ[(dev_rabbitmq)]
+    MQ --> ENR[dev_enricher]
+    API --> PG[(dev_postgres)]
+    ENR --> PG
+    ENR --> NEO[(dev_neo4j)]
+    ENR -->|embeddings + concept extraction| OAI[OpenAI]
+    MCP --> PG
+    MCP --> NEO
+    MCP -->|query embedding| OAI
+    API -->|query embedding| OAI
+```
 
 Wait about 30 seconds for all services to be healthy.
 
@@ -49,14 +69,15 @@ Check that all containers are running:
 docker compose ps
 ```
 
-All services should show `Up`. Verify the API and MCP server are responding:
+All services should show `Up`; every service except `dev_admin` defines a health check and should show `(healthy)`. Verify the API and enricher health endpoints, and run the MCP server's built-in health probe inside its container:
 
 ```bash
 curl -s http://localhost:8080/health | jq .
-curl -s http://localhost:8081/health | jq .
+curl -s http://localhost:8082/health | jq .
+docker compose exec dev_mcp /mnemonic --health
 ```
 
-Both should return HTTP 200 with a status object.
+Each `/health` returns HTTP 200 with a JSON status object listing every dependency it checks (PostgreSQL, Neo4j and the OpenAI embedding model; the API also lists RabbitMQ). An OpenAI or RabbitMQ problem shows as a warning without failing the check. The `--health` probe prints the same status and exits non-zero if the server is unhealthy.
 
 ## Step 4: Load a Test Pattern
 
@@ -76,66 +97,66 @@ curl -X POST http://localhost:8080/v1/api/patterns \
   }'
 ```
 
-The API returns HTTP 202 Accepted. The pattern is now queued for enrichment.
+The API returns HTTP 202 Accepted with a `Location: /v1/api/patterns/{id}` header and the created pattern as JSON (`id`, `enrichment_status: "pending"`, and the fields you sent). The API splits the content into one chunk per `[//]: pattern` section and queues one enrichment job per chunk.
+
+**Note:** Only sections preceded by a `[//]: pattern` line become searchable chunks. Content with no decorator is stored, but it produces no chunks and so never leaves `pending`. See [Authoring Patterns](05-authoring-patterns.md#the--pattern-decorator).
 
 > **Tip:** Instead of loading a single test pattern, you can use the [mnemonic-patterns](https://github.com/twistingmercury/mnemonic-patterns) repository to load a curated set of pre-defined patterns. Clone it and run `make load` to validate and upload them all to the API.
 
 ## Step 5: Wait for Enrichment
 
-Enrichment adds semantic embeddings to the pattern so it can be found via natural language search. This takes a few seconds. Check the enrichment status:
+Enrichment adds a semantic embedding to each chunk so it can be found via natural language search, then extracts concepts into the Neo4j graph. This takes a few seconds. Check the enrichment status:
 
 ```bash
 curl -s http://localhost:8080/v1/api/patterns | jq '.data[].enrichment_status'
 ```
 
-Wait until you see `"enriched"` (not `"pending"` or `"failed"`).
+Wait until you see `"enriched"` (not `"pending"` or `"failed"`). If it shows `"failed"`, `curl -s http://localhost:8080/v1/api/patterns/{id} | jq .enrichment_error` shows why; the enricher retries failed jobs automatically.
 
 ## Step 6: Configure Your AI Coding Assistant
 
 ### Claude Code
 
-Add the Mnemonic MCP server to your MCP settings. You can configure this in three ways:
+The Mnemonic MCP server speaks MCP over Streamable HTTP (stateless) at `http://localhost:8081/mcp`. It has no authentication. Add it to Claude Code in one of three ways.
 
 **Option A: CLI command (quickest)**
-
-Run this from any directory to add Mnemonic to your user-level MCP config:
 
 ```bash
 claude mcp add --transport http mnemonic http://localhost:8081/mcp
 ```
 
-To scope it to a single project instead, add `-s project`:
+With no `-s` flag this uses the `local` scope: the server is available to you, in the current project only.
+
+**Option B: Project-level config file (recommended for team repos)**
 
 ```bash
 claude mcp add -s project --transport http mnemonic http://localhost:8081/mcp
 ```
 
-**Option B: Project-level config file (recommended for team repos)**
-
-Create or edit `.mcp.json` in the project root:
+This writes `.mcp.json` in the project root. You can also create it by hand:
 
 ```json
 {
   "mcpServers": {
     "mnemonic": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://localhost:8081/mcp"
     }
   }
 }
 ```
 
-This file can be committed so the whole team gets the configuration automatically.
+Commit this file so the whole team gets the configuration. Claude Code asks each person to approve project-scoped servers the first time.
 
-**Option C: User-level config file (all projects)**
-
-Add the same JSON configuration to `~/.claude.json` under the `"mcpServers"` key, or use the CLI:
+**Option C: User-level (all your projects)**
 
 ```bash
 claude mcp add -s user --transport http mnemonic http://localhost:8081/mcp
 ```
 
-Restart Claude Code after making changes to pick up the new MCP server.
+This stores the server in `~/.claude.json`.
+
+Check the connection with `claude mcp list` (or `/mcp` inside Claude Code); `mnemonic` should show as connected. Start a new Claude Code session if it was already running.
 
 ### Other MCP-Compatible Assistants
 
@@ -143,7 +164,7 @@ If you're using a different AI assistant that supports MCP:
 
 1. Locate its MCP configuration file (varies by tool)
 2. Add the Mnemonic server endpoint: `http://localhost:8081/mcp`
-3. Specify transport as HTTP Streamable
+3. Specify the transport as Streamable HTTP (no authentication headers are needed)
 4. Restart the assistant
 
 ## Step 7: Verify It Works
@@ -160,11 +181,11 @@ The assistant should call the `search_patterns` MCP tool and return the pattern 
 
 ## What's Next
 
-**[Setting Up for Your Team](04-setting-up-for-your-team.md)** — Move beyond the test pattern. Deploy Mnemonic for your team's full pattern library, manage access, and set up automated pattern loading.
+**[Setting Up for Your Team](04-setting-up-for-your-team.md)** — Move beyond the test pattern. Run Mnemonic for your team on a trusted network and load the full pattern library.
 
-**[Authoring Patterns](05-authoring-patterns.md)** — Learn to write patterns that work well with semantic search. Covers frontmatter conventions, section structure, and tips for clarity.
+**[Authoring Patterns](05-authoring-patterns.md)** — Learn to write patterns that work well with semantic search. Covers the API fields, the `[//]: pattern` decorator, section structure, and tips for clarity.
 
-**[Managing Patterns](06-managing-patterns.md)** — Keep your knowledge base organized and fresh. Strategies for bulk loading, updates, versioning, and deprecation.
+**[Managing Patterns](06-managing-patterns.md)** — Keep your knowledge base organized and fresh. Loading, updating, deleting, and monitoring patterns through the REST API and scripts.
 
 ---
 

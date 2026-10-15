@@ -27,14 +27,13 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 
 **Role:** Source of truth for all structured data with ACID transaction guarantees.
 
-**Stores:**
+**Stores (used by the services):**
 
-- Agents (name, definition JSONB, crc64)
-- Skills (name, definition JSONB, crc64)
-- Skill files (skill_id, file_type, filename, document JSONB, crc64)
-- Patterns (name, content, tags, enrichment_status)
-- Pattern chunks (chunk text and embeddings)
-- Pattern associations
+- Patterns (name, description, content, tags, entity_type, language, domain, version, related_patterns, enrichment status)
+- Pattern chunks (section title, chunk text, per-chunk embedding and enrichment status)
+- Enrichment jobs (durable job state; RabbitMQ only carries the job ID)
+
+The schema also has `agents`, `skills`, `skill_files` (JSONB definitions with `crc64` change detection) and `pattern_agent_associations`, reserved for planned agent/skill features. No current service reads or writes them.
 
 **Why PostgreSQL:** Mature ecosystem, excellent Go driver support, JSONB for flexible storage, and transactional consistency across entities.
 
@@ -45,7 +44,7 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 **Stores:**
 
 - Pattern chunk embeddings (2000 dimensions, OpenAI text-embedding-3-large truncated), stored in `pattern_chunks.embedding`
-- Vector similarity indexes (IVFFlat or HNSW based on scale)
+- An HNSW index on that column (`idx_pattern_chunks_embedding`, cosine distance)
 
 **Why PGVector:** Single database deployment (no separate vector service), transactional consistency with metadata, and sufficient performance for expected pattern counts.
 
@@ -56,14 +55,16 @@ Each database serves a distinct purpose in the Mnemonic architecture:
 **Stores:**
 
 - Pattern nodes (mirrored from PostgreSQL with id, name, description)
-- Concept nodes (extracted during enrichment: technology, practice, domain)
+- Concept nodes (extracted during enrichment; lowercase `name`, `type` of technology, practice or domain)
 - Relationships:
-  - `(:Pattern)-[:HAS_CONCEPT]->(:Concept)`
-  - `(:Pattern)-[:RELATED_TO {similarity: 0.85}]->(:Pattern)`
+  - `(:Concept)-[:MENTIONED_IN]->(:Pattern)`
+  - `(:Pattern)-[:RELATED_TO {similarity: 0.85}]->(:Pattern)` (stored one way, queried undirected)
 
 **Why Neo4j:** Native graph model for relationship-heavy queries, expressive Cypher query language, and built-in graph algorithms.
 
 ### Diagram: Three Storage Layers
+
+Who reads and writes each store, as implemented in the services' repository code:
 
 ```mermaid
 flowchart TB
@@ -73,51 +74,51 @@ flowchart TB
         MCP_N4J["reads Neo4j"]
     end
 
-    subgraph ADMIN_API["ADMIN API (read-write)"]
+    subgraph ADMIN_API["ADMIN API"]
         direction LR
-        API_PG["writes PostgreSQL"]
-        API_MQ["publishes to RabbitMQ"]
+        API_PG["reads/writes PostgreSQL<br/>(patterns, chunks, jobs)"]
+        API_N4J["reads Neo4j;<br/>deletes on pattern delete"]
+        API_MQ["publishes job IDs to RabbitMQ"]
     end
 
     subgraph ENRICHER["ENRICHER (async)"]
         direction LR
-        ENR_PG["writes PostgreSQL (embeddings)"]
-        ENR_N4J["writes Neo4j (graph)"]
+        ENR_PG["reads/writes PostgreSQL<br/>(embeddings, statuses, jobs)"]
+        ENR_N4J["writes Neo4j (graph sync)"]
     end
 
-    subgraph PostgreSQL["PostgreSQL (RDBMS)"]
-        PG1["agents"]
+    subgraph PostgreSQL["PostgreSQL (RDBMS) - source of truth"]
         PG2["patterns + pattern_chunks"]
-        PG3["skills"]
-        PG5["Source of Truth"]
-        PG6["skill_files"]
+        PG3["enrichment_jobs"]
     end
 
     subgraph PGVector["PGVector (Vectors)"]
-        PV1["pattern_chunks.embedding"]
-        PV2["(2000-dim)"]
-        PV5["Semantic Search"]
+        PV1["pattern_chunks.embedding<br/>(2000-dim, HNSW)"]
     end
 
     subgraph Neo4j["Neo4j (Graph)"]
         N2["(:Pattern)"]
         N3["(:Concept)"]
-        N5["[:HAS_CONCEPT]"]
+        N5["[:MENTIONED_IN]"]
         N6["[:RELATED_TO]"]
-        N7["Relationships & Traversal"]
     end
+
+    RabbitMQ[("RabbitMQ<br/>enrichment-jobs")]
 
     MCP_PG --> PostgreSQL
     MCP_PG --> PGVector
     MCP_N4J --> Neo4j
     API_PG --> PostgreSQL
-    API_MQ --> RabbitMQ[("RabbitMQ")]
+    API_PG --> PGVector
+    API_N4J --> Neo4j
+    API_MQ --> RabbitMQ
+    RabbitMQ --> ENRICHER
     ENR_PG --> PostgreSQL
     ENR_PG --> PGVector
     ENR_N4J --> Neo4j
-
-    Note["UUID connects Pattern across PostgreSQL & Neo4j"]
 ```
+
+The pattern UUID connects a pattern across PostgreSQL and Neo4j.
 
 ## The Pattern UUID: The Universal Key
 
@@ -125,21 +126,28 @@ Every pattern has a UUID that serves as the universal identifier across both Pos
 
 ### PostgreSQL Storage
 
-```sql
--- patterns table
-id: UUID (Primary Key)
-name: VARCHAR(128)
-description: VARCHAR(500)
-content: TEXT (up to 10KB)
-tags: JSONB
-enrichment_status: ENUM ('pending', 'enriched', 'failed')
-enriched_at: TIMESTAMPTZ
+```text
+-- patterns table (columns the services use)
+id: UUID (Primary Key, generated by the Admin API)
+name: VARCHAR (unique, kebab-case, max 128)
+description: VARCHAR(500) (nullable)
+content: TEXT (API caps it at 100,000 bytes)
+tags: JSONB (array)
+entity_type, language, domain: VARCHAR
+version: VARCHAR (nullable)
+related_patterns: JSONB (array of pattern names)
+enrichment_status: VARCHAR ('pending' | 'enriched' | 'failed')
+enrichment_error: TEXT, enriched_at: TIMESTAMPTZ
+created_at, updated_at: TIMESTAMPTZ
 
 -- pattern_chunks table (embeddings stored per chunk)
 id: UUID (Primary Key)
-pattern_id: UUID (Foreign Key -> patterns.id)
+pattern_id: UUID (Foreign Key -> patterns.id, ON DELETE CASCADE)
+section_title: VARCHAR
+chunk_index: INT
 content: TEXT
-embedding: vector(2000)
+embedding: vector(2000) (NULL until enriched)
+enrichment_status, enrichment_error, enriched_at, created_at, updated_at
 ```
 
 **Example patterns Row:**
@@ -147,7 +155,7 @@ embedding: vector(2000)
 ```text
 id: 550e8400-e29b-41d4-a716-446655440001
 name: "sql-query-optimization"
-content: "Use EXPLAIN ANALYZE to identify slow queries..."
+content: "[//]: pattern\n## Use EXPLAIN ANALYZE\nRun EXPLAIN ANALYZE to identify slow queries..."
 enrichment_status: 'enriched'
 ```
 
@@ -158,7 +166,8 @@ enrichment_status: 'enriched'
 (:Pattern {
   id: "550e8400-e29b-41d4-a716-446655440001",
   name: "sql-query-optimization",
-  description: "Database query optimization techniques"
+  description: "Database query optimization techniques",
+  updatedAt: datetime()
 })
 ```
 
@@ -166,20 +175,22 @@ enrichment_status: 'enriched'
 
 The same UUID enables queries like:
 
-1. Find patterns similar to query (PGVector search)
-2. Use pattern UUIDs to look up graph relationships (Neo4j traversal)
-3. Retrieve full pattern details (PostgreSQL lookup)
+1. Find chunks similar to a query (PGVector search, joined to `patterns` for metadata)
+2. Use the matched pattern UUIDs to look up graph relationships (Neo4j traversal)
+3. Retrieve pattern details for graph-only results (PostgreSQL lookup by ID)
 
 ```mermaid
 flowchart LR
     subgraph PostgreSQL
-        P["Pattern<br/>id: UUID-123<br/>name: ...<br/>content: ...<br/>chunks: pattern_chunks"]
+        P["Pattern<br/>id: UUID-123<br/>name: ...<br/>content: ..."]
+        CH["pattern_chunks<br/>pattern_id: UUID-123"]
+        P --- CH
     end
 
     subgraph Neo4j
         NP["Pattern node<br/>id: UUID-123"]
         NC["Concept node<br/>name: sql"]
-        NP -->|HAS_CONCEPT| NC
+        NC -->|MENTIONED_IN| NP
     end
 
     P <-.->|Same UUID| NP
@@ -197,113 +208,171 @@ Pattern enrichment is an asynchronous pipeline that transforms raw content into 
 POST /v1/api/patterns
 {
   "name": "sql-optimization",
-  "content": "Use EXPLAIN ANALYZE to identify slow queries...",
-  "tags": ["database", "performance"]
+  "content": "[//]: pattern\n## Use EXPLAIN ANALYZE\nUse EXPLAIN ANALYZE to identify slow queries...",
+  "tags": ["database", "performance"],
+  "entity_type": "sql-pattern",
+  "language": "sql",
+  "domain": "backend"
 }
 ```
 
 **Step 2: Admin API validates pattern fields**
 
-Required fields (`name`, `content`) and field length constraints are checked before any writes occur. Invalid requests are rejected with 400 Bad Request.
+`name`, `content`, `entity_type`, `language` and `domain` are required; `language` and `domain` must be in the configured vocabulary (`vocabulary.languages`, `vocabulary.domains`), and length/format limits are checked before any writes occur. Invalid requests are rejected with 400 Bad Request; a duplicate name returns 409 Conflict.
 
-**Step 3: Admin API inserts pattern into PostgreSQL with `enrichment_status='pending'`**
+**Step 3: Admin API inserts the pattern, its chunks and their jobs in one transaction**
+
+The content is split at `[//]: pattern` markers (each marker followed by a heading starts a chunk). Then, inside one Postgres transaction:
 
 ```sql
-INSERT INTO patterns (id, name, content, tags, enrichment_status)
-VALUES (
-  gen_random_uuid(),
-  'sql-optimization',
-  'Use EXPLAIN ANALYZE...',
-  '["database", "performance"]'::jsonb,
-  'pending'
-);
--- id generated: 550e8400-e29b-41d4-a716-446655440001
+INSERT INTO patterns (id, name, description, content, tags,
+                      entity_type, language, domain, version, related_patterns,
+                      enrichment_status, created_at, updated_at)
+VALUES ($1, ..., 'pending', $12, $13);
+
+-- one statement for all chunks
+INSERT INTO pattern_chunks (id, pattern_id, section_title, chunk_index, content)
+SELECT u.id, $1, u.section_title, u.chunk_index, u.content
+FROM unnest($2::uuid[], $3::text[], $4::int[], $5::text[])
+     AS u(id, section_title, chunk_index, content);
+
+-- one pending job per chunk
+INSERT INTO enrichment_jobs (id, chunk_id, status, attempts, max_attempts,
+                             scheduled_for, created_at, updated_at)
+SELECT u.id, u.chunk_id, 'pending', 0, 3, now(), now(), now()
+FROM unnest($1::uuid[], $2::uuid[]) AS u(id, chunk_id);
 ```
 
-**Step 4: Admin API creates pattern chunks from decorated sections**
+A pattern with no `[//]: pattern` markers gets no chunks and no jobs, so it stays `pending` and is not searchable.
 
-Pattern content decorated with `[//]: pattern` section markers is split into indexable chunks and stored in the `pattern_chunks` table, associated with the new pattern ID.
+**Step 4: Admin API publishes one message per job to RabbitMQ**
 
-**Step 5: Admin API publishes enrichment job to RabbitMQ**
+After the commit, each job ID is published to the `enrichment-jobs` queue, with the W3C trace context in the AMQP headers:
 
 ```json
 {
-  "pattern_id": "550e8400-e29b-41d4-a716-446655440001"
+  "job_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 }
 ```
 
-**Step 6: Admin API returns 202 Accepted to client**
+A failed publish is logged and does not fail the request; the job stays `pending` in Postgres and the enricher's retry sweep claims it after a 2-minute grace.
+
+**Step 5: Admin API returns 202 Accepted to client**
 
 The pattern record exists in PostgreSQL at this point but embeddings and graph nodes are not yet populated.
 
-**Step 7 (Async): Enricher consumes message from RabbitMQ**
+**Step 6 (Async): Enricher consumes a job message and starts the job**
 
-The Enricher is a separate service that subscribes to the enrichment queue. It picks up the message and begins processing independently of the Admin API.
+The Enricher is a separate service that subscribes to the enrichment queue. It moves the job from `pending` to `processing` with a conditional update (`WHERE id = $1 AND status = 'pending' AND scheduled_for <= now()`); if no row matches, the message is acked and dropped. Separately, every 15 seconds it claims due jobs with `FOR UPDATE SKIP LOCKED`, so retries and lost messages are processed without RabbitMQ.
 
-**Step 8 (Async): Enricher generates chunk embeddings via OpenAI text-embedding-3-large**
+**Step 7 (Async): Enricher embeds the chunk via OpenAI text-embedding-3-large**
 
 ```go
-// Call OpenAI embedding API for each chunk
-embedding := openai.CreateEmbedding(
-  model: "text-embedding-3-large",
-  input: chunk.Content,
-)
-// Returns: vector(2000) [0.023, -0.145, 0.087, ...]
+// One embedding call per chunk job. The input carries pattern-level context:
+//   "<pattern name> | <tags> | <section title>\n\n<chunk content>"
+embedding, err := embeddingSvc.Embed(ctx, embedText)
+// Returns: []float32 of length 2000
 ```
 
-**Step 9 (Async): Enricher stores embeddings in `pattern_chunks` table**
+**Step 8 (Async): Enricher stores the embedding in `pattern_chunks`**
 
 ```sql
-UPDATE pattern_chunks
-SET embedding = $1::vector
-WHERE id = $2;
+UPDATE pattern_chunks SET
+    embedding = $2,
+    enrichment_status = 'enriched',
+    enrichment_error = NULL,
+    enriched_at = now(),
+    updated_at = now()
+WHERE id = $1;
 ```
 
-**Step 10 (Async): Enricher extracts concepts via OpenAI**
+It then checks the pattern's chunks: if any chunk is `failed`, the pattern is set to `failed`; if all are `enriched`, this job also runs steps 9 to 11. Otherwise the job just completes.
+
+**Step 9 (Async, last chunk only): Enricher extracts concepts via OpenAI**
 
 ```go
-// LLM extracts entities and concepts from content
-concepts := llm.ExtractConcepts(pattern.Content)
+// LLM (openai.extraction_model, default gpt-4o-mini) extracts concepts
+// from the full pattern content; names are lowercased and trimmed.
+concepts, err := extractionSvc.Extract(ctx, pattern.Content)
 // Returns: [
-//   {name: "sql", type: "technology"},
-//   {name: "query-optimization", type: "practice"},
-//   {name: "performance-tuning", type: "domain"}
+//   {Name: "sql", Type: "technology"},
+//   {Name: "query-optimization", Type: "practice"},
+//   {Name: "performance-tuning", Type: "domain"}
 // ]
 ```
 
-**Step 11 (Async): Enricher creates Neo4j Pattern node with HAS_CONCEPT relationships**
+**Step 10 (Async, last chunk only): Enricher syncs the graph in one write transaction**
+
+`SyncPattern` runs these statements in a single Neo4j managed write transaction:
 
 ```cypher
-// Create Pattern node
-MERGE (p:Pattern {id: "550e8400-e29b-41d4-a716-446655440001"})
-SET p.name = "sql-optimization",
-    p.description = "Database query optimization"
+// 1. Create or update the Pattern node
+MERGE (p:Pattern {id: $patternId})
+SET p.name = $patternName,
+    p.description = $patternDescription,
+    p.updatedAt = datetime()
 
-// Create Concept nodes and HAS_CONCEPT relationships
-MERGE (c1:Concept {name: "sql", type: "technology"})
-MERGE (c2:Concept {name: "query-optimization", type: "practice"})
-MERGE (p)-[:HAS_CONCEPT]->(c1)
-MERGE (p)-[:HAS_CONCEPT]->(c2)
+// 2. Drop MENTIONED_IN edges to concepts the pattern no longer mentions
+MATCH (c:Concept)-[r:MENTIONED_IN]->(p:Pattern {id: $patternId})
+WHERE NOT c.name IN $conceptNames
+DELETE r
+
+// 3. Create concepts and MENTIONED_IN edges (skipped when no concepts)
+UNWIND $concepts AS concept
+MERGE (c:Concept {name: concept.name})
+ON CREATE SET c.type = concept.type, c.createdAt = datetime()
+ON MATCH SET c.type = concept.type
+WITH c
+MATCH (p:Pattern {id: $patternId})
+MERGE (c)-[:MENTIONED_IN]->(p)
+
+// 4. Delete this pattern's existing RELATED_TO edges
+MATCH (p:Pattern {id: $patternId})-[r:RELATED_TO]-()
+DELETE r
+
+// 5. Recompute RELATED_TO from shared concepts (see below)
 ```
 
-**Step 12 (Async): Enricher creates RELATED_TO edges between patterns sharing concepts**
+**Step 11 (Async, last chunk only): RELATED_TO edges between patterns sharing concepts**
 
-After creating concept nodes, the Enricher computes RELATED_TO edges between this pattern and other patterns that share one or more of the same concepts. This populates the pattern-to-pattern similarity relationships used by `find_related_patterns`.
+Step 5 of the transaction computes `similarity = sharedConcepts / max(conceptsA, conceptsB)` for every pattern sharing at least one concept, and creates an edge only when it reaches `enrichment.related_to_min_similarity` (default 0.3). These edges are what `find_related_patterns` and the MCP search graph expansion read.
 
 ```cypher
-MATCH (p:Pattern {id: "550e8400-e29b-41d4-a716-446655440001"})-[:HAS_CONCEPT]->(c:Concept)<-[:HAS_CONCEPT]-(other:Pattern)
-WHERE p <> other
-MERGE (p)-[:RELATED_TO]->(other)
+MATCH (p1:Pattern {id: $patternId})<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2:Pattern)
+WHERE p1 <> p2
+WITH p1, p2, count(DISTINCT c) AS sharedCount
+OPTIONAL MATCH (c1:Concept)-[:MENTIONED_IN]->(p1)
+WITH p1, p2, sharedCount, count(DISTINCT c1) AS totalA
+OPTIONAL MATCH (c2:Concept)-[:MENTIONED_IN]->(p2)
+WITH p1, p2, sharedCount, totalA, count(DISTINCT c2) AS totalB
+WITH p1, p2, sharedCount,
+     CASE WHEN totalA > totalB THEN totalA ELSE totalB END AS maxTotal
+WITH p1, p2, sharedCount,
+     CASE WHEN maxTotal = 0 THEN 0.0
+          ELSE toFloat(sharedCount) / toFloat(maxTotal)
+     END AS similarity
+WHERE similarity >= $minSimilarity
+CREATE (p1)-[:RELATED_TO {similarity: similarity, updatedAt: datetime()}]->(p2)
 ```
 
-**Step 13 (Async): Enricher updates `enrichment_status` to `enriched`**
+**Step 12 (Async): Enricher updates statuses**
 
 ```sql
-UPDATE patterns
-SET enrichment_status = 'enriched',
-    enriched_at = NOW()
-WHERE id = '550e8400-e29b-41d4-a716-446655440001';
+-- last chunk only, after the graph sync succeeds
+UPDATE patterns SET
+    enrichment_status = 'enriched',
+    enrichment_error = NULL,
+    enriched_at = $4,
+    updated_at = $5
+WHERE id = $1;
+
+-- every job
+UPDATE enrichment_jobs SET status = 'completed', completed_at = now(),
+    last_error = NULL, updated_at = now()
+WHERE id = $1;
 ```
+
+If embedding, extraction or the graph sync fails, the job is marked failed and rescheduled after `enrichment.retry_delay` (default 30s) until `max_attempts` (3).
 
 ### Creation and Enrichment Sequence
 
@@ -318,31 +387,44 @@ sequenceDiagram
     participant N4J as Neo4j
 
     Client->>API: POST /v1/api/patterns
-    API->>API: Validate fields
+    API->>API: Validate fields, split into chunks
+    API->>PG: BEGIN
     API->>PG: INSERT pattern (status=pending)
     API->>PG: INSERT pattern_chunks
-    API->>MQ: Publish enrichment job
+    API->>PG: INSERT enrichment_jobs (one per chunk)
+    API->>PG: COMMIT
+    API->>MQ: Publish {job_id} per job
     API-->>Client: 202 Accepted
 
-    MQ-->>ENR: Consume enrichment job
-    ENR->>OAI: Generate chunk embeddings (text-embedding-3-large)
-    OAI-->>ENR: vector(2000) per chunk
-    ENR->>PG: UPDATE pattern_chunks SET embedding
-    ENR->>OAI: Extract concepts
-    OAI-->>ENR: Concept list
-    ENR->>N4J: MERGE Pattern node + HAS_CONCEPT edges
-    ENR->>N4J: MERGE RELATED_TO edges (shared concepts)
-    ENR->>PG: UPDATE patterns SET enrichment_status=enriched
+    loop each chunk job
+        MQ-->>ENR: Consume {job_id}
+        ENR->>PG: Start job (pending -> processing)
+        ENR->>OAI: Embed chunk (text-embedding-3-large)
+        OAI-->>ENR: vector(2000)
+        ENR->>PG: UPDATE pattern_chunks SET embedding, status=enriched
+        ENR->>PG: Check chunk progress for the pattern
+        opt all chunks enriched
+            ENR->>OAI: Extract concepts (full pattern content)
+            OAI-->>ENR: Concept list
+            ENR->>N4J: SyncPattern (one write tx): Pattern,<br/>Concepts + MENTIONED_IN, RELATED_TO
+            ENR->>PG: UPDATE patterns SET enrichment_status=enriched
+        end
+        ENR->>PG: UPDATE enrichment_jobs SET status=completed
+    end
 ```
 
 ### Enrichment State Transitions
 
+Pattern `enrichment_status`:
+
 ```mermaid
 stateDiagram-v2
-    [*] --> pending: Pattern Created
-    pending --> enriched: Enrichment Succeeds
-    pending --> failed: Enrichment Fails
-    failed --> pending: Retry Triggered
+    [*] --> pending: Pattern created
+    pending --> enriched: All chunks embedded and graph synced
+    pending --> failed: A chunk job fails
+    failed --> enriched: Retried job succeeds and all chunks are enriched
+    failed --> pending: Pattern updated (PUT)
+    enriched --> pending: Pattern updated (PUT)
     enriched --> [*]
 ```
 
@@ -359,78 +441,85 @@ This is the core operation: turning an MCP tool call into a knowledge graph quer
     "name": "search_patterns",
     "arguments": {
       "query": "How do I optimize SQL queries?",
-      "max_results": 5
+      "limit": 5
     }
   }
 }
 ```
+
+`search_patterns` also accepts `threshold` (default 0.5), `tags`, `language` and `domain`.
 
 ### Internal Processing Steps
 
 **Step 1: Query Embedding (OpenAI)**
 
 ```go
-// Generate embedding for search query
-queryEmbedding := openai.CreateEmbedding(
-  model: "text-embedding-3-large",
-  input: "How do I optimize SQL queries?",
-)
-// Returns: vector(2000)
+// Generate embedding for search query (text-embedding-3-large, 2000 dims)
+embedding, err := embeddingSvc.Embed(ctx, "How do I optimize SQL queries?")
 ```
 
 **Step 2: Semantic Search (PGVector Similarity Search)**
 
 ```sql
 -- Find pattern chunks semantically similar to query
-SELECT
-  pc.pattern_id,
-  p.name,
-  pc.content,
-  1 - (pc.embedding <=> $1::vector) AS similarity
+SELECT pc.pattern_id, p.name, p.tags, pc.section_title, pc.content,
+       1 - (pc.embedding <=> $1) AS similarity
 FROM pattern_chunks pc
 JOIN patterns p ON p.id = pc.pattern_id
-WHERE p.enrichment_status = 'enriched'
-  AND 1 - (pc.embedding <=> $1::vector) > 0.7  -- threshold
-ORDER BY pc.embedding <=> $1::vector
-LIMIT 5;
+WHERE pc.embedding IS NOT NULL
+  AND pc.enrichment_status = 'enriched'
+  AND 1 - (pc.embedding <=> $1) >= $2      -- threshold, default 0.5
+  AND ($3::text = '' OR p.language = $3)
+  AND ($4::text = '' OR p.domain = $4)
+  -- AND p.tags @> $n::jsonb  when tags are given
+ORDER BY pc.embedding <=> $1
+LIMIT $5;
 ```
 
 **Results:**
 
 ```text
-pattern_id: 550e8400-...001, name: sql-optimization, similarity: 0.94
-pattern_id: 550e8400-...002, name: database-indexing, similarity: 0.82
-pattern_id: 550e8400-...003, name: query-performance, similarity: 0.78
+pattern_id: 550e8400-...001, name: sql-optimization, section: Use EXPLAIN ANALYZE, similarity: 0.94
+pattern_id: 550e8400-...002, name: database-indexing, section: B-tree indexes, similarity: 0.82
+pattern_id: 550e8400-...001, name: sql-optimization, section: Avoid N+1, similarity: 0.78
 ```
 
-**Step 3: Response Assembly**
+One pattern can appear several times, once per matching chunk.
 
-```json
-{
-  "patterns": [
-    {
-      "id": "550e8400-...001",
-      "name": "sql-optimization",
-      "content": "Use EXPLAIN ANALYZE to identify slow queries...",
-      "similarity": 0.94,
-      "concepts": ["sql", "query-optimization", "performance-tuning"],
-      "related_patterns": ["550e8400-...004", "550e8400-...005"]
-    },
-    {
-      "id": "550e8400-...002",
-      "name": "database-indexing",
-      "content": "B-tree indexes are optimal for equality and range queries...",
-      "similarity": 0.82,
-      "concepts": ["indexing", "database"],
-      "related_patterns": ["550e8400-...001"]
-    }
-  ]
-}
+**Step 3: Graph Expansion (Neo4j)**
+
+The top 3 distinct patterns from step 2 are used as seeds. For each seed, the service reads up to 5 `RELATED_TO` neighbours (concurrently), drops patterns already in the vector results, keeps the highest similarity per pattern, and fetches the remaining candidates' metadata from Postgres (`SELECT id, name, tags, language, domain FROM patterns WHERE id = ANY($1)`) to apply the same language/domain/tags filters. At most 5 graph matches are returned. If Neo4j fails, search returns the vector results only.
+
+**Step 4: Response Assembly**
+
+The MCP server returns Markdown text for the model, not JSON:
+
+```text
+Found 3 sections across 2 patterns matching 'How do I optimize SQL queries?':
+
+---
+
+## sql-optimization (94% match)
+
+**Section:** Use EXPLAIN ANALYZE
+
+**Tags:** database, performance
+
+Use EXPLAIN ANALYZE to identify slow queries...
+
+---
+
+### Related Patterns (via graph)
+
+## query-caching (similarity: 0.50)
+
+**Found via:** sql-optimization
+**Shared concepts:** sql, performance-tuning
 ```
 
 The MCP server returns these ranked patterns to Claude Code, which uses them to inform its responses.
 
-Post-MVP: search_patterns will incorporate graph scores via `relevance = (0.7 × vector_similarity) + (0.3 × graph_score)`. <!-- design docs remain in mnemonic/docs/design/ -->
+Post-MVP: search_patterns will incorporate graph scores into the ranking via `relevance = (0.7 × vector_similarity) + (0.3 × graph_score)`; today graph matches are listed separately and do not change the vector ranking. <!-- design docs remain in mnemonic/docs/design/ -->
 
 ## Query Sequence Diagram
 
@@ -440,23 +529,25 @@ sequenceDiagram
     participant MCP as MCP Server
     participant SVC as SearchService
     participant OAI as OpenAI
-    participant PGV as PGVector
-    participant PG as PostgreSQL
+    participant PG as PostgreSQL + PGVector
+    participant N4J as Neo4j
 
     CC->>MCP: search_patterns tool call
-    MCP->>SVC: SearchPatterns(SearchOptions{query, limit, threshold})
+    MCP->>SVC: SearchPatterns(SearchOptions{query, limit, threshold, tags, language, domain})
 
     SVC->>OAI: Step 1: Generate query embedding (text-embedding-3-large)
     OAI-->>SVC: vector(2000)
 
-    SVC->>PGV: Step 2: Vector similarity search<br/>SELECT FROM pattern_chunks WHERE similarity > 0.7
-    PGV-->>SVC: Ranked pattern IDs + similarity scores
+    SVC->>PG: Step 2: Chunk similarity search<br/>pattern_chunks JOIN patterns, similarity >= threshold
+    PG-->>SVC: Ranked chunks with pattern metadata
 
-    SVC->>PG: Step 3: Pattern details<br/>SELECT FROM patterns
-    PG-->>SVC: Full pattern content
+    SVC->>N4J: Step 3: RELATED_TO for top 3 seed patterns
+    N4J-->>SVC: Related patterns + shared concepts
+    SVC->>PG: Metadata for graph-only patterns (WHERE id = ANY)
+    PG-->>SVC: name, tags, language, domain
 
-    SVC-->>MCP: Ranked pattern results
-    MCP-->>CC: Pattern list with metadata
+    SVC-->>MCP: Chunk matches + graph matches
+    MCP-->>CC: Markdown result
 
     Note over CC: Uses patterns to inform response
 ```
@@ -465,17 +556,19 @@ sequenceDiagram
 
 This table shows how each database contributes to pattern search:
 
-| Step | Database   | Question Asked                 | Query Type        | Returns                        |
-| ---- | ---------- | ------------------------------ | ----------------- | ------------------------------ |
-| 1    | PGVector   | "What patterns match?"         | Vector similarity | Ranked pattern IDs + similarity scores |
-| 2    | PostgreSQL | "Get full pattern details"     | Relational lookup | Pattern content and metadata   |
+| Step | Database | Question Asked | Query Type | Returns |
+| --- | --- | --- | --- | --- |
+| 1 | PGVector + PostgreSQL | "Which chunks match?" | Vector similarity joined to `patterns` | Ranked chunks with pattern name, tags and similarity |
+| 2 | Neo4j | "What is related to the top matches?" | `RELATED_TO` traversal | Related patterns with similarity and shared concepts |
+| 3 | PostgreSQL | "Do the related patterns pass the filters?" | Lookup by ID | Name, tags, language, domain |
 
 **Data Flow Pattern:**
 
-1. PGVector finds and ranks candidate patterns via vector similarity (MVP)
-2. PostgreSQL provides full pattern content and metadata
+1. PGVector finds and ranks candidate chunks via vector similarity, with pattern metadata from the same query
+2. Neo4j expands the top results through pre-computed `RELATED_TO` edges
+3. PostgreSQL supplies metadata to filter the graph-only results
 
-Post-MVP: search_patterns will incorporate Neo4j graph scores via `relevance = (0.7 × vector_similarity) + (0.3 × graph_score)`.
+Post-MVP: search_patterns will blend Neo4j graph scores into the ranking via `relevance = (0.7 × vector_similarity) + (0.3 × graph_score)`.
 
 ## Post-MVP: Visualization
 
@@ -483,14 +576,14 @@ While not part of the MVP, there's an interesting opportunity to visualize the e
 
 **The Idea:**
 
-Use dimensionality reduction techniques (t-SNE, UMAP) to project the 2000-dimensional embeddings down to 3D space for interactive visualization.
+Use dimensionality reduction techniques (t-SNE, UMAP) to project the 2000-dimensional chunk embeddings down to 3D space for interactive visualization.
 
 **What You Could See:**
 
 - Centroids as large spheres showing cluster centers
-- Patterns as smaller points colored by agent associations
+- Chunks as smaller points colored by pattern, tag or domain
 - Distance between points representing semantic similarity
-- Cluster boundaries showing how IVFFlat organizes knowledge
+- Neighbourhood structure showing how the HNSW graph connects related chunks
 
 **Potential Benefits:**
 
@@ -505,16 +598,17 @@ Use dimensionality reduction techniques (t-SNE, UMAP) to project the 2000-dimens
 - Plotly (interactive 3D scatter plots)
 - Three.js (custom WebGL visualizations)
 
-This would be particularly useful for understanding and tuning the `lists` and `probes` parameters, or identifying when patterns are poorly distributed across clusters.
+This would be particularly useful for understanding and tuning the HNSW `m`, `ef_construction` and `ef_search` parameters, or identifying when patterns are poorly distributed in the embedding space.
 
 ## Post-MVP: Admin Tooling
 
 Managing the knowledge graph in production requires admin tools beyond the core MCP interface.
 
+Already available: `DELETE /v1/api/patterns/{id}` removes a single pattern (chunks and jobs cascade; the Neo4j node is removed best-effort), `GET /v1/api/patterns` shows each pattern's `enrichment_status` (there is no status filter parameter yet), and `PUT /v1/api/patterns/{id}` re-chunks and re-enriches a pattern.
+
 **Potential API endpoints:**
 
 ```text
-DELETE /v1/patterns/{id}               - Remove single pattern
 POST   /v1/patterns/prune              - Bulk cleanup (by age, tags, etc.)
 GET    /v1/patterns/orphans            - Find patterns with no concept connections
 POST   /v1/patterns/{id}/re-enrich    - Re-trigger failed enrichment
@@ -548,8 +642,9 @@ This is a post-MVP feature. The database-level operations work; admin tooling ad
 - **Three complementary databases** - Each chosen for specific strengths: PostgreSQL (ACID), PGVector (semantic search), Neo4j (relationships)
 - **Pattern UUID is the universal key** - Same identifier connects data across PostgreSQL and Neo4j
 - **Enrichment is asynchronous** - The Admin API publishes to RabbitMQ and returns immediately; the Enricher processes independently to avoid write-path latency
-- **Pattern search uses vector similarity (MVP-1)** - PGVector ranks results by cosine similarity; PostgreSQL provides full pattern details. Blended scoring with Neo4j graph context is planned post-MVP.
+- **Pattern search uses vector similarity plus graph expansion** - PGVector ranks chunks by cosine similarity in one query joined to `patterns`; the MCP server adds related patterns from Neo4j `RELATED_TO` edges. Blended scoring is planned post-MVP.
 - **PostgreSQL is source of truth** - Other databases contain projections and derived data
+- **One writer per store** - The Admin API writes patterns, chunks and jobs; the Enricher writes embeddings, statuses and the graph; the MCP server only reads
 - **Graph relationships add context** - Neo4j expands beyond similarity to include explicit knowledge connections
 
 **Next Steps:**

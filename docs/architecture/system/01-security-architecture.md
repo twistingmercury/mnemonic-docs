@@ -2,10 +2,11 @@
 
 > Back to [System Architecture](README.md) | [Project README](../../../README.md)
 
-> **MVP stance:** The Mnemonic services run in a trusted network environment without authentication ([SE-1](../../requirements.md#se-1)). The MCP interface is read-only ([SE-4](../../requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../../requirements.md#se-6)). This document describes the Post-MVP production security architecture.
+**MVP stance:** The Mnemonic services run in a trusted network environment without authentication ([SE-1](../../requirements.md#se-1)). The MCP interface is read-only ([SE-4](../../requirements.md#se-4)) and database credentials are injected from the runtime environment ([SE-6](../../requirements.md#se-6)). Apart from [Current State](#current-state-local-phase), this document describes the **planned** Post-MVP production security architecture; none of Envoy, OPA, JWT, API keys or identity headers is implemented.
 
 ## Table of Contents
 
+- [Current State (Local Phase)](#current-state-local-phase)
 - [Introduction](#introduction)
 - [Security Model Overview](#security-model-overview)
 - [Authentication](#authentication)
@@ -25,6 +26,24 @@
 - [Migration Path](#migration-path)
 - [Trade-offs Summary](#trade-offs-summary)
 
+## Current State (Local Phase)
+
+This is what the code does today (v0.4.0 of `mnemonic-api`, `mnemonic-mcp`, `mnemonic-enricher`). The phase is a trusted, local, single-user environment.
+
+| Surface                                                               | Current behavior                                                                                                                                                               |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| MCP `/mcp` on :8081 (`mnemonic-mcp`)                                  | No authentication. Streamable HTTP, stateless, read-only tools only (`search_patterns`, `find_related_patterns`, `get_pattern`)                                                |
+| REST `/v1/api` and `/swagger` on :8080 (`mnemonic-api`)               | No authentication or authorization; any caller can create, update and delete patterns                                                                                          |
+| `/health`, `/version` on :8080 and `/metrics` on :9090 (all services) | Unauthenticated                                                                                                                                                                |
+| TLS                                                                   | None in process; the API removed `server.tls.*`, so TLS, if needed, terminates at a reverse proxy                                                                              |
+| Secrets                                                               | `openai.api_key`, PostgreSQL, Neo4j and RabbitMQ passwords come from config or `MNEMONIC_*` environment variables (for example `MNEMONIC_OPENAI_API_KEY`); none are hard-coded |
+| PostgreSQL                                                            | `database.postgres.ssl_mode`, default `prefer`                                                                                                                                 |
+| RabbitMQ                                                              | SASL PLAIN credentials passed separately from the connection URL                                                                                                               |
+| Error responses                                                       | Public 500 and 503 bodies use fixed messages; private logs redact upstream bodies, URLs and credential fields                                                                  |
+| Data sent off-host                                                    | Pattern content and search queries go to the OpenAI API (`openai.base_url`) for embeddings and concept extraction                                                              |
+
+Everything below this section is planned.
+
 ## Introduction
 
 Post-MVP (Production Deployment) adds enterprise-grade security to Mnemonic using infrastructure-layer components. Authentication and authorization are handled outside the application code, keeping the services lightweight and focused on team knowledge synchronization.
@@ -33,8 +52,8 @@ This approach follows the principle of separation of concerns: security infrastr
 
 **Security Scope:**
 
-- **Admin REST API** (`:8080`): Protected by Envoy + OPA for write operations (patterns, agents, skills)
-- **MCP Server** (`:8081`): Read-only access in trusted environment (no authentication for MVP or Post-MVP)
+- **Admin REST API** (`:8080`): Protected by Envoy + OPA for write operations (patterns)
+- **MCP Server** (`:8081`): Read-only access in trusted environment (no authentication today). The MVP 4 and MVP 5 concept diagrams place Envoy + OPA in front of MCP as well; which applies is not yet decided
 
 ## Security Model Overview
 
@@ -174,9 +193,9 @@ graph TB
 
 **Resource Types:**
 
-| Resource | Description                                      |
-| -------- | ------------------------------------------------ |
-| patterns | Engineering patterns for semantic search         |
+| Resource | Description                              |
+| -------- | ---------------------------------------- |
+| patterns | Engineering patterns for semantic search |
 
 ### OPA Policy Structure
 
@@ -268,12 +287,14 @@ graph TB
     OPA <-->|"Load"| BUNDLES
     ENV <-->|"Validate JWT"| IDP
     ENV -->|"Headers"| API
-    MCP <--> PG
-    MCP <--> NEO
+    MCP --> PG
+    MCP --> NEO
     API <--> PG
     API <--> NEO
     API --> RMQ
     ENR <--> RMQ
+    ENR <--> PG
+    ENR --> NEO
 ```
 
 **Component Responsibilities:**
@@ -285,7 +306,7 @@ graph TB
 | Admin API         | Trust identity headers, apply business logic for pattern management   |
 | MCP Server        | Read-only pattern serving; operates outside the security perimeter    |
 | Enricher          | Internal consumer; not exposed through Envoy                          |
-| Identity Provider | User authentication, token issuance, JWKS hosting                    |
+| Identity Provider | User authentication, token issuance, JWKS hosting                     |
 | Policy Bundles    | Store and distribute Rego policies                                    |
 
 ## Admin Authentication Flow (Post-MVP Only)
@@ -470,6 +491,8 @@ graph TB
     API --> NEO
     API --> RMQ
     ENR --> RMQ
+    ENR --> PG
+    ENR --> NEO
     ENV <--> IDP
 ```
 
@@ -519,6 +542,8 @@ graph TB
     API --> NEO
     API --> SQS
     ENR --> SQS
+    ENR --> PG
+    ENR --> NEO
     ENV <--> IDP
 ```
 

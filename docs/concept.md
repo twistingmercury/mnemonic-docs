@@ -53,18 +53,21 @@ graph LR
 ## How knowledge gets in
 
 Someone on the team — an admin, a CI pipeline, a script — pushes content into Mnemonic through
-a REST API. That is the write path. You POST a pattern, Mnemonic stores it, generates a
-semantic embedding in the background, and it becomes searchable within a few moments.
+a REST API. That is the write path. You POST a pattern, Mnemonic stores it, generates
+semantic embeddings for each of its sections in the background, and it becomes searchable
+within a few moments.
 
 ```mermaid
 graph LR
     Admin([Admin / CI]) -->|POST patterns| REST[Mnemonic REST API]
     REST --> KB[(Knowledge Base)]
+    REST -->|enrichment job| ENR[Mnemonic Enricher]
+    ENR -->|embeddings and concepts| KB
 ```
 
 ## Embeddings explained
 
-When Mnemonic stores a pattern, it generates a semantic embedding in the background. That embedding is what makes search work. Here is what that means in practice.
+When Mnemonic stores a pattern, it splits the pattern into sections and generates a semantic embedding for each one in the background. That embedding is what makes search work. Here is what that means in practice.
 
 ### What is an embedding?
 
@@ -96,26 +99,26 @@ Mnemonic captures those connections explicitly using a knowledge graph stored in
 
 ### Concepts: the dots on the map
 
-During enrichment, Mnemonic does not just generate an embedding. It also uses AI to extract **concepts** from each pattern — the technologies, practices, and domains the pattern touches. A pattern about Go error handling might produce concepts like "error handling", "Go", and "sentinel errors". A pattern about API error responses might produce "error handling", "REST APIs", and "HTTP status codes".
+During enrichment, Mnemonic does not just generate embeddings. Once every section is embedded, it also asks an OpenAI model (`gpt-4o-mini` by default) to extract **concepts** from each pattern — the technologies, practices, and domains the pattern touches. A pattern about Go error handling might produce concepts like "error handling", "Go", and "sentinel errors". A pattern about API error responses might produce "error handling", "REST APIs", and "HTTP status codes".
 
-These concepts become nodes in a graph. Each pattern gets linked to its concepts, and patterns that share a concept become connected — not because their text is similar, but because they genuinely deal with the same ideas.
+These concepts become nodes in a graph. Each concept is linked to the patterns that mention it, and patterns that share enough concepts get a `RELATED_TO` edge — not because their text is similar, but because they genuinely deal with the same ideas. The edge's similarity is the number of shared concepts divided by the larger of the two patterns' concept counts, and only edges at or above `enrichment.related_to_min_similarity` (default 0.3) are kept.
 
 ### What the graph looks like
 
 ```mermaid
 graph LR
-    P1["go-error-handling"] -->|HAS_CONCEPT| C1(["error handling"])
-    P2["api-error-responses"] -->|HAS_CONCEPT| C1
-    P1 -->|HAS_CONCEPT| C2(["Go"])
-    P2 -->|HAS_CONCEPT| C3(["REST APIs"])
+    C1(["error handling"]) -->|MENTIONED_IN| P1["go-error-handling"]
+    C1 -->|MENTIONED_IN| P2["api-error-responses"]
+    C2(["Go"]) -->|MENTIONED_IN| P1
+    C3(["REST APIs"]) -->|MENTIONED_IN| P2
     P1 -.-|RELATED_TO| P2
 ```
 
-The `go-error-handling` and `api-error-responses` patterns both link to the "error handling" concept. That shared concept creates a relationship between the two patterns — even though their embeddings might point in quite different directions.
+The `go-error-handling` and `api-error-responses` patterns are both linked from the "error handling" concept. That shared concept creates a relationship between the two patterns — even though their embeddings might point in quite different directions.
 
 ### Why this matters for search
 
-This is what powers the `find_related_patterns` MCP tool. Given a pattern, Mnemonic walks the graph to find connected patterns rather than relying on vector similarity alone. It follows the concept links outward: this pattern is about these concepts, what other patterns share them?
+This is what powers the `find_related_patterns` MCP tool. Given a pattern, Mnemonic follows its `RELATED_TO` edges in the graph rather than relying on vector similarity alone, and reports the concepts each related pattern shares: this pattern is about these concepts, what other patterns share them? `search_patterns` uses the same edges to add a short "related via graph" list after its vector matches.
 
 That catches relationships embeddings miss. Two patterns might discuss completely different topics but both mention the same internal service, the same deployment strategy, or the same compliance requirement. Embeddings won't see the connection. The graph will.
 
@@ -123,11 +126,12 @@ Think of it this way: embeddings find "sounds like" matches. The graph finds "co
 
 ## What lives where
 
-| What                      | Where it lives          | Who owns it                   |
-| ------------------------- | ----------------------- | ----------------------------- |
-| Patterns (team knowledge) | Mnemonic                | Your team, via the REST API   |
-| Workflow decisions        | You                     | Always                        |
-| AI inference              | Claude Code / Anthropic | Mnemonic never does inference |
+| What                      | Where it lives          | Who owns it                           |
+| ------------------------- | ----------------------- | ------------------------------------- |
+| Patterns (team knowledge) | Mnemonic                | Your team, via the REST API           |
+| Workflow decisions        | You                     | Always                                |
+| Answering your prompts    | Claude Code / Anthropic | Mnemonic never answers prompts        |
+| Embeddings and concepts   | OpenAI API              | Called by Mnemonic; it hosts no model |
 
 ---
 

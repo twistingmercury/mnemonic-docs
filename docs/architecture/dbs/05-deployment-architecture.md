@@ -95,7 +95,7 @@ The workflow at `.github/workflows/mnemonic-ci.yaml` triggers on:
 
 Version is derived from `git describe --tags --abbrev=0`, falling back to `dev` when no tags exist.
 
-Application services reference `:latest-dev` in development and `:latest` (or a specific version tag) in production.
+Application services pin a specific tag rather than a floating one: the local-dev and e2e `docker-compose.yaml` files in `mnemonic-api`, `mnemonic-mcp` and `mnemonic-enricher`, and the `mnemonic-integration-tests` stack, all use `:v1.0.0-dev`. Picking up a schema change therefore means bumping that tag in each repo (step 6 below).
 
 ## Updates and Rollbacks
 

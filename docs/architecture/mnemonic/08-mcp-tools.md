@@ -13,24 +13,52 @@
 
 ## Overview
 
-Mnemonic exposes 3 read-only MCP tools for pattern search: `search_patterns`, `find_related_patterns`, and `get_pattern`. These tools are called during conversation when Claude Code needs team knowledge.
+Mnemonic exposes 3 read-only MCP tools for pattern search: `search_patterns`, `find_related_patterns`, and `get_pattern`. These tools are called during conversation when Claude Code needs team knowledge. They are served by the `mnemonic-mcp` service; the MCP service has no write tools (patterns are managed through the REST API).
 
 ## Tool Discovery
 
-Claude Code discovers and invokes tools through four steps:
+The MCP server uses Streamable HTTP in **stateless** mode at `http://localhost:8081/mcp` (port from `mcp.port`). There is **no authentication** in the current local, single-user phase, so the port should not be exposed beyond localhost.
+
+Claude Code discovers and invokes tools in these steps:
 
 1. **Connection**: Claude Code connects via MCP over Streamable HTTP to `http://localhost:8081/mcp`
-2. **Initialization**: sends `initialize` to establish the session
+2. **Initialization**: sends `initialize`; the server keeps no session, so this only returns server capabilities
 3. **Discovery**: sends `tools/list` to receive all 3 tool registrations
 4. **Invocation**: during conversation, sends `tools/call` with the tool name and arguments
 
-Client configuration:
+Because the server is stateless, a client may also send `tools/call` directly without `initialize`. Requests should carry `Accept: application/json, text/event-stream`; the response may be framed as an SSE `data:` event.
+
+```mermaid
+sequenceDiagram
+    participant CC as Claude Code
+    participant MCP as mnemonic-mcp :8081/mcp
+    participant PG as PostgreSQL + pgvector
+    participant NEO as Neo4j
+    participant OAI as OpenAI
+
+    CC->>MCP: tools/list
+    MCP-->>CC: search_patterns, find_related_patterns, get_pattern
+    CC->>MCP: tools/call search_patterns {query}
+    MCP->>OAI: embed query
+    MCP->>PG: chunk similarity search
+    MCP->>NEO: RELATED_TO from top 3 patterns
+    MCP->>PG: metadata for graph candidates
+    MCP-->>CC: markdown text content
+```
+
+Client configuration (Claude Code CLI):
+
+```bash
+claude mcp add --transport http --scope user mnemonic http://localhost:8081/mcp
+```
+
+Or in `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "mnemonic": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://localhost:8081/mcp"
     }
   }
@@ -43,21 +71,22 @@ These three tools are called during conversation when Claude Code determines tha
 
 ### `search_patterns`
 
-Semantic search over the team knowledge graph.
+Semantic search over pattern chunks, with graph expansion of the best hits.
 
 **Parameters:**
 
-| Parameter   | Type         | Required | Default | Constraints | Description                          |
-| ----------- | ------------ | -------- | ------- | ----------- | ------------------------------------ |
-| `query`     | string       | yes      | —       | —           | Natural language search query        |
-| `limit`     | integer      | no       | 10      | max 50      | Maximum number of results to return  |
-| `threshold` | number       | no       | 0.5     | 0.0–1.0     | Minimum cosine similarity score      |
-| `tags`      | string array | no       | —       | —           | Conjunctive (AND) filter by tag      |
-| `agent`     | string       | no       | —       | —           | Filter results by agent association  |
+| Parameter   | Type         | Required | Default                              | Constraints | Description                               |
+| ----------- | ------------ | -------- | ------------------------------------ | ----------- | ----------------------------------------- |
+| `query`     | string       | yes      | —                                    | —           | Natural language search query             |
+| `limit`     | integer      | no       | 10                                   | 1–50        | Maximum number of chunk results           |
+| `threshold` | number       | no       | 0.5 (`mcp.default_search_threshold`) | 0.0–1.0     | Minimum cosine similarity score           |
+| `tags`      | string array | no       | —                                    | —           | Conjunctive (AND) filter by tag           |
+| `language`  | string       | no       | —                                    | —           | Filter by pattern language (e.g. `go`)    |
+| `domain`    | string       | no       | —                                    | —           | Filter by pattern domain (e.g. `backend`) |
 
-**Returns:** Markdown-formatted text with ranked results. Each result includes pattern name, similarity percentage, tags, and full content. The similarity percentage reflects the vector similarity score.
+**Returns:** Markdown-formatted text. A header (`Found N sections across M patterns matching '<query>':`) is followed by one entry per matching chunk with pattern name, similarity percentage, section title, tags and the chunk content. If graph expansion finds anything, a `### Related Patterns (via graph)` section follows with up to 5 extra patterns, each with its concept-overlap similarity, the seed pattern it was found via, and shared concepts.
 
-**Notes:** Only enriched patterns appear in results. Results are ranked by PGVector cosine similarity (vector similarity only for MVP). Post-MVP enhancement: blended scoring combining vector similarity with Neo4j graph context is planned. <!-- design docs remain in mnemonic/docs/design/ -->
+**Notes:** Only enriched chunks appear in results. Chunk results are ranked by pgvector cosine similarity. Graph expansion takes the top 3 distinct patterns from the vector results, follows their `RELATED_TO` edges in Neo4j (up to 5 per seed), drops patterns already in the vector results, and applies the same tag, domain and language filters (in the graph section only, patterns with language `agnostic` also pass a language filter). Expansion is best-effort: if Neo4j fails, the vector results are returned alone. There is no agent filter and no blended vector/graph score.
 
 ### `find_related_patterns`
 
@@ -65,14 +94,14 @@ Find patterns related to a given pattern via the knowledge graph.
 
 **Parameters:**
 
-| Parameter    | Type    | Required | Default | Constraints | Description                              |
-| ------------ | ------- | -------- | ------- | ----------- | ---------------------------------------- |
-| `pattern_id` | UUID    | yes      | —       | —           | ID of the pattern to find relations for  |
-| `limit`      | integer | no       | 5       | max 20      | Maximum number of related patterns       |
+| Parameter    | Type          | Required | Default | Constraints | Description                             |
+| ------------ | ------------- | -------- | ------- | ----------- | --------------------------------------- |
+| `pattern_id` | string (UUID) | yes      | —       | valid UUID  | ID of the pattern to find relations for |
+| `limit`      | integer       | no       | 5       | 1–20        | Maximum number of related patterns      |
 
-**Returns:** Markdown with related patterns, relationship type, similarity score, and shared concepts.
+**Returns:** Markdown with the related patterns, each with relationship type (`RELATED_TO`), similarity score and shared concepts. Pattern content is not included.
 
-**Notes:** Traverses `RELATED_TO` edges in Neo4j. Similarity score (0.0–1.0) reflects concept overlap between the source pattern and each related pattern.
+**Notes:** Traverses `RELATED_TO` edges in Neo4j in either direction, ordered by similarity. The similarity (0.0–1.0) is concept overlap, `shared / max(conceptsA, conceptsB)`, computed during enrichment. An unknown `pattern_id` returns a not-found error; a pattern with no edges (for example, one not enriched yet) returns `No related patterns found for '<name>'.`
 
 ### `get_pattern`
 
@@ -80,17 +109,17 @@ Retrieve a specific pattern by ID.
 
 **Parameters:**
 
-| Parameter | Type | Required | Description         |
-| --------- | ---- | -------- | ------------------- |
-| `id`      | UUID | yes      | Pattern ID to fetch |
+| Parameter | Type          | Required | Constraints | Description         |
+| --------- | ------------- | -------- | ----------- | ------------------- |
+| `id`      | string (UUID) | yes      | valid UUID  | Pattern ID to fetch |
 
-**Returns:** Markdown with full pattern content, metadata, related patterns, and extracted concepts.
+**Returns:** Markdown with the pattern name, ID, tags, enrichment status, full content, and (when enriched) up to 10 related patterns and the extracted concept names.
 
-**Notes:** Queries both PostgreSQL (for pattern content and metadata) and Neo4j (for graph relationships). The graph section is omitted when enrichment is still pending.
+**Notes:** Reads the pattern from PostgreSQL and, only if its `enrichment_status` is `enriched`, its graph context from Neo4j. The graph sections are omitted when enrichment is pending or failed, or when Neo4j is unavailable (the call still succeeds). A failed enrichment shows the stored error on the status line.
 
 ## Response Formats
 
-MCP tools return markdown-formatted text. Structured data such as similarity scores and metadata is embedded in the prose because Claude Code consumes tool results as text content during conversation. Markdown makes results readable in context without additional parsing.
+MCP tools return markdown-formatted text. Structured data such as similarity scores and metadata is embedded in the prose because Claude Code consumes tool results as text content during conversation. Markdown makes results readable in context without additional parsing. Exact formats are in [MCP Server Design](../../design/mcp-server.md#tool-handler-signatures).
 
 Results are delivered as MCP tool results with:
 
@@ -104,29 +133,30 @@ Mnemonic uses two error mechanisms depending on whether the failure is at the ap
 
 ### Application-Level Errors
 
-For not-found conditions, validation failures, and backend unavailability, Mnemonic returns a normal JSON-RPC 200 response with `isError: true` in the tool result. The `isError` flag signals to Claude Code that the tool call did not succeed. Claude Code can retry or inform the user accordingly.
+For not-found conditions, validation failures, and backend unavailability, Mnemonic returns a normal JSON-RPC success response with `isError: true` in the tool result and the error message as text. The `isError` flag signals to Claude Code that the tool call did not succeed. Claude Code can retry or inform the user accordingly.
 
-| Pattern             | Applies To                                                       |
-| ------------------- | ---------------------------------------------------------------- |
-| Not found           | `get_pattern` and `find_related_patterns`                        |
-| Invalid input       | All 3 pattern search tools                                       |
-| Service unavailable | All 3 tools — returned when a backend database is unreachable    |
+| Pattern             | Message prefix        | Applies To                                                                    |
+| ------------------- | --------------------- | ----------------------------------------------------------------------------- |
+| Not found           | `pattern not found`   | `get_pattern` and `find_related_patterns`                                     |
+| Invalid input       | `invalid input`       | All 3 tools — bad UUID, `limit` or `threshold` out of range                   |
+| Service unavailable | `service unavailable` | All 3 tools — any other backend failure (PostgreSQL, Neo4j, OpenAI embedding) |
 
 ### Transport-Level Errors
 
-For protocol problems, Mnemonic returns a JSON-RPC error response. These use standard JSON-RPC 2.0 error codes:
+For protocol problems, the MCP SDK returns a JSON-RPC error response. These use standard JSON-RPC 2.0 error codes:
 
-| Code    | Meaning         | Description                              |
-| ------- | --------------- | ---------------------------------------- |
-| -32700  | Parse error     | Malformed JSON                           |
-| -32600  | Invalid request | Not a valid JSON-RPC 2.0 request         |
-| -32601  | Method not found| Unknown tool name                        |
-| -32602  | Invalid params  | Parameters do not match the tool schema  |
-| -32603  | Internal error  | Unexpected server error                  |
+| Code   | Meaning          | Description                             |
+| ------ | ---------------- | --------------------------------------- |
+| -32700 | Parse error      | Malformed JSON                          |
+| -32600 | Invalid request  | Not a valid JSON-RPC 2.0 request        |
+| -32601 | Method not found | Unknown method                          |
+| -32602 | Invalid params   | Parameters do not match the tool schema |
+| -32603 | Internal error   | Unexpected server error                 |
 
 ## References
 
-- <!-- design docs remain in mnemonic/docs/design/ -->
+- [MCP Server Design](../../design/mcp-server.md) — implementation: server setup, handlers, formats, observability
+- [Service Layer Design](../../design/service-layer.md) — the services behind the tools
 - [Communication Patterns](../system/03-communication-patterns.md) — protocol overview and request flow
 
 **Next:** Return to [Architecture Overview](README.md)
