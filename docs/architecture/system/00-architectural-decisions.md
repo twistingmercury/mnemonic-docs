@@ -58,7 +58,7 @@ Core capabilities:
 - Pattern_agent_associations table retained to support "which agents use this pattern" queries
 - Users must understand that Mnemonic provides knowledge, not routing decisions
 
-> **Amendment (2026-10-15):** "Single server with two listeners" was superseded by the service decomposition in [ADR-008](#adr-008): `mnemonic-mcp`, `mnemonic-api` and `mnemonic-enricher` are separate services. None of the current services (v0.4.0) reads or writes agent associations; the services manage patterns only.
+> **Amendment (2026-10-15):** "Single server with two listeners" was superseded by the service decomposition in [ADR-008](#adr-008): `mnemonic-mcp`, `mnemonic-api` and `mnemonic-enricher` are separate services. None of the current services (v0.4.0) reads or writes agent associations; the services manage patterns only. The `pattern_agent_associations` table was never created: `mnemonic-dbs` has no agent or skill tables.
 
 ## <a id="adr-002"></a>ADR-002: MCP Protocol for Claude Code Integration
 
@@ -128,7 +128,7 @@ Agents, skills, and skill files are first-class entities in Mnemonic (see [ADR-0
 
 ### Decision
 
-> **Amendment (2026-10-15):** Not implemented in the current services. As of v0.4.0, `mnemonic-api`, `mnemonic-mcp` and `mnemonic-enricher` have no agent, skill or skill-file entities or endpoints; patterns are the only resource. This record is kept for history and as the design to follow if entity storage returns.
+> **Amendment (2026-10-15):** Not implemented in the current services. As of v0.4.0, `mnemonic-api`, `mnemonic-mcp` and `mnemonic-enricher` have no agent, skill or skill-file entities or endpoints; patterns are the only resource, and `mnemonic-dbs` has no `agents`, `skills` or `skill_files` tables. This record is kept for history and as the design to follow if entity storage returns.
 
 **Use a JSONB document model for entity definitions.** Each entity table follows a common pattern:
 
@@ -179,7 +179,7 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 
 > **Amended by ADR-008 and ADR-009:** Enrichment dispatch now uses RabbitMQ as the primary queue. The Postgres-backed `enrichment_jobs` table with `FOR UPDATE SKIP LOCKED` remains as a recovery mechanism for jobs that fail to publish to RabbitMQ. The pattern storage design (relational columns, two-phase enrichment) remains in effect.
 >
-> **Amendment (2026-10-15), chunked enrichment:** Embeddings are now stored per chunk in `pattern_chunks`, not in a single pattern-level `embedding` column. `mnemonic-api` splits content into chunks (one per `[//]: pattern` section) and creates one enrichment job per chunk in the same transaction as the pattern. The enricher embeds each chunk; only when the pattern's last chunk is embedded does it extract concepts and sync Neo4j, then mark the pattern `enriched`. Retries use a fixed delay (`enrichment.retry_delay`, default 30s) up to the job's `max_attempts` (default 3), not exponential backoff, and are run by the enricher's 15-second retry sweep. The API handler accepts content up to 100000 bytes; the database CHECK limit is owned by `mnemonic-dbs`.
+> **Amendment (2026-10-15), chunked enrichment:** Embeddings are now stored per chunk in `pattern_chunks`, not in a single pattern-level `embedding` column. `mnemonic-api` splits content into chunks (one per `[//]: pattern` section) and creates one enrichment job per chunk in the same transaction as the pattern. The enricher embeds each chunk; only when the pattern's last chunk is embedded does it extract concepts and sync Neo4j, then mark the pattern `enriched`. Retries use a fixed delay (`enrichment.retry_delay`, default 30s) up to the job's `max_attempts` (default 3), not exponential backoff, and are run by the enricher's 15-second retry sweep. The API handler accepts content up to 100000 bytes; the database has no content-length CHECK (`mnemonic-dbs` migration 000005 dropped the 10KB one).
 
 **Patterns use relational columns (not JSONB) with async enrichment via a Postgres-backed job queue.**
 
@@ -201,7 +201,7 @@ Patterns are the core knowledge artifacts in Mnemonic. Unlike entities (agents, 
 
 - Vector similarity search requires a dedicated `embedding` column for PGVector indexing
 - Enrichment status must be queryable for job processing (`WHERE enrichment_status = 'pending'`)
-- Content size constraint (10KB max) enforced at database level via CHECK
+- ~~Content size constraint (10KB max) enforced at database level via CHECK~~ (dropped by `mnemonic-dbs` migration 000005; the API handler caps content at 100000 bytes)
 
 ### Consequences
 

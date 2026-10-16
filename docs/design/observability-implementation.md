@@ -36,7 +36,7 @@ This document provides the Go implementation design for MVP observability in Mne
 
 **Primary Package:** `github.com/twistingmercury/otelx/v2` (v2.0.0)
 
-> **Note:** The patterns described here apply to all three Mnemonic services. Each service initializes its own telemetry independently, but all three currently use the same `service.name` (`mnemonic`); see [Gaps](#gaps-and-additional-implementation).
+> **Note:** The patterns described here apply to all three Mnemonic services. Each service initializes its own telemetry independently and reports its own `service.name` (`mnemonic-api`, `mnemonic-enricher` or `mnemonic-mcp`, the constant `version.Service`).
 
 ### Service Codebase Layout
 
@@ -113,7 +113,7 @@ The observability keys (`logging.level`, `observability.metrics.*`, `observabili
 
 ```go
 otelCfg := otelx.Config{
-    ServiceName:    "mnemonic",            // same in all three services
+    ServiceName:    version.Service,       // "mnemonic-api", "mnemonic-enricher" or "mnemonic-mcp"
     ServiceVersion: version.Version(),
     Environment:    getEnvironment(),      // $MNEMONIC_ENV, default "development"
     LogLevel:       cfg.Logging.Level,
@@ -170,7 +170,7 @@ Spans and tracer names in use:
 
 | Tracer / instrumentation | Span name                                    | Kind     | Key attributes                                                                                                                  | Where                                        |
 | ------------------------ | -------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `otelgin` (`mnemonic`)   | route template, e.g. `POST /v1/api/patterns` | server   | HTTP semantic conventions                                                                                                       | `internal/middleware/tracing.go`             |
+| `otelgin` (service name) | route template, e.g. `POST /v1/api/patterns` | server   | HTTP semantic conventions                                                                                                       | `internal/middleware/tracing.go`             |
 | `otelhttp`               | `/mcp`                                       | server   | HTTP semantic conventions                                                                                                       | `internal/mcpserver/server.go` (mcp)         |
 | `mnemonic/mcp`           | `tools/call <tool>`                          | internal | `mcp.tool.name`, `mcp.tool.outcome`                                                                                             | `internal/mcpserver/telemetry.go` (mcp)      |
 | `otelhttp` transport     | HTTP client span                             | client   | HTTP semantic conventions                                                                                                       | `internal/service/openai/*.go`               |
@@ -198,7 +198,7 @@ func TracingMiddlewareWithSkipPaths(serviceName string, skipPaths []string) gin.
 }
 ```
 
-All three services register it as `TracingMiddlewareWithSkipPaths("mnemonic", middleware.DefaultSkipPaths)`. The MCP endpoint is a separate `net/http` server on `mcp.port`; its only route is `mux.Handle("/mcp", otelhttp.NewHandler(mcpHandler, "/mcp"))`, which continues any incoming W3C trace context.
+All three services register it as `TracingMiddlewareWithSkipPaths(version.Service, middleware.DefaultSkipPaths)`. The MCP endpoint is a separate `net/http` server on `mcp.port`; its only route is `mux.Handle("/mcp", otelhttp.NewHandler(mcpHandler, "/mcp"))`, which continues any incoming W3C trace context.
 
 ### Creating Child Spans in Handlers
 
@@ -461,7 +461,7 @@ func setupRouter(tel *telemetry.Telemetry, requestMetrics *middleware.RequestMet
     })
 
     skipPaths := middleware.DefaultSkipPaths
-    router.Use(middleware.TracingMiddlewareWithSkipPaths("mnemonic", skipPaths))
+    router.Use(middleware.TracingMiddlewareWithSkipPaths(version.Service, skipPaths))
     router.Use(otelxgin.LoggingMiddleware(tel.Otelx(),
         otelxgin.WithSkipPaths("/health", "/metrics"),
         otelxgin.WithRequestHeaders("X-Request-ID", "X-Correlation-ID"),
@@ -476,7 +476,7 @@ func setupRouter(tel *telemetry.Telemetry, requestMetrics *middleware.RequestMet
 **The API is different.** It does not use the otelx logging middleware. Its router, in order:
 
 1. Request ID: accepts `X-Request-ID` only if it is 1-128 characters of `[A-Za-z0-9._-]`, otherwise generates a UUID; always echoes it.
-2. `TracingMiddlewareWithSkipPaths("mnemonic", DefaultSkipPaths)`.
+2. `TracingMiddlewareWithSkipPaths(version.Service, DefaultSkipPaths)`.
 3. `middleware.CompletionLogging(logger, skipPaths)` (`internal/middleware/observability.go`): one `request completed` line with `method`, the route template as `route`, `status`, `duration_ms`, `request_id`, `trace_id`, `span_id` and a single redacted `error`. `info` normally, `error` for 5xx; skip paths are still logged when they fail with 5xx. For 5xx it also records the redacted error on the request span.
 4. Request metrics.
 5. A custom panic recovery that responds through the normal error handler (Gin's default recovery is avoided because it prints raw panic values and headers).
@@ -504,7 +504,7 @@ Every line has the fields otelx adds (`service`, `version`, `environment`, `time
 ```json
 {
   "level": "info",
-  "service": "mnemonic",
+  "service": "mnemonic-api",
   "version": "v0.4.0",
   "environment": "development",
   "method": "POST",
@@ -639,7 +639,7 @@ From `internal/handlers/operations/operations.go`:
 
 ```go
 func SetupHandlers(r *gin.Engine, deps []heartbeat.DependencyDescriptor) {
-    r.GET("/health", gin.WrapH(heartbeat.Handler("mnemonic", deps...)))
+    r.GET("/health", gin.WrapH(heartbeat.Handler(version.Service, deps...)))
     r.GET("/version", GetVersion)
 }
 ```
@@ -709,12 +709,10 @@ The `--health` command-line flag does not call `CheckHealth`; it makes an HTTP r
 
 | Gap                                                                          | Impact                                                                                                 |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Same `service.name` (`mnemonic`) in all three services                       | Traces and `target_info` cannot tell services apart; set `OTEL_SERVICE_NAME` per container until fixed |
 | No `/mcp` request-completed log line                                         | MCP request failures show only in spans, tool metrics and tool logs                                    |
 | Enricher RabbitMQ consumer not on `/health`                                  | Consumer disconnects are visible only in logs                                                          |
 | No pending-job backlog metric                                                | Backlog alerts need a SQL check on `enrichment_jobs`                                                   |
 | Neo4j driver pool not monitored                                              | Only Postgres pool stats are exported                                                                  |
-| API `logging.format`, `include_caller`, `observability.health.*` not applied | Settings are validated but have no effect                                                              |
 | Duration rounding differs                                                    | mcp and enricher record whole milliseconds in `mnemonic.http.request.duration`                         |
 
 ## Implementation Checklist
@@ -759,7 +757,7 @@ Status at v0.4.0.
 
 - [x] Unit tests for metric instruments, middleware and tool telemetry
 - [x] Trace propagation across RabbitMQ (api publisher and enricher worker tests)
-- [ ] Distinct `service.name` per service
+- [x] Distinct `service.name` per service
 
 ---
 

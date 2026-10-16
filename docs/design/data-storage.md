@@ -14,16 +14,12 @@
   - [Application-Layer Validation](#application-layer-validation)
 - [PostgreSQL Migrations](#postgresql-migrations)
   - [Migration File Structure](#migration-file-structure)
-  - [Migration 001: Extensions](#migration-001-extensions)
-  - [Migration 002: Agents Table](#migration-002-agents-table)
-  - [Migration 003: Patterns Table](#migration-003-patterns-table)
-  - [Migration 004: Pattern-Agent Associations](#migration-004-pattern-agent-associations)
-  - [Migration 005: Enrichment Jobs Table](#migration-005-enrichment-jobs-table)
-  - [Migration 006: Performance Indexes](#migration-006-performance-indexes)
-  - [Migration 007: Create Skills Table](#migration-007-create-skills-table)
-  - [Migration 008: Create Skill Files Table](#migration-008-create-skill-files-table)
-  - [Migration 009: Pattern Chunks Table](#migration-009-pattern-chunks-table)
-  - [Migration 010: Update Chunk Embedding Dimensions](#migration-010-update-chunk-embedding-dimensions)
+  - [Migration 000001: Extensions](#migration-000001-extensions)
+  - [Migration 000002: Patterns Table](#migration-000002-patterns-table)
+  - [Migration 000003: Enrichment Jobs Table](#migration-000003-enrichment-jobs-table)
+  - [Migration 000004: Performance Indexes](#migration-000004-performance-indexes)
+  - [Migration 000005: Pattern Chunks Table](#migration-000005-pattern-chunks-table)
+  - [Migration 000006: Update Chunk Embedding Dimensions](#migration-000006-update-chunk-embedding-dimensions)
 - [PGVector Configuration](#pgvector-configuration)
   - [Index Selection Guidelines](#index-selection-guidelines)
   - [Similarity Search Queries](#similarity-search-queries)
@@ -60,7 +56,7 @@ This document provides implementation details for the Mnemonic data storage laye
 
 | Component | Technology | Purpose |
 | ----------- | ------------ | --------- |
-| Relational Storage | PostgreSQL 16 (`pgvector/pgvector:pg16` base image) | Patterns, pattern chunks, enrichment jobs; reserved JSONB document tables |
+| Relational Storage | PostgreSQL 16 (`pgvector/pgvector:pg16` base image) | Patterns, pattern chunks, enrichment jobs |
 | Vector Storage | PGVector extension | Pattern chunk embeddings (`vector(2000)`) for semantic search |
 | Graph Storage | Neo4j 5.x | Knowledge graph relationships |
 | Migrations | Docker entrypoint scripts | Schema baked into the images: `docker-entrypoint-initdb.d` on first container start (Postgres) and `cypher-shell` at image build (Neo4j); no runtime migration tool |
@@ -72,11 +68,11 @@ This document provides implementation details for the Mnemonic data storage laye
 | PostgreSQL | `patterns` | Implemented | api, enricher, mcp | api (CRUD), enricher (enrichment status) |
 | PostgreSQL | `pattern_chunks` | Implemented | api, enricher, mcp | api (insert/delete), enricher (embedding, status) |
 | PostgreSQL | `enrichment_jobs` | Implemented | enricher | api (insert), enricher (claim, update, delete) |
-| PostgreSQL | `agents`, `skills`, `skill_files`, `pattern_agent_associations` | Schema only (planned) | none | none |
+| PostgreSQL | `agents`, `skills`, `skill_files`, `pattern_agent_associations` | Planned (no schema yet) | none | none |
 | Neo4j | `Pattern`, `Concept`, `MENTIONED_IN`, `RELATED_TO` | Implemented | api, mcp | enricher (`SyncPattern`); api deletes on pattern delete |
-| Neo4j | `Agent`, `RELEVANT_FOR` | Schema only (planned) | none | none |
+| Neo4j | `Agent`, `RELEVANT_FOR` | Planned (no schema yet) | none | none |
 
-The `mnemonic-mcp` server is read-only against both databases. The sections below on the JSONB document model, agents and skills describe the planned design for the schema-only tables; the pattern, chunk, job and graph sections describe what the services do today.
+The `mnemonic-mcp` server is read-only against both databases. The sections below on the JSONB document model, agents and skills describe the planned design for tables that do not exist yet; the pattern, chunk, job and graph sections describe what the services do today.
 
 ```mermaid
 flowchart LR
@@ -92,11 +88,11 @@ flowchart LR
 
 **Data Model:**
 
-- `agents`, `skills` use JSONB document model with `crc64` change detection (planned; not used yet)
-- `skill_files` stores skill child files with path and content columns (planned; not used yet)
+- `agents`, `skills` would use a JSONB document model with `crc64` change detection (planned; no tables yet)
+- `skill_files` would store skill child files with path and content columns (planned; no table yet)
 - `patterns` use relational columns (metadata, enrichment status); their embeddings live in `pattern_chunks`
 - `pattern_chunks` holds one row per `[//]: pattern`-marked section, each with its own embedding
-- `pattern_agent_associations` is a join table for agent-scoped pattern filtering (planned; not used yet)
+- `pattern_agent_associations` would be a join table for agent-scoped pattern filtering (planned; no table yet)
 - `enrichment_jobs` is the durable state for the background enrichment queue
 - Neo4j is required for the knowledge graph
 
@@ -114,7 +110,7 @@ Database migrations and application code are versioned and deployed independentl
 
 ### Design Rationale
 
-> **Status:** Planned. The `agents`, `skills` and `skill_files` tables exist in the schema, but no current service reads or writes them, and there is no agent/skill API or sync protocol yet. This section is the design for that work.
+> **Status:** Planned. There are no `agents`, `skills` or `skill_files` tables in `mnemonic-dbs`, no service code for them, and no agent/skill API or sync protocol yet. This section is the design for that work; the table shapes and indexes below have no migrations.
 
 Agents, skills, and skill files are markdown documents synced to disk. Their field sets evolve as the Claude Code Agent Skills spec evolves. Storing each field as an individual relational column creates migration churn every time a field is added, renamed, or removed.
 
@@ -248,7 +244,7 @@ FROM skills
 WHERE definition @> '{"tags": ["sync"]}'::jsonb;
 ```
 
-**Index definitions** (created in respective table migrations):
+**Index definitions** (planned; no migration creates them yet):
 
 ```sql
 -- GIN index on definition column for tag filtering
@@ -305,15 +301,11 @@ All PostgreSQL migrations are `.up.sql` files copied into the `mnemonic-postgres
 mnemonic-dbs/src/
 ├── postgres/
 │   ├── 000001_extensions.up.sql
-│   ├── 000002_create_agents.up.sql
-│   ├── 000003_create_patterns.up.sql
-│   ├── 000004_create_pattern_agent_associations.up.sql
-│   ├── 000005_create_enrichment_jobs.up.sql
-│   ├── 000006_create_performance_indexes.up.sql
-│   ├── 000007_create_skills.up.sql
-│   ├── 000008_create_skill_files.up.sql
-│   ├── 000009_pattern_schema_chunks.up.sql
-│   └── 000010_update_embedding_dimensions.up.sql
+│   ├── 000002_create_patterns.up.sql
+│   ├── 000003_create_enrichment_jobs.up.sql
+│   ├── 000004_create_performance_indexes.up.sql
+│   ├── 000005_pattern_schema_chunks.up.sql
+│   └── 000006_update_embedding_dimensions.up.sql
 └── neo4j/
     ├── 001_create_constraints.cypher
     ├── 002_create_existence_constraints.cypher
@@ -324,14 +316,23 @@ PostgreSQL migration files use a 6-digit zero-padded prefix (e.g., `000001`) to 
 
 Neo4j migrations are numbered `.cypher` files applied via `cypher-shell` during Docker image build (see [Manual Constraint Creation](#startup-constraint-validation)).
 
-### Migration 001: Extensions
+The SQL below is copied from `mnemonic-dbs` (`develop`). The header comments still name the files' old `src/migrations/...` location; the files live in `src/postgres/`.
+
+> **No agent or skill schema:** There are no `agents`, `skills`, `skill_files` or `pattern_agent_associations` tables. The [JSONB Document Model](#jsonb-document-model) section is the planned design for them; it will need new migrations when that work starts.
+
+### Migration 000001: Extensions
 
 **Purpose:** Enable required PostgreSQL extensions.
 
 ```sql
--- src/postgres/000001_extensions.up.sql
+-- src/migrations/postgres/000001_extensions.up.sql
 -- Enables required PostgreSQL extensions.
 -- Part of Mnemonic MVP
+--
+-- Copyright 2025, Mnemonic Authors
+--
+-- This migration must be applied first as it provides:
+-- - Vector operations extension for pattern embeddings
 
 -- Enable vector operations for embeddings (pgvector extension)
 create extension if not exists vector;
@@ -339,53 +340,24 @@ create extension if not exists vector;
 
 **Note:** Per the storage-only database philosophy, no trigger functions are created. `updated_at` management is the application's responsibility. The application sets `updated_at = now()` on every UPDATE.
 
-### Migration 002: Agents Table
+### Migration 000002: Patterns Table
 
-**Purpose:** Create the agents table using the JSONB document model with CRC64 change detection.
-
-```sql
--- src/postgres/000002_create_agents.up.sql
--- Creates the agents table with JSONB document model.
--- Part of Mnemonic MVP
-
-create table if not exists agents (
-    -- UUID primary key
-    id uuid primary key default gen_random_uuid(),
-
-    -- Unique lookup key: lowercase-with-hyphens format, URL-safe
-    name varchar(255) unique not null,
-
-    -- Complete agent definition as JSONB document
-    definition jsonb not null,
-
-    -- CRC-64 checksum of serialized definition for change detection
-    crc64 varchar(20) not null,
-
-    -- Audit timestamps
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
-);
-
--- GIN index on definition for JSONB queries
-create index idx_agents_definition on agents using gin (definition);
-
-comment on table agents is 'Agent definitions stored as JSONB documents for team tooling synchronization';
-comment on column agents.id is 'UUID primary key';
-comment on column agents.name is 'Unique lookup key, lowercase-with-hyphens format';
-comment on column agents.definition is 'Complete agent definition as JSONB document';
-comment on column agents.crc64 is 'CRC-64 checksum of serialized definition for change detection';
-```
-
-### Migration 003: Patterns Table
-
-**Purpose:** Create the patterns table with PGVector embedding column for semantic search.
-
-**Note:** Patterns use relational columns (not the JSONB document model) because they have enrichment status, graph context, and pgvector embeddings that require individual columns. Performance indexes (IVFFlat, GIN, full-text) are created separately in migration 006.
+**Purpose:** Create the patterns table. Its `embedding` column and 10KB content CHECK are dropped again by [000005](#migration-000005-pattern-chunks-table), and the 1536-dimension comment is historical.
 
 ```sql
--- src/postgres/000003_create_patterns.up.sql
+-- src/migrations/postgres/000002_create_patterns.up.sql
 -- Creates the patterns table with PGVector embedding support.
 -- Part of Mnemonic MVP
+--
+-- Copyright 2025, Mnemonic Authors
+--
+-- Dependencies: 000001_extensions (for vector extension)
+--
+-- Patterns use relational columns (not the JSONB document model) because they
+-- have enrichment status, graph context, and pgvector embeddings that require
+-- individual columns.
+--
+-- Note: updated_at is managed by the application layer, not database triggers.
 
 create table if not exists patterns (
     -- UUID primary key for stable references (patterns may be renamed)
@@ -401,8 +373,8 @@ create table if not exists patterns (
     -- Categorization tags (JSON array)
     tags jsonb not null default '[]'::jsonb,
 
-    -- Vector embedding for semantic search (2000 dimensions for text-embedding-3-large)
-    embedding vector(2000),
+    -- Vector embedding for semantic search (1536 dimensions for text-embedding-3-small)
+    embedding vector(1536),
 
     -- Enrichment processing state
     enrichment_status varchar(20) not null default 'pending',
@@ -424,60 +396,35 @@ create table if not exists patterns (
 );
 
 comment on table patterns is 'Reusable context patterns for prompt enrichment';
-comment on column patterns.embedding is 'Vector embedding (2000d, text-embedding-3-large with Matryoshka truncation) for semantic similarity search';
+comment on column patterns.embedding is 'Vector embedding (1536d) for semantic similarity search';
 comment on column patterns.enrichment_status is 'Processing state: pending, enriched, or failed';
 ```
 
-### Migration 004: Pattern-Agent Associations
+> **Note:** The 10KB `patterns_content_length` CHECK no longer exists: [migration 000005](#migration-000005-pattern-chunks-table) drops it. The database does not limit content length; the API handler caps `content` at 100,000 bytes.
 
-**Purpose:** Create the many-to-many association table between patterns and agents with relevance scores.
-
-**Note:** The `agent_id` column references `agents(id)` (UUID), not the agent name. This follows the post-pivot schema where agents have a UUID primary key.
-
-```sql
--- src/postgres/000004_create_pattern_agent_associations.up.sql
--- Creates the pattern-agent association table for many-to-many relationships.
--- Part of Mnemonic MVP
-
-create table if not exists pattern_agent_associations (
-    -- Composite primary key
-    pattern_id uuid not null,
-    agent_id uuid not null,
-
-    -- Relevance score (0.0 to 1.0)
-    relevance double precision not null,
-
-    -- Foreign keys
-    constraint fk_pattern_agent_assoc_pattern
-        foreign key (pattern_id) references patterns(id) on delete cascade,
-    constraint fk_pattern_agent_assoc_agent
-        foreign key (agent_id) references agents(id) on delete cascade,
-
-    -- Primary key
-    primary key (pattern_id, agent_id),
-
-    -- Constraints
-    constraint pattern_agent_assoc_relevance_range
-        check (relevance >= 0 and relevance <= 1)
-);
-
--- Index for reverse FK lookup (agent_id is not the leading PK column).
--- pattern_id lookup is covered by the composite PK index.
-create index idx_pattern_agent_assoc_agent
-    on pattern_agent_associations(agent_id);
-
-comment on table pattern_agent_associations is
-    'Many-to-many relationship between patterns and agents with relevance scores';
-```
-
-### Migration 005: Enrichment Jobs Table
+### Migration 000003: Enrichment Jobs Table
 
 **Purpose:** Create the enrichment jobs queue table for background pattern processing.
 
 ```sql
--- src/postgres/000005_create_enrichment_jobs.up.sql
+-- src/migrations/postgres/000003_create_enrichment_jobs.up.sql
 -- Creates the enrichment jobs queue table for background pattern processing.
 -- Part of Mnemonic MVP
+--
+-- Copyright 2025, Mnemonic Authors
+--
+-- Dependencies: 000002_create_patterns (for patterns table)
+--
+-- Enrichment jobs track background processing of patterns:
+-- - Embedding generation via OpenAI text-embedding-3-large
+-- - Entity extraction for Neo4j knowledge graph
+--
+-- This table serves as a simple Postgres-backed job queue using
+-- FOR UPDATE SKIP LOCKED for safe concurrent processing.
+--
+-- Job lifecycle: pending -> processing -> completed | failed
+--
+-- Note: updated_at is managed by the application layer, not database triggers.
 
 create table if not exists enrichment_jobs (
     -- UUID primary key
@@ -532,14 +479,22 @@ comment on column enrichment_jobs.status is 'Job state: pending, processing, com
 comment on column enrichment_jobs.scheduled_for is 'When the job should be processed (supports delayed retry)';
 ```
 
-### Migration 006: Performance Indexes
+[Migration 000005](#migration-000005-pattern-chunks-table) makes `pattern_id` nullable and adds `chunk_id`. The services create only chunk jobs (`pattern_id` null), so `idx_enrichment_jobs_unique_pending` (on `pattern_id`) no longer constrains them; `idx_enrichment_jobs_unique_pending_chunk` does.
+
+### Migration 000004: Performance Indexes
 
 **Purpose:** Create performance-optimized indexes for common query patterns.
 
 ```sql
--- src/postgres/000006_create_performance_indexes.up.sql
+-- src/migrations/postgres/000004_create_performance_indexes.up.sql
 -- Creates performance-optimized indexes for common query patterns.
 -- Part of Mnemonic MVP
+--
+-- Copyright 2025, Mnemonic Authors
+--
+-- Dependencies:
+--   - 000002_create_patterns (for patterns table)
+--   - 000003_create_enrichment_jobs (for enrichment_jobs table)
 
 -- =============================================================================
 -- PATTERNS INDEXES
@@ -553,6 +508,9 @@ create index idx_patterns_enriched
 
 -- Vector similarity search (IVFFlat for MVP scale)
 -- lists = 100 suitable for 1,000-10,000 patterns
+-- NOTE: IVFFlat requires at least one row with a non-null embedding to build
+-- centroids. If applied to an empty database, create this index after seeding
+-- initial data, or use HNSW as an alternative that builds on empty tables.
 create index idx_patterns_embedding
     on patterns using ivfflat (embedding vector_cosine_ops)
     with (lists = 100);
@@ -588,102 +546,27 @@ comment on index idx_enrichment_jobs_pending is
     'Optimizes worker polling for pending jobs';
 ```
 
-### Migration 007: Create Skills Table
+`idx_patterns_embedding` no longer exists: [migration 000005](#migration-000005-pattern-chunks-table) drops `patterns.embedding`, which drops the index with it. The other indexes remain.
 
-**Purpose:** Create the skills table using the JSONB document model.
-
-```sql
--- src/postgres/000007_create_skills.up.sql
--- Creates the skills table with JSONB document model.
--- Part of Mnemonic MVP
-
-create table if not exists skills (
-    -- UUID primary key
-    id uuid primary key default gen_random_uuid(),
-
-    -- Unique lookup key: matches Claude Code skill directory name
-    name varchar(255) unique not null,
-
-    -- Complete skill definition as JSONB document
-    definition jsonb not null,
-
-    -- CRC-64 checksum of serialized definition for change detection
-    crc64 varchar(20) not null,
-
-    -- Audit timestamps
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now()
-);
-
--- GIN index on definition for tag filtering and JSONB queries
-create index idx_skills_definition on skills using gin (definition);
-
-comment on table skills is 'Skill definitions stored as JSONB documents for team tooling synchronization';
-comment on column skills.name is 'Unique lookup key, lowercase-with-hyphens (matches Claude Code skill directory name)';
-comment on column skills.definition is 'Complete skill definition as JSONB document (Agent Skills spec aligned)';
-comment on column skills.crc64 is 'CRC-64 checksum of serialized definition for change detection';
-```
-
-### Migration 008: Create Skill Files Table
-
-**Purpose:** Create the skill_files table for files associated with skills.
-
-```sql
--- src/postgres/000008_create_skill_files.up.sql
--- Creates the skill_files table for files associated with skills.
--- Part of Mnemonic MVP
-
-create table if not exists skill_files (
-    -- UUID primary key
-    id uuid primary key default gen_random_uuid(),
-
-    -- Parent skill reference, cascade delete
-    skill_id uuid not null references skills(id) on delete cascade,
-
-    -- File path within the skill directory
-    path varchar(1024) not null,
-
-    -- File content
-    content text not null,
-
-    -- CRC-64 checksum of content for change detection
-    crc64 varchar(20) not null,
-
-    -- Audit timestamps
-    created_at timestamptz not null default now(),
-    updated_at timestamptz not null default now(),
-
-    -- Unique constraint: one file per path per skill
-    constraint skill_files_unique_path unique (skill_id, path)
-);
-
--- Index for skill_id lookups (foreign key)
-create index idx_skill_files_skill_id on skill_files(skill_id);
-
-comment on table skill_files is 'Child files (scripts, references, assets) for skill definitions';
-comment on column skill_files.skill_id is 'Parent skill reference, cascade delete';
-comment on column skill_files.path is 'File path within the skill directory';
-comment on column skill_files.content is 'File content';
-comment on column skill_files.crc64 is 'CRC-64 checksum of content for change detection';
-```
-
-### Migration 009: Pattern Chunks Table
+### Migration 000005: Pattern Chunks Table
 
 **Purpose:** Introduce chunk-based semantic search by creating the `pattern_chunks` table, moving embeddings from patterns to per-chunk rows, adding structured metadata columns to patterns, and updating enrichment jobs to support chunk-level processing.
 
 > **Architecture Reference:** [Data Architecture - Pattern Chunks](../architecture/dbs/08-data-architecture.md#tables) | [Pattern Enrichment - Generate Embeddings](pattern-processing.md#step-2-generate-embeddings)
 
 ```sql
--- src/postgres/000009_pattern_schema_chunks.up.sql
+-- src/migrations/postgres/000005_pattern_schema_chunks.up.sql
 -- Adds structured metadata columns to patterns, introduces chunk-based
 -- semantic search via pattern_chunks, and updates enrichment_jobs to
 -- support chunk-level enrichment jobs.
 -- Part of Mnemonic MVP
 --
+-- Copyright 2025, Mnemonic Authors
+--
 -- Dependencies:
---   - 000003_create_patterns (for patterns table)
---   - 000005_create_enrichment_jobs (for enrichment_jobs table)
---   - 000006_create_performance_indexes (for idx_patterns_embedding, which is dropped)
+--   - 000002_create_patterns (for patterns table)
+--   - 000003_create_enrichment_jobs (for enrichment_jobs table)
+--   - 000004_create_performance_indexes (for idx_patterns_embedding, which is dropped)
 
 -- =============================================================================
 -- PATTERNS TABLE — drop embedding, remove content limit, add metadata columns
@@ -776,23 +659,25 @@ ALTER TABLE enrichment_jobs
 Key changes in this migration:
 
 - **Patterns table**: Drops the `embedding` column (embeddings move to `pattern_chunks`), removes the 10KB content length constraint, and adds structured metadata columns (`entity_type`, `language`, `domain`, `version`, `related_patterns`) populated from pattern file YAML frontmatter.
-- **Pattern chunks table**: Creates `pattern_chunks` with one row per H2-bounded section of a parent pattern. Each chunk has its own `embedding`, `enrichment_status`, `enrichment_error`, and `enriched_at` fields. The HNSW index is used instead of IVFFlat because IVFFlat requires existing rows to build centroids and degrades to sequential scans on empty tables.
+- **Pattern chunks table**: Creates `pattern_chunks` with one row per section of a parent pattern (the comments say "H2", but the API chunks at `[//]: pattern` decorators, any heading level). Each chunk has its own `embedding`, `enrichment_status`, `enrichment_error`, and `enriched_at` fields. The HNSW index is used instead of IVFFlat because IVFFlat requires existing rows to build centroids and degrades to sequential scans on empty tables.
 - **Enrichment jobs table**: Adds a `chunk_id` column (FK to `pattern_chunks`), makes `pattern_id` nullable, adds a unique index to prevent duplicate pending/processing jobs per chunk, and adds an exclusive constraint ensuring each job targets exactly one of a pattern or a chunk.
 
-### Migration 010: Update Chunk Embedding Dimensions
+### Migration 000006: Update Chunk Embedding Dimensions
 
 **Purpose:** Update `pattern_chunks.embedding` from `vector(1536)` to `vector(2000)` to support `text-embedding-3-large` with Matryoshka truncation at 2000 dimensions.
 
 > **Architecture Reference:** [Data Architecture - Embedding Dimensions](../architecture/dbs/08-data-architecture.md#embedding-dimensions) | [Pattern Enrichment - OpenAI Embeddings](pattern-processing.md#openai-api-embeddings)
 
 ```sql
--- src/postgres/000010_update_embedding_dimensions.up.sql
+-- src/migrations/postgres/000006_update_embedding_dimensions.up.sql
 -- Updates pattern_chunks.embedding from vector(1536) to vector(2000)
 -- to support text-embedding-3-large with Matryoshka truncation at 2000 dimensions.
 -- 2000 is the maximum supported by pgvector's HNSW and IVFFlat index types.
 --
+-- Copyright 2025, Mnemonic Authors
+--
 -- Dependencies:
---   - 000009_pattern_schema_chunks (creates pattern_chunks table with vector(1536))
+--   - 000005_pattern_schema_chunks (creates pattern_chunks table with vector(1536))
 
 -- Vector dimensions cannot be altered in place; must drop and recreate the HNSW index.
 drop index if exists idx_pattern_chunks_embedding;
@@ -809,7 +694,7 @@ comment on index idx_pattern_chunks_embedding is
     'HNSW index for chunk vector similarity search at 2000 dimensions (text-embedding-3-large with Matryoshka truncation)';
 ```
 
-This migration is separated from 009 because the embedding dimension is a deployment-time decision. Migration 009 creates the table with a default 1536-dimension column (the original `text-embedding-3-small` size), and migration 010 updates it to 2000 dimensions to match the `text-embedding-3-large` model configuration. The HNSW index must be dropped and recreated because PGVector does not support in-place dimension changes on indexed columns.
+This migration is separated from 000005 because the embedding dimension is a deployment-time decision. Migration 000005 creates the table with a default 1536-dimension column (the original `text-embedding-3-small` size), and migration 000006 updates it to 2000 dimensions to match the `text-embedding-3-large` model configuration. The HNSW index must be dropped and recreated because PGVector does not support in-place dimension changes on indexed columns.
 
 ## PGVector Configuration
 
@@ -819,11 +704,11 @@ This migration is separated from 009 because the embedding dimension is a deploy
 
 ### Index Selection Guidelines
 
-Embeddings live only in `pattern_chunks.embedding` (`vector(2000)`); `patterns.embedding` and its IVFFlat index were dropped in migration 009. The current index is:
+Embeddings live only in `pattern_chunks.embedding` (`vector(2000)`); `patterns.embedding` and its IVFFlat index were dropped in migration 000005. The current index is:
 
 | Index | Column | Type | Notes |
 | ------- | -------- | ------ | ------- |
-| `idx_pattern_chunks_embedding` | `pattern_chunks.embedding` | HNSW, `vector_cosine_ops`, pgvector default build parameters | Created in 009, recreated at 2000 dimensions in 010 |
+| `idx_pattern_chunks_embedding` | `pattern_chunks.embedding` | HNSW, `vector_cosine_ops`, pgvector default build parameters | Created in 000005, recreated at 2000 dimensions in 000006 |
 
 HNSW was chosen over IVFFlat because IVFFlat builds its centroids from existing rows and degrades to sequential scans when created on an empty table, which is exactly how the image-baked schema starts. 2000 dimensions is the most pgvector can index for the `vector` type, which is why the services default `openai.embedding_dimensions` to 2000.
 
@@ -922,13 +807,12 @@ analyze patterns;
 
 > **Architecture Reference:** [Data Architecture - Neo4j Graph Model](../architecture/system/04-data-architecture.md#neo4j-graph-model)
 
-What the services use: `Pattern` and `Concept` nodes, `MENTIONED_IN` (Concept to Pattern) and `RELATED_TO` (Pattern to Pattern). The schema also defines an `Agent` constraint and `RELEVANT_FOR` index for planned agent features; no current service writes either.
+What the services use: `Pattern` and `Concept` nodes, `MENTIONED_IN` (Concept to Pattern) and `RELATED_TO` (Pattern to Pattern). The Cypher files define constraints and indexes only for `Pattern` and `Concept`; the planned `Agent` node and `RELEVANT_FOR` relationship have no schema. The image applies 001 and 003 at build time and skips 002 (Enterprise only); each file also records its number on a `SchemaVersion {name: 'mnemonic'}` node.
 
 ```mermaid
 graph LR
     C(["Concept<br/>name UNIQUE, type, createdAt"]) -->|MENTIONED_IN| P["Pattern<br/>id UNIQUE, name, description, updatedAt"]
     P -->|"RELATED_TO<br/>similarity, updatedAt"| P2["Pattern"]
-    P -.->|"RELEVANT_FOR (reserved)"| A["Agent<br/>name UNIQUE (reserved)"]
 ```
 
 ### Schema Constraints
@@ -937,44 +821,119 @@ Create these constraints during initial Neo4j setup.
 
 **Uniqueness Constraints (Community Edition + Enterprise Edition):**
 
-These constraints are compatible with all Neo4j editions and are created by `001_create_constraints.cypher`:
+These constraints are compatible with all Neo4j editions and are created by `001_create_constraints.cypher` (copied from `mnemonic-dbs`):
 
 ```cypher
-// src/neo4j/001_create_constraints.cypher
-// Creates uniqueness constraints for node labels
+// src/migrations/neo4j/001_create_constraints.cypher
+// Creates uniqueness constraints for Neo4j node labels.
 // Part of Mnemonic MVP
+//
+// Dependencies: None (first Neo4j migration)
+//
+// This migration establishes uniqueness constraints for the two
+// node types in the knowledge graph: Pattern and Concept.
+// All constraints use IF NOT EXISTS for idempotent execution.
+//
+// These constraints are compatible with Neo4j Community Edition.
+// For existence constraints (Enterprise Edition only), see
+// 002_create_existence_constraints.cypher.
+//
+// Neo4j is a best-effort graph projection of PostgreSQL data.
+// Mnemonic validates these constraints at startup:
+//   - All constraints exist  -> log info, continue
+//   - Some missing           -> log warning with names, continue
+//   - Connection failure     -> log warning, continue
+//
+// Constraint names checked at startup:
+//   pattern_id_unique, concept_name_unique
+//
+// Manual application:
+//   cypher-shell -u neo4j -p <password> -f src/migrations/neo4j/001_create_constraints.cypher
 
-// Pattern nodes: UUID from Postgres
+// =============================================================================
+// UNIQUENESS CONSTRAINTS
+// =============================================================================
+
+// Pattern nodes use the UUID from PostgreSQL as their unique identifier.
+// This ensures one-to-one correspondence between Postgres rows and graph nodes.
 CREATE CONSTRAINT pattern_id_unique IF NOT EXISTS
 FOR (p:Pattern) REQUIRE p.id IS UNIQUE;
 
-// Agent nodes: name from Postgres (reserved; no service creates Agent nodes)
-CREATE CONSTRAINT agent_name_unique IF NOT EXISTS
-FOR (a:Agent) REQUIRE a.name IS UNIQUE;
-
-// Concept nodes: normalized lowercase name
+// Concept nodes use a normalized lowercase name as their unique identifier.
+// Concepts are extracted during enrichment and deduplicated by name.
 CREATE CONSTRAINT concept_name_unique IF NOT EXISTS
 FOR (c:Concept) REQUIRE c.name IS UNIQUE;
+
+// =============================================================================
+// SCHEMA VERSION
+// =============================================================================
+
+MERGE (v:SchemaVersion {name: 'mnemonic'})
+SET v.version = 1, v.migratedAt = datetime(), v.migration = '001_create_constraints';
+
+// =============================================================================
+// ROLLBACK
+// =============================================================================
+// To reverse this migration, run:
+//   DROP CONSTRAINT pattern_id_unique IF EXISTS;
+//   DROP CONSTRAINT concept_name_unique IF EXISTS;
+//   MATCH (v:SchemaVersion {name: 'mnemonic'}) DELETE v;
 ```
+
+The file's header comment about validating constraints at startup describes a plan; the services do not check constraints (see [Startup Constraint Validation](#startup-constraint-validation)).
 
 **Existence Constraints (Enterprise Edition Only):**
 
 These constraints require Neo4j Enterprise Edition and are created by `002_create_existence_constraints.cypher`. The Community Edition image skips this migration (see [dbs ADR-004](../architecture/dbs/02-architectural-decisions.md)). The enricher rejects a nil pattern ID or an empty pattern name before writing, regardless of whether these constraints are present.
 
 ```cypher
-// src/neo4j/002_create_existence_constraints.cypher
-// Requires Neo4j Enterprise Edition
+// src/migrations/neo4j/002_create_existence_constraints.cypher
+// Creates existence constraints for Neo4j.
 // Part of Mnemonic MVP
+//
+// Dependencies: 001_create_constraints (should be applied first)
+//
+// IMPORTANT: This migration requires Neo4j Enterprise Edition.
+// Existence constraints (IS NOT NULL) are not available in Community Edition.
+// Running this file against Community Edition will produce errors.
+//
+// For local development with Community Edition, skip this migration.
+// The application layer enforces these properties regardless of whether
+// these constraints are present in Neo4j.
+//
+// All statements use IF NOT EXISTS for idempotent execution.
+//
+// Manual application:
+//   cypher-shell -u neo4j -p <password> -f src/migrations/neo4j/002_create_existence_constraints.cypher
 
-// Existence constraints (properties must exist)
+// =============================================================================
+// EXISTENCE CONSTRAINTS (Enterprise Edition only)
+// =============================================================================
+
+// Every Pattern node must have a name property.
+// The name is synced from PostgreSQL and is required for display and search.
 CREATE CONSTRAINT pattern_name_exists IF NOT EXISTS
 FOR (p:Pattern) REQUIRE p.name IS NOT NULL;
 
-CREATE CONSTRAINT agent_name_exists IF NOT EXISTS
-FOR (a:Agent) REQUIRE a.name IS NOT NULL;
-
+// Every Concept node must have a name property.
+// The name is the normalized identifier used for deduplication.
 CREATE CONSTRAINT concept_name_exists IF NOT EXISTS
 FOR (c:Concept) REQUIRE c.name IS NOT NULL;
+
+// =============================================================================
+// SCHEMA VERSION
+// =============================================================================
+
+MERGE (v:SchemaVersion {name: 'mnemonic'})
+SET v.version = 2, v.migratedAt = datetime(), v.migration = '002_create_existence_constraints';
+
+// =============================================================================
+// ROLLBACK
+// =============================================================================
+// To reverse this migration, run:
+//   DROP CONSTRAINT pattern_name_exists IF EXISTS;
+//   DROP CONSTRAINT concept_name_exists IF EXISTS;
+//   MERGE (v:SchemaVersion {name: 'mnemonic'}) SET v.version = 1, v.migratedAt = datetime();
 ```
 
 ### Startup Constraint Validation
@@ -993,30 +952,83 @@ cypher-shell -u neo4j -p <password> -f src/neo4j/001_create_constraints.cypher
 
 # Enterprise Edition only (optional)
 cypher-shell -u neo4j -p <password> -f src/neo4j/002_create_existence_constraints.cypher
+
+# Indexes
+cypher-shell -u neo4j -p <password> -f src/neo4j/003_create_indexes.cypher
 ```
 
 ### Index Configuration
 
 ```cypher
-// src/neo4j/003_create_indexes.cypher
-// Creates indexes for common query patterns
+// src/migrations/neo4j/003_create_indexes.cypher
+// Creates indexes for common Neo4j query patterns.
 // Part of Mnemonic MVP
+//
+// Dependencies: 001_create_constraints (uniqueness constraints also create indexes,
+//   but these additional indexes cover non-unique lookup and full-text search)
+//   Optionally: 002_create_existence_constraints (Enterprise Edition only)
+//
+// Note: Neo4j automatically creates indexes for uniqueness constraints,
+// so Pattern.id and Concept.name already have indexes from migration 001.
+// The indexes below cover additional query patterns.
+//
+// All indexes use IF NOT EXISTS for idempotent execution.
+//
+// Manual application:
+//   cypher-shell -u neo4j -p <password> -f src/migrations/neo4j/003_create_indexes.cypher
 
-// Pattern lookup by name
+// =============================================================================
+// PROPERTY INDEXES
+// =============================================================================
+
+// Pattern lookup by name for display and search-by-name queries.
+// Note: Pattern.id already has an index from the uniqueness constraint,
+// but name lookups are also common when syncing from PostgreSQL.
 CREATE INDEX pattern_name_index IF NOT EXISTS
 FOR (p:Pattern) ON (p.name);
 
-// Concept filtering by type
+// Concept filtering by type (technology, practice, domain).
+// Used when querying concepts of a specific category for pattern discovery.
 CREATE INDEX concept_type_index IF NOT EXISTS
 FOR (c:Concept) ON (c.type);
 
-// Full-text search on pattern content
+// =============================================================================
+// FULL-TEXT SEARCH INDEXES
+// =============================================================================
+
+// Full-text search across pattern name and description fields.
+// Enables natural language queries against the knowledge graph.
+// Note: Pattern.description may be null; patterns without a description are
+// excluded from fulltext search results for description-related queries.
+// Usage: CALL db.index.fulltext.queryNodes('pattern_content_fulltext', 'search terms')
 CREATE FULLTEXT INDEX pattern_content_fulltext IF NOT EXISTS
 FOR (p:Pattern) ON EACH [p.name, p.description];
 
-// Full-text search on concept names
+// Full-text search on concept names.
+// Enables fuzzy matching and natural language lookup of concepts.
+// Usage: CALL db.index.fulltext.queryNodes('concept_name_fulltext', 'search term')
 CREATE FULLTEXT INDEX concept_name_fulltext IF NOT EXISTS
 FOR (c:Concept) ON EACH [c.name];
+
+// =============================================================================
+// SCHEMA VERSION
+// =============================================================================
+
+MERGE (v:SchemaVersion {name: 'mnemonic'})
+SET v.version = 3, v.migratedAt = datetime(), v.migration = '003_create_indexes';
+
+// =============================================================================
+// ROLLBACK
+// =============================================================================
+// To reverse this migration, run:
+//   DROP INDEX pattern_name_index IF EXISTS;
+//   DROP INDEX concept_type_index IF EXISTS;
+//   DROP INDEX pattern_content_fulltext IF EXISTS;
+//   DROP INDEX concept_name_fulltext IF EXISTS;
+//   -- Community Edition (002 skipped): set version back to 1
+//   MERGE (v:SchemaVersion {name: 'mnemonic'}) SET v.version = 1, v.migratedAt = datetime();
+//   -- Enterprise Edition (002 applied): set version back to 2
+//   MERGE (v:SchemaVersion {name: 'mnemonic'}) SET v.version = 2, v.migratedAt = datetime();
 ```
 
 The services' Cypher looks nodes up by `Pattern.id` and `Concept.name` (the uniqueness constraints' indexes); none of their queries use the full-text indexes today.
@@ -1056,7 +1068,7 @@ Concept names are lowercased and trimmed by the extraction service before they r
 
 **RELATED_TO (Pattern to Pattern):** created with `CREATE` by the RELATED_TO computation inside `SyncPattern`, with properties `similarity` (float, 0.0-1.0) and `updatedAt`. Each sync deletes the pattern's existing `RELATED_TO` edges (both directions) first, so edges are never updated in place. Edges are stored one way and always queried undirected.
 
-**RELEVANT_FOR (Pattern to Agent):** Not implemented. The schema indexes `RELEVANT_FOR.relevance`, but no service creates the relationship and there is no `pattern_agent_associations` sync.
+**RELEVANT_FOR (Pattern to Agent):** Planned, not implemented. There is no schema for it, no service creates it, and there is no `pattern_agent_associations` table to sync from.
 
 ### Graph Synchronization Queries
 
@@ -1230,7 +1242,7 @@ flowchart LR
 
 ### AgentRepository
 
-**Status: planned, not implemented.** No service contains an agent repository; the interface below is the design for the `agents` table.
+**Status: planned, not implemented.** No service contains an agent repository; the interface below is the design for the planned `agents` table.
 
 ```go
 // AgentRepository defines data access operations for agents.

@@ -27,7 +27,7 @@ flowchart TD
         AC --> AD{error?}
         AD -- unique violation --> AD1[return service.ErrConflict]
         AD -- other error --> AD2[return wrapped error]
-        AD -- nil --> AE["splitIntoChunks(content)<br/>one chunk per '[//]: pattern' section"]
+        AD -- nil --> AE["splitIntoChunks(content)<br/>one chunk per '[//]: pattern' section,<br/>else one whole-content chunk"]
         AE --> AF{any chunks?}
         AF -- no --> AK
         AF -- yes --> AG[chunkRepo.CreateBatch<br/>one INSERT for all chunks]
@@ -99,7 +99,7 @@ flowchart TD
 - `validatePatternFields` limits: `name` required, max 128 runes, kebab-case; `content` required, max 100000 bytes; `description` max 500 runes; `tags` max 20 items; `entity_type` required, max 100 runes, kebab-case; `language` and `domain` required, max 64 runes, kebab-case, and must be in the configured vocabulary (`vocabulary.languages`, `vocabulary.domains`), otherwise `INVALID_VALUE` (see [ADR-007](../architecture/system/00-architectural-decisions.md#adr-007)).
 - Error responses are RFC 7807 problem details. The service maps a duplicate name to `409 Conflict`; any other failure returns `500` and nothing is persisted, because the pattern, chunks and jobs share one transaction.
 - `enrichment_status` is always `pending` on insert; enrichment happens asynchronously, so a `202` does not mean the pattern is searchable yet.
-- Only sections preceded by a `[//]: pattern` decorator line and a heading become chunks. Content with no decorated section produces no chunks and no enrichment jobs.
+- Sections preceded by a `[//]: pattern` decorator line and a heading become chunks; text outside them is not indexed. Content with no decorated section (or only empty ones) becomes a single chunk holding the whole trimmed content, titled by its first heading or `Content`, so it still gets one enrichment job. Only whitespace-only content yields no chunks.
 - Jobs are published only after the transaction commits, so a rolled-back write never enqueues work. Publishing is best-effort ([ADR-009](../architecture/system/00-architectural-decisions.md#adr-009)): on failure the publisher waits `queue.rabbitmq.reconnect_delay` (default 5s), reconnects once and retries; if that also fails it increments `mnemonic.queue.publish_failures_total` and the job row stays `pending`. The enricher's retry sweep picks it up after the 2-minute grace period.
 - The API does not write to Neo4j when a pattern is created; the enricher builds the graph. The API's only graph write is the best-effort cleanup on `DELETE`.
 - A delivery whose job the sweep already took, or that is waiting out its retry delay, is acked without processing (`Start` is conditional). Maintenance every 5 minutes returns jobs stuck in `processing` longer than `enrichment.job_timeout` to `pending` and deletes old completed and failed jobs.

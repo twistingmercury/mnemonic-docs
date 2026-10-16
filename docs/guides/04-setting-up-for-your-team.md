@@ -180,7 +180,7 @@ Look for output like:
 }
 ```
 
-Patterns should eventually show `"enriched"` (not `"pending"` or `"failed"`). If a pattern stays in `"pending"` for more than a few minutes, first check that its content has at least one `[//]: pattern` section (a pattern without one has no chunks and is never enriched), then check the enricher logs:
+Patterns should eventually show `"enriched"` (not `"pending"` or `"failed"`). If a pattern stays in `"pending"` for more than a few minutes, check the enricher logs:
 
 ```bash
 docker compose logs dev_enricher -f

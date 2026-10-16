@@ -114,7 +114,7 @@ The `[//]: pattern` decorator controls which sections are stored in the Mnemonic
 - The heading text, without the `#` marks, becomes the chunk's section title (max 255 characters; longer fails the create with a 500)
 - Everything after that heading until the next `[//]: pattern` or end of file becomes the chunk body, including any undecorated headings in between
 - Lines before the first decorator are not indexed (they are still stored with the pattern)
-- A pattern with no decorated sections has no chunks, so it is never enriched and never appears in search
+- A pattern with no decorated sections (or only empty ones) is indexed as one chunk holding the whole trimmed content, titled by its first heading or `Content` if it has none
 
 The splitter is `splitIntoChunks` in mnemonic-api `src/internal/service/pattern/service.go`.
 
@@ -138,6 +138,7 @@ flowchart TD
 | Intro prose before first decorator                      | No                                    |
 | Undecorated section after a decorated one               | Yes — appended to the preceding chunk |
 | Empty decorated body (after trimming)                   | No — dropped silently                 |
+| Whole file, when no decorated section has a body        | Yes — one chunk for the whole content |
 
 ### Example
 

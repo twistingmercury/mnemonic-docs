@@ -99,7 +99,7 @@ curl -X POST http://localhost:8080/v1/api/patterns \
 
 The API returns HTTP 202 Accepted with a `Location: /v1/api/patterns/{id}` header and the created pattern as JSON (`id`, `enrichment_status: "pending"`, and the fields you sent). The API splits the content into one chunk per `[//]: pattern` section and queues one enrichment job per chunk.
 
-**Note:** Only sections preceded by a `[//]: pattern` line become searchable chunks. Content with no decorator is stored, but it produces no chunks and so never leaves `pending`. See [Authoring Patterns](05-authoring-patterns.md#the--pattern-decorator).
+**Note:** When content has `[//]: pattern` lines, only the sections they precede become searchable chunks. Content with no decorator becomes a single chunk holding the whole body, so it is still enriched and searchable, just not section by section. See [Authoring Patterns](05-authoring-patterns.md#the--pattern-decorator).
 
 > **Tip:** Instead of loading a single test pattern, you can use the [mnemonic-patterns](https://github.com/twistingmercury/mnemonic-patterns) repository to load a curated set of pre-defined patterns. Clone it and run `make load` to validate and upload them all to the API.
 
