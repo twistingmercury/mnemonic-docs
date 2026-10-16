@@ -24,6 +24,14 @@ Each entry includes:
 
 ## Change Log
 
+### 2026-10-16: MCP Server on Protocol 2026-07-28 (mnemonic-mcp v0.5.0)
+
+**Design Documents**: `mcp-server.md`, `../architecture/mnemonic/08-mcp-tools.md`, `../architecture/system/07-observability-architecture.md`
+
+- **Original**: Clients sent `initialize`, then `tools/list` and `tools/call`; the server advertised `logging` and `tools.listChanged`; any `Origin` was accepted; tool spans were always children of the `/mcp` HTTP span
+- **Implementation**: Sessionless 2026-07-28 requests (`_meta` plus `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`), `server/discover`, capabilities `{"tools":{}}`, a one-hour `tools/list` cache hint, 403 for cross-origin browser requests, and `_meta.traceparent` parenting the tool span; older clients still use `initialize`
+- **Justification**: The MCP specification revision 2026-07-28 removes the handshake and sessions, deprecates logging, and requires servers to validate `Origin`; go-sdk v1.8.0 implements the protocol and `mnemonic-mcp` closes the remaining gaps
+
 ### 2026-10-15: Service Layer, Enrichment and MCP Docs Aligned with v0.4.0 Code
 
 **Design Documents**: `service-layer.md`, `pattern-processing.md`, `mcp-server.md`, `../architecture/mnemonic/08-mcp-tools.md`

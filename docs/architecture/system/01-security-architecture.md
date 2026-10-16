@@ -28,11 +28,11 @@
 
 ## Current State (Local Phase)
 
-This is what the code does today (v0.4.0 of `mnemonic-api`, `mnemonic-mcp`, `mnemonic-enricher`). The phase is a trusted, local, single-user environment.
+This is what the code does today (`mnemonic-api` and `mnemonic-enricher` v0.4.1, `mnemonic-mcp` v0.5.0). The phase is a trusted, local, single-user environment.
 
 | Surface                                                               | Current behavior                                                                                                                                                               |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| MCP `/mcp` on :8081 (`mnemonic-mcp`)                                  | No authentication. Streamable HTTP, stateless, read-only tools only (`search_patterns`, `find_related_patterns`, `get_pattern`)                                                |
+| MCP `/mcp` on :8081 (`mnemonic-mcp`)                                  | No authentication. Streamable HTTP (MCP 2026-07-28), stateless, read-only tools only (`search_patterns`, `find_related_patterns`, `get_pattern`); cross-origin browser requests get 403 |
 | REST `/v1/api` and `/swagger` on :8080 (`mnemonic-api`)               | No authentication or authorization; any caller can create, update and delete patterns                                                                                          |
 | `/health`, `/version` on :8080 and `/metrics` on :9090 (all services) | Unauthenticated                                                                                                                                                                |
 | TLS                                                                   | None in process; the API removed `server.tls.*`, so TLS, if needed, terminates at a reverse proxy                                                                              |
