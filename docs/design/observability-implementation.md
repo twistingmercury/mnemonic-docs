@@ -129,10 +129,8 @@ if cfg.Observability.Tracing.Enabled {
 
     // otelx v2 reads the OTLP endpoint from OTEL_EXPORTER_OTLP_* variables.
     // Build the exporter here so the mnemonic config keeps working.
-    var opts []otlptracegrpc.Option
-    if cfg.Observability.Tracing.Endpoint != "" {
-        opts = append(opts, otlptracegrpc.WithEndpoint(cfg.Observability.Tracing.Endpoint))
-    }
+    // Validation requires an endpoint whenever tracing is enabled.
+    opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Observability.Tracing.Endpoint)}
     if cfg.Observability.Tracing.OTLPInsecure {
         opts = append(opts, otlptracegrpc.WithInsecure())
     }
