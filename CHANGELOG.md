@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The MCP server is documented as speaking MCP protocol 2026-07-28: no `initialize` or sessions, per-request `_meta`, the `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers, `server/discover`, the one-hour `tools/list` cache hint, the `-32020` and `-32022` errors, 403 for cross-origin browser requests, and `_meta.traceparent` on tool spans
+
 - Content with no `[//]: pattern` section (or only empty ones) is documented as stored as one whole-content chunk, titled by its first heading or `Content`, so it is enriched and searchable; the "stays `pending` forever" limitation is gone
 - Each service is documented as reporting its own name (`mnemonic-api`, `mnemonic-enricher`, `mnemonic-mcp`) as OpenTelemetry `service.name`, `/health` `name`, `/version` `service` and otelgin middleware name; the `OTEL_SERVICE_NAME` workaround and the matching known gap are removed
 - Config reference: removed the unused API keys `logging.format`, `logging.include_caller`, `observability.health.*`, `openai.extraction_model`, `openai.max_requests_per_minute` and `queue.provider` (the enricher keeps `openai.extraction_model` and `queue.provider`)

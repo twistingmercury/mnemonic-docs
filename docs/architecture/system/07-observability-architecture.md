@@ -147,7 +147,7 @@ Tracing is off by default. When `observability.tracing.enabled` is `true`, each 
 | Source                      | Spans                                                         | Services |
 | --------------------------- | ------------------------------------------------------------- | -------- |
 | `otelgin` middleware        | One server span per Gin request (skips `/health`, `/metrics`) | all      |
-| `otelhttp` handler          | Server span for each `/mcp` request                           | MCP      |
+| `otelhttp` handler          | Server span for each `/mcp` request, with `mcp.method.name`   | MCP      |
 | MCP tool middleware         | `tools/call <tool>` with `mcp.tool.name`, `mcp.tool.outcome`  | MCP      |
 | `otelhttp` client transport | Client span for each OpenAI API call                          | all      |
 | `otelpgx`                   | Postgres query spans                                          | all      |
@@ -177,7 +177,7 @@ flowchart TB
 
 **Trace Propagation: MCP**
 
-The MCP endpoint continues an incoming `traceparent` header if the client sends one; otherwise it starts a new trace.
+The MCP endpoint continues an incoming `traceparent` header if the client sends one; otherwise it starts a new trace. A `traceparent` in the request's `_meta` (MCP 2026-07-28) takes precedence for the `tools/call` span, which then links back to the HTTP span.
 
 ```mermaid
 sequenceDiagram
@@ -187,7 +187,7 @@ sequenceDiagram
     participant PGV as PGVector
     participant NEO as Neo4j
 
-    CC->>MCP: POST /mcp tools/call search_patterns<br/>(traceparent optional)
+    CC->>MCP: POST /mcp tools/call search_patterns<br/>(traceparent header or _meta, optional)
     Note over MCP: Continue or start trace
     MCP->>OAI: Embed query (child span)
     OAI-->>MCP: Query embedding
