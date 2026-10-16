@@ -43,7 +43,7 @@ flowchart LR
 
     PatternView --> RelatedPivot[Related Pattern Pivot]
     PatternView --> ChunkSection[Chunk Summaries]
-    PatternView --> AgentSection[Agent Associations]
+    PatternView -.-> AgentSection["Agent Associations (planned)"]
 ```
 
 ## Section 2: Discovery Rail Structure
@@ -53,7 +53,9 @@ scan results quickly. The top of the rail should contain the workspace title
 and the primary action to import a pattern file. Below that, the semantic
 search field should be visually dominant. Filters should stay lightweight and
 map directly to backend-supported fields. For phase 1, that means tags,
-language, domain, and agent.
+language, and domain (both `GET /v1/api/patterns` and
+`GET /v1/api/patterns/search` accept them). An agent filter is planned only:
+the API has no agent field or filter today.
 
 The results region should support four main states. The default state shows a
 browse list when no search query is active. The loading state shows a compact
@@ -78,7 +80,7 @@ phase 1, not final visual design.
 | Search patterns semantically...         [Go]  | Pattern Detail                                   |
 |-----------------------------------------------|--------------------------------------------------|
 | Filters                                       | Empty state when nothing is selected:            |
-| [Tags v] [Language v] [Domain v] [Agent v]    | "Select a pattern to inspect its details."       |
+| [Tags v] [Language v] [Domain v]              | "Select a pattern to inspect its details."       |
 |                                               |                                                  |
 | Results (42)                                  | When a pattern is selected:                      |
 |-----------------------------------------------|                                                  |
@@ -90,7 +92,7 @@ phase 1, not final visual design.
 |   rest-api-specification-pattern              | - Core AsyncAPI Concepts                         |
 |   OpenAPI-first REST API specification        | - Basic AsyncAPI Specification                   |
 |   openapi rest api-design agnostic            |                                                  |
-|-----------------------------------------------| Agent Associations                               |
+|-----------------------------------------------| Agent Associations (planned; no API data yet)    |
 |   grpc-service-definition-pattern             | - api-designer (0.8)                             |
 |   Service definition and contract design      |                                                  |
 |   grpc api-design agnostic                    | Related Patterns                                 |

@@ -24,6 +24,40 @@ Each entry includes:
 
 ## Change Log
 
+### 2026-10-15: Service Layer, Enrichment and MCP Docs Aligned with v0.4.0 Code
+
+**Design Documents**: `service-layer.md`, `pattern-processing.md`, `mcp-server.md`, `../architecture/mnemonic/08-mcp-tools.md`
+
+#### 1. Agent, Skill and Skill-File Services
+
+- **Original**: `AgentService`, `SkillService`, `SkillFileService`, pattern-agent associations, `RELEVANT_FOR` sync and an `agent` filter on `search_patterns`
+- **Implementation**: None of these exist in any service; the API serves only `/v1/api/patterns*`
+- **Justification**: Not built yet. The designs are condensed into a "Planned" section in `service-layer.md` and the `agent` parameter is removed from the MCP tool docs.
+
+#### 2. Per-Service Packages
+
+- **Original**: One set of service interfaces described as if shared, including an `EnrichmentService` in the API
+- **Implementation**: Each repo carries only what it uses. API: `pattern.Service` (creates jobs and publishes them itself), `search.Service`; MCP: read-only `search.Service` and `pattern.Service` structs; enricher: `enrichment.Service`. Dead code (the MCP enricher and write paths, the enricher's MCP and search packages) was removed.
+- **Justification**: Dead-code removal in v0.4.0; the docs no longer describe packages that do not exist.
+
+#### 3. Chunking and Enrichment Jobs
+
+- **Original**: The enricher splits content at H2 headings; one job per pattern; update re-enriches only when content changed
+- **Implementation**: The API splits content into chunks at `[//]: pattern` decorator lines and creates one job per chunk in the create/update transaction, publishing after commit. Every update re-chunks. The enricher embeds per chunk, and the last chunk of a pattern triggers concept extraction and a single-transaction Neo4j sync.
+- **Justification**: Section-level search and atomic job creation (a message must never refer to a rolled-back job row).
+
+#### 4. Job Recovery and Retry
+
+- **Original**: Failed messages are nacked for redelivery; a periodic scan re-publishes pending patterns
+- **Implementation**: Recorded failures are acked; `MarkFailed` reschedules the job in Postgres (`retry_delay`, 3 attempts). A 15-second retry sweep claims due jobs, and jobs never delivered within 2 minutes, with `FOR UPDATE SKIP LOCKED`. Maintenance every 5 minutes reclaims stale `processing` jobs and deletes old completed/failed jobs.
+- **Justification**: Postgres is the single source of truth for pending work (ADR-009); redelivery loops are avoided.
+
+#### 5. MCP Server
+
+- **Original**: SDK v1.3.1, `RegisterTools`, `NewLoggingMiddleware`, `mnemonic.mcp.tool_invocations`, session metrics, vector-only search
+- **Implementation**: SDK v1.8.0; tools registered in `NewMCPServer`; `toolTelemetry` middleware with `tools/call <tool>` spans and `mnemonic.mcp.tool_calls` / `tool_duration` by tool and outcome; otelhttp on `/mcp`; no session metrics; `search_patterns` adds best-effort graph expansion; no authentication.
+- **Justification**: Implementation evolved; docs updated to match.
+
 ### 2026-02-15: Architectural Pivot
 
 - **Removed:** Routing engine, routing rules, ACE CLI

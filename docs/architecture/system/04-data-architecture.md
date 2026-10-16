@@ -64,28 +64,37 @@ Mnemonic uses a polyglot persistence strategy where each database technology is 
 
 All three services (MCP Server, Admin API, Enricher) are stateless; all persistent state lives in these external databases. This separation enables horizontal scaling of each service independently while maintaining data consistency.
 
+The diagram shows what each service's repository code actually reads and writes:
+
 ```mermaid
 flowchart LR
   subgraph services["Application Services"]
-    mcp["MCP Server\n(read-only)"]
-    api["Admin API\n(read-write)"]
-    enricher["Enricher\n(write)"]
+    mcp["MCP Server<br/>(read-only)"]
+    api["Admin API"]
+    enricher["Enricher"]
   end
   subgraph storage["Storage Layer"]
-    pg[("PostgreSQL\n+ PGVector")]
+    pg[("PostgreSQL<br/>+ PGVector")]
     neo4j[("Neo4j")]
   end
   subgraph messaging["Messaging"]
-    rabbit[("RabbitMQ")]
+    rabbit[("RabbitMQ<br/>enrichment-jobs")]
   end
   mcp -->|read| pg
   mcp -->|read| neo4j
-  api -->|read/write| pg
-  api -->|publish| rabbit
+  api -->|"read/write patterns, chunks;<br/>insert jobs"| pg
+  api -->|"read; delete on pattern delete"| neo4j
+  api -->|publish job id| rabbit
   rabbit -->|consume| enricher
-  enricher -->|write| pg
-  enricher -->|write| neo4j
+  enricher -->|"read/write chunks, patterns, jobs<br/>(15s retry sweep claims due jobs)"| pg
+  enricher -->|"write graph<br/>(one write tx per pattern)"| neo4j
 ```
+
+| Service | PostgreSQL | Neo4j |
+| --- | --- | --- |
+| Admin API (`mnemonic-api`) | CRUD on `patterns`; insert/delete `pattern_chunks`; insert `enrichment_jobs`; chunk similarity search | Reads concepts and `RELATED_TO`; `DeletePattern` removes the node and its now-orphaned concepts. Never creates nodes or edges. |
+| Enricher (`mnemonic-enricher`) | Claims and updates `enrichment_jobs`; writes chunk embeddings and status; writes pattern enrichment status; deletes old completed/failed jobs | `SyncPattern`: merges `Pattern`, `Concept`, `MENTIONED_IN` and recomputes `RELATED_TO` in a single write transaction |
+| MCP Server (`mnemonic-mcp`) | Read-only: chunk similarity search, pattern lookups | Read-only: concepts and `RELATED_TO` |
 
 ### Database Technology Stack
 
@@ -95,19 +104,17 @@ flowchart LR
 
 **Purpose:** Primary relational database for structured data with ACID guarantees.
 
-**Stores:**
+**Stores (used by the services):**
 
-- Agents: reusable configurations that define what Claude MCP skill calls are available
 - Patterns: knowledge units (documentation, design decisions, examples)
-- Pattern chunks: H2-separated sections within each pattern (used for embedding and semantic search)
-- Skills: definitions of Claude MCP skills available at runtime
-- Skill files: file paths for each skill (used for installation and path resolution)
-- Pattern-agent associations: many-to-many mapping of patterns to agents
-- Enrichment jobs: background queue for pattern processing and embedding generation
+- Pattern chunks: sections of each pattern, split at `[//]: pattern` markers (used for embedding and semantic search)
+- Enrichment jobs: durable queue state for chunk embedding and graph sync
+
+**Also in the schema, not used by any current service:** `agents`, `skills`, `skill_files`, `pattern_agent_associations`. These tables are created by the `mnemonic-dbs` image for planned agent/skill features; no repository in `mnemonic-api`, `mnemonic-mcp` or `mnemonic-enricher` reads or writes them.
 
 **Constraint Level:** ACID transactions, foreign keys with CASCADE deletes, NOT NULL constraints on required columns.
 
-**Connection:** pgx v5 (`github.com/jackc/pgx/v5`) with connection pooling and explicit transaction boundaries. See [Connection Pool Configuration](#connection-pool-configuration).
+**Connection:** pgx v5 (`github.com/jackc/pgx/v5`, `pgxpool`) with connection pooling and explicit transaction boundaries where a write spans several statements. See [Connection Pool Configuration](#connection-pool-configuration).
 
 #### PGVector
 
@@ -115,26 +122,27 @@ flowchart LR
 
 **Stores:**
 
-- Chunk embeddings: 2000-dimensional vectors generated from OpenAI text-embedding-3-large (Matryoshka truncation), stored in `pattern_chunks.embedding`
+- Chunk embeddings: 2000-dimensional vectors generated from OpenAI text-embedding-3-large (Matryoshka truncation), stored in `pattern_chunks.embedding`. `openai.embedding_dimensions` defaults to 2000 in all three services.
 
-**Index Type (MVP):** IVFFlat for up to 100,000 patterns; see [Index Strategies](#index-strategies) for configuration.
+**Index Type:** HNSW on `pattern_chunks.embedding` (`vector_cosine_ops`), per the [mnemonic-dbs schema reference](../dbs/08-data-architecture.md#indexes).
 
 **Query Layer:** Native SQL with the `<=>` operator for cosine distance.
 
 #### Neo4j
 
-**Purpose:** Knowledge graph for relationship traversal and semantic queries across agents, patterns, and concepts.
+**Purpose:** Knowledge graph for relationship traversal across patterns and concepts.
 
 **Stores:**
 
-- Patterns: projection of patterns from Postgres (source of truth)
-- Agents: projection of agents from Postgres (source of truth)
+- Patterns: projection of patterns from Postgres (source of truth), keyed by the pattern UUID
 - Concepts: entities extracted during enrichment (technologies, practices, domains)
-- Relationships: pattern-agent relevance, concept mentions, pattern-pattern similarity
+- Relationships: concept mentions (`MENTIONED_IN`) and pattern-pattern similarity (`RELATED_TO`)
 
-**Consistency Model:** Eventual consistency; Neo4j is a read-only projection. Write always goes to Postgres first; Neo4j updates are best-effort.
+The schema also declares an `Agent` label and a `RELEVANT_FOR` index, but no current service creates `Agent` nodes or `RELEVANT_FOR` relationships.
 
-**Connection:** Go driver (`github.com/neo4j/neo4j-go-driver/v5`) with connection pooling.
+**Consistency Model:** Eventual consistency. Postgres is always written first. The enricher writes the graph only after every chunk of a pattern is embedded; a failed graph write fails the job, which is retried. The Admin API's graph delete on pattern delete is best-effort (logged on failure).
+
+**Connection:** Go driver (`github.com/neo4j/neo4j-go-driver/v5`) with connection pooling. Each service verifies connectivity at startup.
 
 ### Data Model Design
 
@@ -142,34 +150,28 @@ flowchart LR
 
 #### Entity Relationship Diagram
 
+The three tables the services use, with the columns their SQL reads and writes. For the reserved agent/skill tables see the [mnemonic-dbs ER diagram](../dbs/08-data-architecture.md#entity-relationship-diagram).
+
 ```mermaid
 erDiagram
-    AGENTS ||--o{ PATTERN_AGENT_ASSOCIATIONS : "has"
-    PATTERNS ||--o{ PATTERN_AGENT_ASSOCIATIONS : "assigned_to"
-    PATTERNS ||--o{ PATTERN_CHUNKS : "contains"
-    PATTERNS ||--o{ ENRICHMENT_JOBS : "triggers"
-    PATTERN_CHUNKS ||--o{ ENRICHMENT_JOBS : "claims"
-    SKILLS ||--o{ SKILL_FILES : "includes"
-
-    AGENTS {
-        uuid id PK
-        varchar name UK "unique"
-        text description
-        jsonb definition
-        timestamptz created_at
-        timestamptz updated_at
-    }
+    PATTERNS ||--o{ PATTERN_CHUNKS : "split into"
+    PATTERNS ||--o{ ENRICHMENT_JOBS : "legacy job for"
+    PATTERN_CHUNKS ||--o{ ENRICHMENT_JOBS : "queued for"
 
     PATTERNS {
         uuid id PK
-        varchar name
+        varchar name UK
+        varchar description "nullable"
         text content
+        jsonb tags
         varchar entity_type
         varchar language
         varchar domain
-        jsonb tags
+        varchar version "nullable"
+        jsonb related_patterns
         varchar enrichment_status
-        text enrichment_error
+        text enrichment_error "nullable"
+        timestamptz enriched_at "nullable"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -177,21 +179,15 @@ erDiagram
     PATTERN_CHUNKS {
         uuid id PK
         uuid pattern_id FK
-        int chunk_index
         varchar section_title
+        int chunk_index
         text content
-        vector embedding "dimension 2000"
+        vector embedding "vector(2000), nullable"
         varchar enrichment_status
+        text enrichment_error "nullable"
+        timestamptz enriched_at "nullable"
         timestamptz created_at
         timestamptz updated_at
-    }
-
-    PATTERN_AGENT_ASSOCIATIONS {
-        uuid id PK
-        uuid pattern_id FK
-        uuid agent_id FK
-        float relevance
-        timestamptz created_at
     }
 
     ENRICHMENT_JOBS {
@@ -199,29 +195,12 @@ erDiagram
         uuid pattern_id FK "nullable"
         uuid chunk_id FK "nullable"
         varchar status
-        int retry_count
-        text error_message
+        int attempts
+        int max_attempts
+        text last_error "nullable"
         timestamptz scheduled_for
-        timestamptz started_at
-        timestamptz completed_at
-        timestamptz created_at
-        timestamptz updated_at
-    }
-
-    SKILLS {
-        uuid id PK
-        varchar name UK
-        text description
-        jsonb definition
-        timestamptz created_at
-        timestamptz updated_at
-    }
-
-    SKILL_FILES {
-        uuid id PK
-        uuid skill_id FK
-        varchar file_path
-        text content
+        timestamptz started_at "nullable"
+        timestamptz completed_at "nullable"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -229,133 +208,105 @@ erDiagram
 
 #### Agents
 
-**Purpose:** Reusable configurations defining available Claude MCP skills and their integration points.
-
-**Schema:**
-
-| Column       | Type        | Nullable | Notes                             |
-| ------------ | ----------- | -------- | --------------------------------- |
-| `id`         | UUID        | NO       | PK; generated on insert           |
-| `name`       | VARCHAR     | NO       | UK; e.g., "data-science-agent"    |
-| `description`| TEXT        | YES      | Human-readable summary            |
-| `definition` | JSONB       | NO       | MCP server definition (name, version, tools) |
-| `created_at` | TIMESTAMPTZ | NO       | Application set                   |
-| `updated_at` | TIMESTAMPTZ | NO       | Application set                   |
-
-**Uniqueness:** Agent name is globally unique; prevents duplicate configurations.
-
-**Queries:**
-
-- `SELECT * FROM agents WHERE name = $1` — Lookup by name for MCP server initialization
-- `SELECT definition FROM agents ORDER BY updated_at DESC LIMIT 10` — List available agents for admin UI
+**Status:** Not implemented. The `agents` table exists in the schema (see [mnemonic-dbs Data Architecture](../dbs/08-data-architecture.md#tables) and [Data Storage Implementation](../../design/data-storage.md#migration-002-agents-table)), but no current service has an agent repository, endpoint, or query against it. Agent storage is a planned feature.
 
 #### Patterns
 
 **Purpose:** Core knowledge units (design decisions, documentation, examples, code snippets).
 
-**Schema:**
+**Schema (as used by the services' SQL):**
 
-| Column                | Type        | Nullable | Notes                                       |
-| --------------------- | ----------- | -------- | ------------------------------------------- |
-| `id`                  | UUID        | NO       | PK; generated on insert                     |
-| `name`                | VARCHAR     | NO       | e.g., "Transaction Retry Pattern"           |
-| `content`             | TEXT        | NO       | Full markdown content                       |
-| `entity_type`         | VARCHAR     | NO       | 'decision', 'example', 'guide', 'snippet'   |
-| `language`            | VARCHAR     | YES      | 'go', 'python', 'sql', or NULL for general  |
-| `domain`              | VARCHAR     | YES      | 'backend', 'testing', 'infra', or NULL      |
-| `tags`                | JSONB       | YES      | Array of strings; e.g., `["retry", "error-handling"]` |
-| `enrichment_status`   | VARCHAR     | NO       | 'pending', 'enriched', 'failed'               |
-| `enrichment_error`    | TEXT        | YES      | Error message if `enrichment_status='failed'` |
-| `created_at`          | TIMESTAMPTZ | NO       | Application set                             |
-| `updated_at`          | TIMESTAMPTZ | NO       | Application set                             |
+| Column | Type | Nullable | Notes |
+| --- | --- | --- | --- |
+| `id` | UUID | NO | PK; generated by the Admin API on insert |
+| `name` | VARCHAR | NO | Unique (duplicate insert/update returns 409); kebab-case `^[a-z][a-z0-9-]*$`, max 128 |
+| `description` | VARCHAR(500) | YES | Optional, max 500 chars |
+| `content` | TEXT | NO | Full markdown content; API caps it at 100,000 bytes |
+| `tags` | JSONB | NO | JSON array of strings, max 20; empty array when none |
+| `entity_type` | VARCHAR | NO | Kebab-case category, e.g. `go-pattern`, `e2e-testing` |
+| `language` | VARCHAR | NO | Must be in the API's `vocabulary.languages` list, e.g. `go`, `agnostic` |
+| `domain` | VARCHAR | NO | Must be in the API's `vocabulary.domains` list, e.g. `backend`, `testing` |
+| `version` | VARCHAR | YES | Optional target version string, e.g. `Go 1.21+` |
+| `related_patterns` | JSONB | NO | JSON array of related pattern names; empty array when none |
+| `enrichment_status` | VARCHAR | NO | `pending`, `enriched`, `failed` |
+| `enrichment_error` | TEXT | YES | Error message when `failed` |
+| `enriched_at` | TIMESTAMPTZ | YES | Set when the pattern becomes `enriched` |
+| `created_at` | TIMESTAMPTZ | NO | Application set |
+| `updated_at` | TIMESTAMPTZ | NO | Application set |
 
-**Indexes:** See [Index Strategies](#index-strategies). The table is filtered for `enrichment_status='enriched'` in semantic search queries.
+**Indexes:** See [Index Strategies](#index-strategies). Semantic search filters on the *chunk's* `enrichment_status = 'enriched'`, not the pattern's.
 
-**Constraints:** Foreign key to `pattern_agent_associations` (many-to-many agents).
+**Status lifecycle:** Insert sets `pending`. Every update also resets `enrichment_status` to `pending` and clears `enrichment_error` and `enriched_at`. The enricher sets `failed` as soon as any chunk fails, and `enriched` once all chunks are embedded and the graph sync succeeds.
 
 #### Skills
 
-**Purpose:** Definitions of reusable Claude MCP skills (tools) that agents or patterns reference.
-
-**Schema:**
-
-| Column       | Type        | Nullable | Notes                       |
-| ------------ | ----------- | -------- | --------------------------- |
-| `id`         | UUID        | NO       | PK; generated on insert     |
-| `name`       | VARCHAR     | NO       | UK; e.g., "shell-executor"  |
-| `description`| TEXT        | YES      | Human summary               |
-| `definition` | JSONB       | NO       | MCP skill definition        |
-| `created_at` | TIMESTAMPTZ | NO       | Application set             |
-| `updated_at` | TIMESTAMPTZ | NO       | Application set             |
-
-**Definition Format:**
-
-```json
-{
-  "name": "shell-executor",
-  "version": "1.0.0",
-  "description": "Execute shell commands",
-  "parameters": {
-    "command": { "type": "string" }
-  },
-  "tools": [ ... ]
-}
-```
+**Status:** Not implemented. The `skills` and `skill_files` tables exist in the schema, but no current service reads or writes them. See [Data Storage Implementation](../../design/data-storage.md#migration-007-create-skills-table) for the planned design.
 
 #### Pattern Chunks
 
-**Purpose:** H2-separated sections within each pattern, used for semantic search and embedding.
+**Purpose:** Sections of each pattern, used for semantic search and embedding.
+
+The Admin API splits content when a pattern is created or updated: a line `[//]: pattern` followed by a Markdown heading starts a chunk, whose `section_title` is the heading text and whose `content` is the text up to the next marker. Content outside marked sections is not chunked, and a pattern with no markers gets no chunks (and so no enrichment jobs). On update, the API deletes all of the pattern's chunks and inserts the new set in the same transaction.
 
 **Schema:**
 
-| Column              | Type        | Nullable | Notes                                    |
-| ------------------- | ----------- | -------- | ---------------------------------------- |
-| `id`                | UUID        | NO       | PK; generated on insert                  |
-| `pattern_id`        | UUID        | NO       | FK to patterns(id); CASCADE delete       |
-| `chunk_index`       | INT         | NO       | 0-based section order                    |
-| `section_title`     | VARCHAR     | YES      | H2 heading text or NULL for intro        |
-| `content`           | TEXT        | NO       | Markdown text of this section            |
-| `embedding`         | VECTOR(2000)| YES      | OpenAI text-embedding-3-large embedding  |
-| `enrichment_status` | VARCHAR     | NO       | 'pending', 'enriched', 'failed'          |
-| `created_at`        | TIMESTAMPTZ | NO       | Application set                          |
-| `updated_at`        | TIMESTAMPTZ | NO       | Application set                          |
+| Column | Type | Nullable | Notes |
+| --- | --- | --- | --- |
+| `id` | UUID | NO | PK; generated by the Admin API |
+| `pattern_id` | UUID | NO | FK to patterns(id); CASCADE delete |
+| `chunk_index` | INT | NO | 0-based section order |
+| `section_title` | VARCHAR | NO | Heading text after the `[//]: pattern` marker |
+| `content` | TEXT | NO | Markdown text of this section (heading not included) |
+| `embedding` | VECTOR(2000) | YES | Set by the enricher; NULL until embedded |
+| `enrichment_status` | VARCHAR | NO | `pending` (database default), `enriched`, `failed` |
+| `enrichment_error` | TEXT | YES | Error message when `failed` |
+| `enriched_at` | TIMESTAMPTZ | YES | Set when the chunk is embedded |
+| `created_at` | TIMESTAMPTZ | NO | Database default on insert |
+| `updated_at` | TIMESTAMPTZ | NO | Database default on insert; enricher sets `now()` |
+
+The enricher embeds `"<pattern name> | <tags> | <section title>\n\n<content>"` (tags omitted when empty), so pattern-level context is part of every chunk vector.
 
 **Partitioning:** None for MVP; consider range partitioning by `created_at` if table exceeds 10M rows.
 
 #### Enrichment Jobs
 
-**Purpose:** Background queue for pattern content splitting, embedding generation, and Neo4j sync.
+**Purpose:** Durable job state for chunk embedding and Neo4j sync. RabbitMQ carries only the job ID; Postgres is the source of truth for job status.
 
-**Schema:**
+**Schema (columns used by the services' SQL):**
 
-```sql
-CREATE TABLE enrichment_jobs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    pattern_id UUID,
-    chunk_id UUID,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    retry_count INT NOT NULL DEFAULT 0,
-    error_message TEXT,
-    scheduled_for TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT fk_pattern FOREIGN KEY (pattern_id) REFERENCES patterns(id) ON DELETE CASCADE,
-    CONSTRAINT fk_chunk FOREIGN KEY (chunk_id) REFERENCES pattern_chunks(id) ON DELETE CASCADE,
-    CHECK (pattern_id IS NOT NULL OR chunk_id IS NOT NULL)
-);
+| Column | Type | Nullable | Notes |
+| --- | --- | --- | --- |
+| `id` | UUID | NO | PK; generated by the Admin API |
+| `pattern_id` | UUID | YES | Set only on legacy pattern-level jobs |
+| `chunk_id` | UUID | YES | FK to `pattern_chunks(id)`; set on every job the API creates today |
+| `status` | VARCHAR | NO | `pending`, `processing`, `completed`, `failed` |
+| `attempts` | INT | NO | Starts at 0; incremented on each failure or timeout |
+| `max_attempts` | INT | NO | 3 for jobs the API creates |
+| `last_error` | TEXT | YES | Error from the most recent failed attempt; `job timed out` when reclaim exhausts attempts |
+| `scheduled_for` | TIMESTAMPTZ | NO | When the job is due; pushed forward by `enrichment.retry_delay` on retry |
+| `started_at` | TIMESTAMPTZ | YES | Set when claimed; cleared on retry |
+| `completed_at` | TIMESTAMPTZ | YES | Set on success |
+| `created_at`, `updated_at` | TIMESTAMPTZ | NO | Application set |
+
+**Constraints (from mnemonic-dbs):** `enrichment_jobs_target_exclusive` requires exactly one of `pattern_id` and `chunk_id`; both FKs cascade on delete; a partial unique index rejects a second pending/processing job for the same chunk (the API maps that unique violation to `ErrJobAlreadyPending`).
+
+**Lifecycle:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: API inserts (same tx as pattern + chunks)
+    pending --> processing: Start (RabbitMQ delivery)<br/>or ClaimDue (15s sweep, FOR UPDATE SKIP LOCKED)
+    processing --> completed: chunk embedded<br/>(and graph synced if last chunk)
+    processing --> pending: failure or stale reclaim,<br/>attempts + 1 < max_attempts
+    processing --> failed: failure or stale reclaim,<br/>attempts exhausted
+    completed --> [*]: deleted after completed_retention (168h)
+    failed --> [*]: deleted after failed_retention (720h)
 ```
 
-**Schema:** Postgres-backed queue using `FOR UPDATE SKIP LOCKED` for safe concurrent processing. Retry with exponential backoff (max 3 attempts). `pattern_id` is nullable (was NOT NULL prior to migration 000009). `chunk_id` (FK to `pattern_chunks.id`, nullable) is set for chunk-level enrichment jobs; `pattern_id` is set for legacy jobs. CASCADE delete on parent pattern or chunk.
-
-**Uniqueness:** A partial unique index prevents duplicate pending or processing jobs for the same pattern:
-
-```sql
-CREATE UNIQUE INDEX idx_enrichment_jobs_unique_pending
-    ON enrichment_jobs(pattern_id)
-    WHERE status IN ('pending', 'processing');
-```
+- **Start (message path):** `UPDATE ... SET status='processing', started_at=now() WHERE id=$1 AND status='pending' AND scheduled_for <= now()`. If no row matches (already taken, finished, or waiting for a retry), the message is acked and dropped.
+- **ClaimDue (retry sweep, every 15s):** claims up to the number of free workers with `UPDATE ... WHERE id IN (SELECT id ... WHERE status='pending' AND ((attempts > 0 AND scheduled_for <= now()) OR scheduled_for <= now() - '2 minutes') ORDER BY scheduled_for LIMIT $n FOR UPDATE SKIP LOCKED)`. The 2-minute grace leaves never-attempted jobs to their RabbitMQ message and only picks them up if the publish was lost.
+- **MarkFailed:** fixed delay retry (`enrichment.retry_delay`, default 30s), not exponential backoff.
+- **Maintenance (every 5 min):** `ReclaimStale` returns jobs stuck in `processing` longer than `enrichment.job_timeout` (default 5m) to `pending` (or `failed` when out of attempts), and old `completed`/`failed` jobs are deleted.
 
 ### Storage Architecture
 
@@ -363,7 +314,7 @@ CREATE UNIQUE INDEX idx_enrichment_jobs_unique_pending
 
 #### PostgreSQL Schema
 
-<!-- Full DDL: See data-storage.md in mnemonic/docs/design/ for complete CREATE TABLE statements, constraints, and migration history. -->
+The schema is owned by `mnemonic-dbs` and baked into the `mnemonic-postgres` image; see [mnemonic-dbs Data Architecture](../dbs/08-data-architecture.md) and [Data Storage Implementation](../../design/data-storage.md#postgresql-migrations) for the DDL.
 
 **Note:** Application manages `updated_at` timestamps on write. No database triggers.
 
@@ -371,100 +322,92 @@ CREATE UNIQUE INDEX idx_enrichment_jobs_unique_pending
 
 #### PGVector Configuration
 
-**Index Selection by Pattern Count:**
-
-| Pattern Count   | Index Type | Configuration            | Rationale                          |
-| --------------- | ---------- | ------------------------ | ---------------------------------- |
-| < 1,000         | None       | Exact search             | Overhead of index not worth it     |
-| 1,000 - 100,000 | IVFFlat    | lists = sqrt(N)          | Good balance of speed and accuracy |
-| > 100,000       | HNSW       | m=16, ef_construction=64 | Faster queries, higher memory      |
-
-**Recommended Index (MVP scale):**
-
-See [Index Strategies](#index-strategies) for the IVFFlat index definition. The index is now on `pattern_chunks.embedding`, not `patterns.embedding`.
+**Index:** `idx_pattern_chunks_embedding`, HNSW with `vector_cosine_ops` on `pattern_chunks.embedding`. HNSW was chosen over IVFFlat because it builds correctly on an empty table (IVFFlat needs existing rows for its centroids). 2000 dimensions is the maximum pgvector indexes support for the `vector` type.
 
 **Similarity Search Query:**
 
+The Admin API (`GET /v1/api/patterns/search`) and the MCP `search_patterns` tool both run this query from their chunk repositories. The API's version selects the extra columns shown; the MCP version selects `pattern_id, name, tags, section_title, content, similarity`.
+
 ```sql
--- search_patterns: chunk-level semantic search
--- Parameters:
---   $1 = query embedding vector
---   $2 = similarity threshold (default 0.5)
---   $3 = result limit (default 10, max 50)
---   $4 = tags filter (JSONB array or NULL)
---   $5 = language filter (text or NULL)
---   $6 = domain filter (text or NULL)
-SELECT pc.id, pc.pattern_id, p.name AS pattern_name,
-       p.entity_type, p.language, p.domain, p.tags,
+-- Fixed parameters:
+--   $1 = query embedding vector (2000 dims)
+--   $2 = minimum similarity (MCP default 0.5)
+--   $3 = language filter ('' disables)
+--   $4 = domain filter ('' disables)
+SELECT pc.id, pc.pattern_id, p.name, p.entity_type, p.language, p.domain, p.tags,
        pc.section_title, pc.chunk_index, pc.content,
-       1 - (pc.embedding <=> $1::vector) AS similarity
+       1 - (pc.embedding <=> $1) AS similarity
 FROM pattern_chunks pc
 JOIN patterns p ON p.id = pc.pattern_id
-WHERE pc.enrichment_status = 'enriched'
-  AND 1 - (pc.embedding <=> $1::vector) > $2
-  AND ($4::jsonb IS NULL OR p.tags @> $4::jsonb)
-  AND ($5::text IS NULL OR p.language = $5)
-  AND ($6::text IS NULL OR p.domain = $6)
-ORDER BY pc.embedding <=> $1::vector
-LIMIT $3;
+WHERE pc.embedding IS NOT NULL
+  AND pc.enrichment_status = 'enriched'
+  AND 1 - (pc.embedding <=> $1) >= $2
+  AND ($3::text = '' OR p.language = $3)
+  AND ($4::text = '' OR p.domain = $4)
+  -- optional, appended only when set:
+  --   AND pc.pattern_id = ANY($n)      (API only)
+  --   AND p.tags @> $n::jsonb          (all requested tags)
+ORDER BY pc.embedding <=> $1
+LIMIT $n;  -- default 10
 ```
 
 #### Neo4j Graph Model
 
 **Node Labels:**
 
-| Label   | Properties                                                         | Source                      |
-| ------- | ------------------------------------------------------------------ | --------------------------- |
-| Pattern | `id` (UUID), `name`, `description`                                 | Mirrored from Postgres      |
-| Agent   | `name`                                                             | Mirrored from Postgres      |
-| Concept | `name` (normalized lowercase), `type` (technology/practice/domain) | Extracted during enrichment |
+| Label | Properties | Written by |
+| --- | --- | --- |
+| Pattern | `id` (UUID string), `name`, `description`, `updatedAt` | Enricher (`MERGE` on `id`); deleted by the Admin API on pattern delete |
+| Concept | `name` (lowercase, trimmed), `type` (technology/practice/domain), `createdAt` | Enricher (`MERGE` on `name`; `type` is overwritten on every merge) |
+| Agent | `name` | Nobody; label reserved in the schema |
 
 **Relationship Types:**
 
-| Type           | From    | To      | Properties                                          |
-| -------------- | ------- | ------- | --------------------------------------------------- |
-| `RELEVANT_FOR` | Pattern | Agent   | `relevance` (float, 0.0-1.0)                        |
-| `MENTIONED_IN` | Concept | Pattern | --                                                  |
-| `RELATED_TO`   | Pattern | Pattern | `similarity` (float, computed from shared concepts) |
+| Type | From | To | Properties |
+| --- | --- | --- | --- |
+| `MENTIONED_IN` | Concept | Pattern | -- |
+| `RELATED_TO` | Pattern | Pattern | `similarity` (float, from shared concepts), `updatedAt` |
+| `RELEVANT_FOR` | Pattern | Agent | Reserved; not created by any service |
 
-The enrichment pipeline assigns one of three concept types to each extracted entity: `technology` (tools, languages, frameworks), `practice` (methodologies, patterns, approaches), or `domain` (problem areas, business contexts). Type assignment is performed by the LLM during the entity extraction step.
+The enrichment pipeline assigns one of three concept types to each extracted entity: `technology` (tools, languages, frameworks), `practice` (methodologies, patterns, approaches), or `domain` (problem areas, business contexts). Type assignment is performed by the LLM (`openai.extraction_model`, default `gpt-4o-mini`) during the entity extraction step, which runs on the full pattern content.
+
+`RELATED_TO` edges are created in one direction (from the pattern being enriched) and always read without direction. `similarity = sharedConcepts / max(conceptsA, conceptsB)`, and only edges with `similarity >= enrichment.related_to_min_similarity` (default 0.3) are created.
 
 **Constraints and Indexes:**
 
-| Constraint/Index           | Label   | Property              | Type       |
-| -------------------------- | ------- | --------------------- | ---------- |
-| `pattern_id_unique`        | Pattern | `id`                  | Uniqueness |
-| `agent_name_unique`        | Agent   | `name`                | Uniqueness |
-| `concept_name_unique`      | Concept | `name`                | Uniqueness |
-| `pattern_name_index`       | Pattern | `name`                | Property   |
-| `concept_type_index`       | Concept | `type`                | Property   |
-| `pattern_content_fulltext` | Pattern | `name`, `description` | Full-text  |
-| `concept_name_fulltext`    | Concept | `name`                | Full-text  |
+| Constraint/Index | Label | Property | Type |
+| --- | --- | --- | --- |
+| `pattern_id_unique` | Pattern | `id` | Uniqueness |
+| `agent_name_unique` | Agent | `name` | Uniqueness |
+| `concept_name_unique` | Concept | `name` | Uniqueness |
+| `pattern_name_index` | Pattern | `name` | Property |
+| `concept_type_index` | Concept | `type` | Property |
+| `pattern_content_fulltext` | Pattern | `name`, `description` | Full-text |
+| `concept_name_fulltext` | Concept | `name` | Full-text |
 
-<!-- Full Cypher DDL: See data-storage.md in mnemonic/docs/design/ for constraint and index definitions. -->
+The services' Cypher does not use the full-text indexes today.
 
 **Graph Data Flow:**
 
 ```mermaid
 flowchart TD
-    subgraph "Postgres (Source of Truth)"
-        PG_AGENT[agents table]
-        PG_PATTERN[patterns table]
-        PG_ASSOC[pattern_agent_associations]
+    subgraph PGS["Postgres (Source of Truth)"]
+        PG_PATTERN[patterns]
+        PG_CHUNKS[pattern_chunks]
     end
 
-    subgraph "Neo4j (Graph Projection)"
-        NEO_AGENT[Agent nodes]
+    subgraph NEOS["Neo4j (Graph Projection)"]
         NEO_PATTERN[Pattern nodes]
         NEO_CONCEPT[Concept nodes]
-        NEO_PATTERN -->|"RELEVANT_FOR"| NEO_AGENT
         NEO_CONCEPT -->|"MENTIONED_IN"| NEO_PATTERN
-        NEO_PATTERN <-->|"RELATED_TO"| NEO_PATTERN
+        NEO_PATTERN -->|"RELATED_TO"| NEO_PATTERN
     end
 
-    PG_AGENT -->|"Sync on create/update"| NEO_AGENT
-    PG_PATTERN -->|"Sync on enrichment"| NEO_PATTERN
-    PG_ASSOC -->|"Create relationships"| NEO_AGENT
+    PG_CHUNKS -->|"all chunks enriched"| ENR["Enricher SyncPattern<br/>(one write tx)"]
+    PG_PATTERN -->|"name, description, content"| ENR
+    ENR --> NEO_PATTERN
+    ENR --> NEO_CONCEPT
+    API["Admin API delete"] -->|"DETACH DELETE + orphaned concepts"| NEO_PATTERN
 ```
 
 ### Data Flow Patterns
@@ -475,26 +418,7 @@ flowchart TD
 
 ##### Agent Create/Update
 
-```mermaid
-sequenceDiagram
-    participant ADMIN as Admin Tool
-    participant API as Mnemonic Admin API
-    participant PG as Postgres
-    participant NEO as Neo4j
-
-    ADMIN->>API: POST/PUT /v1/api/agents
-    API->>PG: BEGIN TRANSACTION
-    API->>PG: INSERT/UPDATE agents
-    API->>PG: COMMIT
-
-    alt Neo4j sync (best-effort)
-        API->>NEO: MERGE (a:Agent {name: $name})
-    else Neo4j unavailable
-        Note over API,NEO: Log warning, continue
-    end
-
-    API-->>ADMIN: 201 Created / 200 OK
-```
+Not implemented. There is no agents endpoint or agent repository in any current service, and nothing writes `Agent` nodes to Neo4j.
 
 ##### Pattern Delete (Admin API)
 
@@ -506,21 +430,18 @@ sequenceDiagram
     participant NEO as Neo4j
 
     CLIENT->>API: DELETE /v1/api/patterns/:id
-    API->>PG: BEGIN
-    API->>PG: DELETE FROM patterns WHERE id = $id (CASCADE)
-    PG-->>API: Deleted (associations + jobs cascaded)
-    API->>PG: COMMIT
+    API->>PG: DELETE FROM patterns WHERE id = $1 (single statement)
+    PG-->>API: Deleted (chunks + jobs cascaded)
     alt Neo4j available
-        API->>NEO: MATCH (p:Pattern {id: $id}) DETACH DELETE p
-        API->>NEO: MATCH (c:Concept) WHERE NOT (c)-[:MENTIONED_IN]-() DELETE c
-        NEO-->>API: Cleanup complete
-    else Neo4j unavailable
-        Note over API,NEO: Log failure for reconciliation
+        API->>NEO: MATCH (p:Pattern {id}) collect its concepts,<br/>DETACH DELETE p, delete those concepts<br/>no other pattern mentions (one statement)
+        NEO-->>API: OK
+    else Neo4j error
+        Note over API,NEO: Logged as a warning ("neo4j sync failed"),<br/>no retry or reconciliation
     end
     API-->>CLIENT: 204 No Content
 ```
 
-The Postgres CASCADE removes `pattern_agent_associations` and `enrichment_jobs` rows automatically. Neo4j cleanup is best-effort: orphaned Concept nodes (concepts with no remaining `MENTIONED_IN` edges after the Pattern node is removed) are also deleted.
+The Postgres CASCADE removes the pattern's `pattern_chunks` and `enrichment_jobs` rows automatically. The Neo4j cleanup only touches the deleted pattern's own concepts, not a graph-wide orphan sweep.
 
 ##### Pattern Create with Enrichment
 
@@ -535,30 +456,35 @@ sequenceDiagram
     participant NEO as Neo4j
 
     ADMIN->>API: POST /v1/api/patterns
-    API->>PG: INSERT pattern (status: pending)
-    API->>MQ: Publish enrichment job
+    API->>API: Split content at [//]: pattern markers
+    API->>PG: BEGIN
+    API->>PG: INSERT patterns (status: pending)
+    API->>PG: INSERT pattern_chunks (one statement, unnest)
+    API->>PG: INSERT enrichment_jobs, one pending job per chunk
+    API->>PG: COMMIT
+    API->>MQ: Publish each job id (failure logged, job stays pending)
     API-->>ADMIN: 202 Accepted
 
-    Note over ENRICHER,MQ: Async Processing
-    MQ-->>ENRICHER: Consume job message
-    ENRICHER->>PG: Load pattern content
-    ENRICHER->>ENRICHER: Split content at H2 headings into chunks
-    loop For each chunk
-        ENRICHER->>OPENAI: Generate chunk embedding
-        OPENAI-->>ENRICHER: vector(2000)
-        ENRICHER->>PG: Store chunk + embedding in pattern_chunks
+    Note over ENRICHER,MQ: Async, per chunk job
+    MQ-->>ENRICHER: Consume {job_id}
+    ENRICHER->>PG: Start job (pending -> processing)
+    ENRICHER->>PG: Load chunk + pattern name, tags
+    ENRICHER->>OPENAI: Embed chunk (text-embedding-3-large, 2000 dims)
+    OPENAI-->>ENRICHER: vector(2000)
+    ENRICHER->>PG: UPDATE pattern_chunks SET embedding, status=enriched
+    ENRICHER->>PG: Check progress of all the pattern's chunks
+    alt any chunk failed
+        ENRICHER->>PG: UPDATE patterns SET status=failed
+    else all chunks enriched (last job)
+        ENRICHER->>PG: Load pattern content
+        ENRICHER->>OPENAI: Extract concepts (gpt-4o-mini)
+        ENRICHER->>NEO: SyncPattern, one write tx:<br/>MERGE Pattern, prune stale MENTIONED_IN,<br/>MERGE Concepts + MENTIONED_IN,<br/>delete + recompute RELATED_TO
+        ENRICHER->>PG: UPDATE patterns SET status=enriched
     end
-    ENRICHER->>PG: UPDATE pattern (status: enriched)
-
-    alt Neo4j available
-        ENRICHER->>NEO: MERGE (p:Pattern {id: $id}) SET p.name = $name
-        ENRICHER->>NEO: Extract concepts and create Concept nodes
-        ENRICHER->>NEO: CREATE (c)-[:MENTIONED_IN]->(p) for each concept
-        NEO-->>ENRICHER: OK
-    else Neo4j unavailable
-        Note over ENRICHER,NEO: Log warning; reconciliation will retry
-    end
+    ENRICHER->>PG: UPDATE enrichment_jobs SET status=completed
 ```
+
+If the embedding, the concept extraction or the graph sync fails, the job is marked failed and retried after `enrichment.retry_delay` until `max_attempts`; a failed embedding also marks the chunk and the pattern `failed`. Update follows the same path, except the API first resets the pattern to `pending` and replaces all chunks.
 
 #### Read Paths
 
@@ -567,38 +493,44 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant CLIENT as Client
-    participant API as Mnemonic API
-    participant EMBED as Embedding Service
-    participant PGV as PGVector
-    participant PG as Postgres
+    participant SVC as Admin API or MCP Server
+    participant OPENAI as OpenAI
+    participant PG as Postgres + PGVector
+    participant NEO as Neo4j
 
-    CLIENT->>API: GET /v1/search?q=retry+pattern
-    API->>EMBED: Generate embedding for query
-    EMBED-->>API: query_vector(2000)
-    API->>PGV: SELECT * WHERE embedding <=> query_vector (IVFFlat index)
-    PGV-->>API: Top-K similar chunks with similarity scores
-    API->>PG: JOIN with patterns table for metadata
-    PG-->>API: Full pattern records with chunk context
-    API-->>CLIENT: 200 OK [{ pattern_id, name, chunk, similarity }, ...]
+    CLIENT->>SVC: GET /v1/api/patterns/search?q=... or search_patterns tool
+    SVC->>OPENAI: Embed query
+    OPENAI-->>SVC: vector(2000)
+    SVC->>PG: One query: pattern_chunks JOIN patterns,<br/>ORDER BY embedding <=> $1 (HNSW)
+    PG-->>SVC: Top-K chunks with pattern metadata + similarity
+    opt MCP only: graph expansion
+        SVC->>NEO: RELATED_TO for the top 3 seed patterns (5 each)
+        NEO-->>SVC: Related patterns + shared concepts
+        SVC->>PG: SELECT id, name, tags, language, domain FROM patterns WHERE id = ANY($1)
+    end
+    SVC-->>CLIENT: Ranked chunks (+ graph matches for MCP)
 ```
 
 **Pattern Relationship Traversal (Neo4j):**
 
+`GET /v1/api/patterns/:id` adds a graph context when the pattern is `enriched`; the MCP server's `find_related_patterns` and `get_pattern` tools use the same queries.
+
 ```mermaid
 sequenceDiagram
     participant CLIENT as Client
-    participant API as Mnemonic API
+    participant API as Admin API
     participant NEO as Neo4j
 
-    CLIENT->>API: GET /v1/patterns/:id/related?depth=2
-    API->>NEO: MATCH (p:Pattern {id: $id})-[:RELEVANT_FOR]->(a:Agent)
-    NEO-->>API: Agent list
-    API->>NEO: MATCH (c:Concept)-[:MENTIONED_IN]->(p)
-    NEO-->>API: Concept list
-    API->>NEO: MATCH (p)-[:RELATED_TO]->(other:Pattern)
-    NEO-->>API: Related pattern list
-    API-->>CLIENT: 200 OK { agents: [...], concepts: [...], related_patterns: [...] }
+    CLIENT->>API: GET /v1/api/patterns/:id
+    API->>API: Load pattern from Postgres
+    opt enrichment_status = enriched
+        API->>NEO: One read tx:<br/>MATCH (p)-[r:RELATED_TO]-(p2) + shared concepts, LIMIT 10<br/>MATCH (c:Concept)-[:MENTIONED_IN]->(p)
+        NEO-->>API: Related patterns + concepts
+    end
+    API-->>CLIENT: 200 OK { ..., graph: { related_patterns, concepts } }
 ```
+
+If the graph query fails, the pattern is returned without `graph` and a warning is logged.
 
 ### Consistency and Integrity
 
@@ -606,50 +538,53 @@ sequenceDiagram
 
 #### Transaction Handling
 
-**Postgres:** All writes use explicit transactions (`BEGIN`/`COMMIT`). Each service (Admin API, Enricher) maintains its own connection pool. Idle transactions timeout after 1 minute (prevent connection leak).
+**Postgres:** Multi-statement writes use explicit transactions: pattern create and update (pattern row, chunks and jobs commit together). Single-statement writes (pattern delete, every enricher update) run on the pool without an explicit transaction. Each service maintains its own `pgxpool` connection pool.
 
-**Neo4j:** Best-effort writes (see [Cross-Database Consistency](#cross-database-consistency)). Failures do not block Postgres commits.
+**Neo4j:** The enricher's `SyncPattern` runs all its statements in one managed write transaction, so a pattern's graph is never left half-synced. The Admin API reads in managed read transactions and deletes with one auto-committed statement.
 
-**Application:** Retries are *not* automatic; caller decides retry strategy. Exceptions propagate; logging includes request ID and user context.
+**Application:** Database calls are not retried in the request path; the Neo4j driver's managed transactions retry transient errors. Enrichment failures are retried through the job table.
 
 #### Cross-Database Consistency
 
 **Write Ordering:**
 
-1. **Postgres first** (source of truth). If Postgres fails, caller gets error; Neo4j is unchanged.
-2. **Neo4j second** (best-effort). Failures are logged but do not fail the overall request.
+1. **Postgres first** (source of truth). If Postgres fails, the caller gets an error and Neo4j is unchanged.
+2. **Neo4j second.** For enrichment, a graph failure fails the job and is retried; the pattern stays non-`enriched` until the graph sync succeeds. For pattern delete, a graph failure is logged and not retried.
 
 **Failure Modes:**
 
-| Scenario                              | Outcome                                                      |
-| ------------------------------------- | ------------------------------------------------------------ |
-| Postgres succeeds, Neo4j unavailable  | Postgres state is committed; Neo4j is reconciled later      |
-| Postgres fails                        | Entire request fails; Neo4j unchanged                        |
-| Concurrent delete (Postgres vs Neo4j) | Postgres cascade deletes rows; Neo4j cleanup is best-effort |
+| Scenario | Outcome |
+| --- | --- |
+| Enricher: Postgres succeeds, Neo4j unavailable | Job marked failed and retried after `retry_delay`; after `max_attempts` the job stays `failed` |
+| API delete: Postgres succeeds, Neo4j unavailable | Pattern gone from Postgres; its `Pattern` node and concepts remain in Neo4j (stale until manually cleaned) |
+| RabbitMQ publish fails after commit | Job stays `pending`; the enricher's retry sweep claims it after the 2-minute grace |
+| Postgres fails | Entire request fails; Neo4j unchanged |
 
-**Reconciliation:** A background job periodically reconciles Postgres and Neo4j; see [Advanced Consistency](#advanced-consistency).
+**Reconciliation:** Not implemented. There is no background job comparing Postgres and Neo4j; see [Advanced Consistency](#advanced-consistency) for the planned design.
+
+**Known drift:** `SyncPattern` removes `MENTIONED_IN` edges to concepts a pattern no longer mentions but does not delete concepts left with no edges, so orphaned `Concept` nodes can accumulate after re-enrichment.
 
 #### Constraint Enforcement
 
 **PostgreSQL:**
 
-- Foreign keys with CASCADE delete enforce referential integrity.
-- NOT NULL constraints on required columns.
-- UNIQUE constraints on agent names, skill names.
-- Partial unique index prevents duplicate pending/processing enrichment jobs per pattern.
+- Foreign keys with CASCADE delete enforce referential integrity (`pattern_chunks` and `enrichment_jobs` cascade from `patterns`; jobs cascade from chunks).
+- NOT NULL constraints on required columns; `tags` and `related_patterns` must be JSON arrays.
+- UNIQUE constraint on `patterns.name`.
+- `enrichment_jobs_target_exclusive`: a job targets exactly one of a pattern or a chunk.
+- Partial unique indexes prevent duplicate pending/processing enrichment jobs per pattern and per chunk.
 
-**Application:**
+**Application (Admin API handler validation):**
 
-- Validate input schema before INSERT/UPDATE (e.g., pattern entity_type must be one of 'decision', 'example', 'guide', 'snippet').
-- Validate tags array length (max 10 tags per pattern).
-- Validate language from a whitelist ('go', 'python', 'sql', etc.) or NULL.
+- `name` and `entity_type`: required, kebab-case `^[a-z][a-z0-9-]*$`, max 128 and 100 chars.
+- `language` and `domain`: required, kebab-case, max 64 chars, and must appear in `vocabulary.languages` / `vocabulary.domains`.
+- `content`: required, max 100,000 bytes. `description`: max 500 chars. `tags`: max 20.
 
 **Neo4j:**
 
-<!-- See data-storage.md in mnemonic/docs/design/ for FK definitions. -->
-
 - Uniqueness constraints on Pattern.id, Agent.name, Concept.name enforce node identity.
-- All relationships are created via conditional MERGE to prevent duplicates.
+- `Pattern`, `Concept` and `MENTIONED_IN` are written with `MERGE`; `RELATED_TO` edges are deleted and re-created with `CREATE` on every sync.
+- The enricher rejects a nil pattern ID or empty name before writing (property existence constraints are Enterprise-only and not applied).
 
 ### Migration Strategy
 
@@ -657,36 +592,13 @@ sequenceDiagram
 
 #### Schema Versioning
 
-**Migration Tool:** Docker entrypoint scripts. PostgreSQL migrations are `.up.sql` files applied via `docker-entrypoint-initdb.d` at image build time. Neo4j migrations are `.cypher` files applied via `cypher-shell` during image build. Mnemonic never manages DDL or runs migrations directly. See [dbs ADR-001](../dbs/02-architectural-decisions.md) for the rationale behind this approach.
+**Migration Tool:** Docker entrypoint scripts. PostgreSQL migrations are `.up.sql` files applied via `docker-entrypoint-initdb.d` when the `mnemonic-postgres` container first starts. Neo4j migrations are `.cypher` files applied via `cypher-shell` during image build. Mnemonic services never manage DDL or run migrations. See [dbs ADR-001](../dbs/02-architectural-decisions.md) for the rationale behind this approach.
 
-**Directory Structure:**
-
-```text
-src/migrations/
-└── postgres/
-    ├── 000001_extensions.up.sql
-    ├── 000001_extensions.down.sql
-    ├── 000002_create_agents.up.sql
-    ├── 000002_create_agents.down.sql
-    ├── 000003_create_patterns.up.sql
-    ├── 000003_create_patterns.down.sql
-    ├── 000004_create_pattern_agent_associations.up.sql
-    ├── 000004_create_pattern_agent_associations.down.sql
-    ├── 000005_create_enrichment_jobs.up.sql
-    ├── 000005_create_enrichment_jobs.down.sql
-    ├── 000006_create_performance_indexes.up.sql
-    ├── 000006_create_performance_indexes.down.sql
-    ├── 000007_create_skills.up.sql
-    ├── 000007_create_skills.down.sql
-    ├── 000008_create_skill_files.up.sql
-    ├── 000008_create_skill_files.down.sql
-    ├── 000009_pattern_schema_chunks.up.sql
-    └── 000009_pattern_schema_chunks.down.sql
-```
+**Location:** The migration files live in the separate `mnemonic-dbs` repository (`src/postgres/000001_*.up.sql` to `000010_*.up.sql`, `src/neo4j/001_*.cypher` to `003_*.cypher`). There are no `.down.sql` files. See [mnemonic-dbs Deployment Architecture](../dbs/05-deployment-architecture.md).
 
 **Version Tracking:**
 
-Migration state is implicit in the Docker image tag — each image version contains a known set of migrations applied at build time. Rollback is accomplished by pulling a prior image tag.
+Migration state is implicit in the Docker image tag — each image version contains a known set of migrations. The services currently pin `mnemonic-postgres:v1.0.0-dev` and `mnemonic-neo4j:v1.0.0-dev`. Rollback is accomplished by pulling a prior image tag.
 
 #### Forward-Compatible Migrations
 
@@ -696,21 +608,21 @@ Migration state is implicit in the Docker image tag — each image version conta
 
    ```sql
    -- Good: New column is nullable
-   ALTER TABLE agents ADD COLUMN metadata JSONB;
+   ALTER TABLE patterns ADD COLUMN source_url TEXT;
 
    -- Good: New column has default
-   ALTER TABLE patterns ADD COLUMN version INTEGER DEFAULT 1;
+   ALTER TABLE patterns ADD COLUMN priority INTEGER DEFAULT 0;
    ```
 
 2. **Never rename columns directly**
 
    ```sql
    -- Bad: Breaks running application
-   ALTER TABLE agents RENAME COLUMN name TO agent_name;
+   ALTER TABLE patterns RENAME COLUMN name TO pattern_name;
 
    -- Good: Add new column, migrate data, deprecate old
-   ALTER TABLE agents ADD COLUMN agent_name VARCHAR(64);
-   UPDATE agents SET agent_name = name;
+   ALTER TABLE patterns ADD COLUMN pattern_name VARCHAR(255);
+   UPDATE patterns SET pattern_name = name;
    -- Later migration: DROP old column
    ```
 
@@ -723,31 +635,18 @@ Migration state is implicit in the Docker image tag — each image version conta
 
 #### Rollback Procedures
 
-**Down Migration Example:**
-
-```sql
--- 002_add_pattern_version.down.sql
-ALTER TABLE patterns DROP COLUMN IF EXISTS version;
-```
-
-**Rollback Process:**
+No down migrations are maintained. To roll back, point the services at a prior `mnemonic-postgres` / `mnemonic-neo4j` image tag:
 
 ```bash
-# Check current version
-migrate -path src/migrations/postgres -database "$DB_URL" version
-
-# Rollback one version
-migrate -path src/migrations/postgres -database "$DB_URL" down 1
-
-# Rollback to specific version
-migrate -path src/migrations/postgres -database "$DB_URL" goto 5
+docker pull ghcr.io/twistingmercury/mnemonic-postgres:<previous-tag>
+docker pull ghcr.io/twistingmercury/mnemonic-neo4j:<previous-tag>
 ```
 
 **Rollback Safety:**
 
-- Test rollback in staging before production
-- Ensure down migrations are idempotent
-- Data migrations may require manual intervention
+- The images initialize a fresh schema; rolling back an existing data volume to an older image does not undo applied DDL. Treat schema rollback on live data as a restore from backup.
+- Test rollback in staging before production.
+- Data migrations may require manual intervention.
 
 ### Performance Considerations
 
@@ -755,96 +654,83 @@ migrate -path src/migrations/postgres -database "$DB_URL" goto 5
 
 #### Index Strategies
 
-**PostgreSQL Indexes:**
+**PostgreSQL Indexes** (defined in mnemonic-dbs; the "Used by" column says which service query benefits):
 
-| Index                                | Table                      | Column(s)                              | Type                | Purpose                                               |
-| ------------------------------------ | -------------------------- | -------------------------------------- | ------------------- | ----------------------------------------------------- |
-| `idx_pattern_chunks_embedding`       | pattern_chunks             | `embedding`                            | IVFFlat (lists=100) | Chunk vector search                                   |
-| `idx_patterns_language`              | patterns                   | `language`                             | btree               | Metadata filtering                                    |
-| `idx_patterns_domain`                | patterns                   | `domain`                               | btree               | Metadata filtering                                    |
-| `idx_patterns_entity_type`           | patterns                   | `entity_type`                          | btree               | Metadata filtering                                    |
-| `idx_patterns_enriched`              | patterns                   | `id` WHERE status='enriched'           | btree (partial)     | Filter to searchable patterns                         |
-| `idx_patterns_tags`                  | patterns                   | `tags`                                 | GIN                 | Tag containment queries                               |
-| `idx_patterns_search`                | patterns                   | `to_tsvector(name \|\| description)`   | GIN                 | Full-text search                                      |
-| `idx_pattern_agent_assoc_agent`      | pattern_agent_associations | `agent_id`                             | btree               | FK join performance                                   |
-| `idx_pattern_agent_assoc_pattern`    | pattern_agent_associations | `pattern_id`                           | btree               | FK join performance                                   |
-| `idx_enrichment_jobs_pattern`        | enrichment_jobs            | `pattern_id`                           | btree               | FK join performance                                   |
-| `idx_enrichment_jobs_pending`        | enrichment_jobs            | `scheduled_for` WHERE status='pending' | btree (partial)     | Worker job polling                                    |
-| `idx_enrichment_jobs_processing`     | enrichment_jobs            | `started_at` WHERE status='processing' | btree (partial)     | Timeout detection                                     |
-| `idx_enrichment_jobs_unique_pending` | enrichment_jobs            | `pattern_id` WHERE status IN ('pending','processing') | unique (partial) | Prevent duplicate pending/processing jobs per pattern |
-| `idx_agents_definition`              | agents                     | `definition`                           | GIN                 | JSONB queries                                         |
-| `idx_skills_definition`              | skills                     | `definition`                           | GIN                 | JSONB queries                                         |
-| `idx_skill_files_skill_id`           | skill_files                | `skill_id`                             | btree               | FK lookup                                             |
-
-<!-- Full index DDL: See data-storage.md in mnemonic/docs/design/ for CREATE INDEX statements. -->
+| Index | Table | Column(s) | Type | Used by |
+| --- | --- | --- | --- | --- |
+| `idx_pattern_chunks_embedding` | pattern_chunks | `embedding` | HNSW (`vector_cosine_ops`) | Chunk similarity search (API, MCP) |
+| `idx_pattern_chunks_pattern_id` | pattern_chunks | `pattern_id` | btree | Chunk list/delete by pattern; enricher progress check |
+| `idx_patterns_language` | patterns | `language` | btree | List filter |
+| `idx_patterns_domain` | patterns | `domain` | btree | List filter |
+| `idx_patterns_entity_type` | patterns | `entity_type` | btree | List filter |
+| `idx_patterns_enriched` | patterns | `id` WHERE status='enriched' | btree (partial) | None today: the repository supports a status filter but the list endpoint does not expose it |
+| `idx_patterns_tags` | patterns | `tags` | GIN | Tag filters (`?&` in list, `@>` in search) |
+| `idx_patterns_search` | patterns | `to_tsvector(name \|\| description)` | GIN | Full-text `search` filter in list |
+| `idx_enrichment_jobs_pending` | enrichment_jobs | `scheduled_for` WHERE status='pending' | btree (partial) | Retry sweep (`ClaimDue`) |
+| `idx_enrichment_jobs_processing` | enrichment_jobs | `started_at` WHERE status='processing' | btree (partial) | Stale reclaim |
+| `idx_enrichment_jobs_unique_pending_chunk` | enrichment_jobs | `chunk_id` WHERE status IN ('pending','processing') | unique (partial) | Prevent duplicate jobs per chunk |
+| `idx_enrichment_jobs_unique_pending` | enrichment_jobs | `pattern_id` WHERE status IN ('pending','processing') | unique (partial) | Prevent duplicate legacy jobs per pattern |
+| `idx_enrichment_jobs_pattern` | enrichment_jobs | `pattern_id` | btree | FK lookups |
+| `idx_agents_definition`, `idx_skills_definition`, `idx_skill_files_skill_id`, `idx_pattern_agent_assoc_agent` | agents, skills, skill_files, pattern_agent_associations | various | GIN / btree | Reserved tables; unused |
 
 #### Query Optimization
 
-**Pattern Similarity Query:**
+**Chunk Similarity Query:**
 
 ```sql
--- Use index for similarity search
-SET ivfflat.probes = 10;  -- Increase for better recall
+-- HNSW search breadth (pgvector default 40); raise for better recall
+SET hnsw.ef_search = 100;
 
 EXPLAIN ANALYZE
 SELECT pc.id, pc.pattern_id, pc.section_title, pc.content,
-       1 - (pc.embedding <=> $1::vector) AS similarity
+       1 - (pc.embedding <=> $1) AS similarity
 FROM pattern_chunks pc
-WHERE pc.enrichment_status = 'enriched'
-ORDER BY pc.embedding <=> $1::vector
+JOIN patterns p ON p.id = pc.pattern_id
+WHERE pc.embedding IS NOT NULL
+  AND pc.enrichment_status = 'enriched'
+ORDER BY pc.embedding <=> $1
 LIMIT 5;
 
 -- Expected: Index Scan using idx_pattern_chunks_embedding
 ```
 
-**Skills List Query:**
+The services do not set `hnsw.ef_search`; the pgvector default applies. Because the similarity threshold and metadata filters are applied after the index scan, heavy filtering can return fewer than `LIMIT` rows.
 
-```sql
--- Optimized list query (name + definition JSONB)
-EXPLAIN ANALYZE
-SELECT id, name, definition
-FROM skills
-WHERE definition @> '{"tags": ["go"]}'::jsonb;
-
--- Expected: Sequential scan (small table) or GIN index on definition
-```
+**Pattern List Query:** The API's list query selects every column except `content` and uses `COUNT(*) OVER()` for the total, so one round trip returns a page plus the total count.
 
 #### Connection Pool Configuration
 
-**PostgreSQL Connection Pool Settings:**
+**PostgreSQL Connection Pool Settings** (defaults in all three services' `config/defaults.go`):
 
-| Setting                 | Recommended Value | Description                                      |
-| ----------------------- | ----------------- | ------------------------------------------------ |
-| Max Connections         | 25                | Maximum pool size based on expected concurrency  |
-| Min Connections         | 5                 | Keep-alive connections for baseline traffic      |
-| Max Connection Lifetime | 1 hour            | Recycle connections to handle server-side limits |
-| Max Idle Time           | 30 minutes        | Release idle connections to conserve resources   |
-| Health Check Period     | 1 minute          | Verify connection liveness                       |
+| Setting | Config key | Default | Description |
+| --- | --- | --- | --- |
+| Max Connections | `database.postgres.max_open_conns` | 25 | `pgxpool` `MaxConns` |
+| Min Connections | `database.postgres.max_idle_conns` | 5 | Mapped to `pgxpool` `MinConns` |
+| Max Connection Lifetime | `database.postgres.conn_max_lifetime` | 5m | Recycle connections |
 
 **Neo4j Connection Pool Settings:**
 
-| Setting                 | Recommended Value | Description                                |
-| ----------------------- | ----------------- | ------------------------------------------ |
-| Max Pool Size           | 50                | Maximum concurrent connections             |
-| Max Connection Lifetime | 1 hour            | Connection recycling period                |
-| Acquisition Timeout     | 30 seconds        | Maximum wait time for available connection |
+| Setting | Config key | Default | Description |
+| --- | --- | --- | --- |
+| Max Pool Size | `database.neo4j.max_connection_pool_size` | 50 | Maximum concurrent connections |
+| Acquisition Timeout | `database.neo4j.connection_acquisition_timeout` | 60s | Maximum wait time for available connection |
 
 **Pool Sizing Guidelines:**
 
-| Deployment    | Postgres Pool | Neo4j Pool | Rationale                    |
-| ------------- | ------------- | ---------- | ---------------------------- |
-| Development   | 5             | 10         | Minimal resources            |
-| Single Pod    | 25            | 25         | Balanced for typical load    |
-| Multi-Pod (3) | 15 per pod    | 15 per pod | Total 45, below database max |
+| Deployment | Postgres Pool | Neo4j Pool | Rationale |
+| --- | --- | --- | --- |
+| Development | 5 | 10 | Minimal resources |
+| Single Pod | 25 | 25 | Balanced for typical load |
+| Multi-Pod (3) | 15 per pod | 15 per pod | Total 45, below database max |
 
 ### Key Takeaways
 
 [Back to Table of Contents](#table-of-contents)
 
 - **Polyglot persistence** - Each database chosen for specific strengths (Postgres for ACID, PGVector for vectors, Neo4j for graphs)
-- **Postgres is source of truth** - All primary data lives in Postgres; other databases contain projections
-- **Eventual consistency for graphs** - Neo4j sync is best-effort; failures logged and retried
-- **Enrichment is asynchronous** - Pattern processing happens in background to avoid API latency
+- **Postgres is source of truth** - All primary data lives in Postgres; Neo4j holds a projection built by the enricher
+- **Clear write ownership** - The API writes patterns, chunks and jobs; the enricher writes embeddings, statuses and the graph; the MCP server only reads
+- **Enrichment is asynchronous and durable** - Jobs live in Postgres; RabbitMQ is a delivery hint, and the retry sweep recovers lost messages
 - **Stateless services** - All state in external databases enables independent horizontal scaling of MCP Server, Admin API, and Enricher
 - **Forward-compatible migrations** - Schema changes designed for zero-downtime deployments
 - **Defense in depth** - Constraints at database level, validation at application level
@@ -859,20 +745,22 @@ The retention policies below apply to the data model defined in [MVP: Data Model
 
 #### Data Retention Policies
 
-| Data Type                   | Retention  | Rationale                            |
-| --------------------------- | ---------- | ------------------------------------ |
-| Agents                      | Indefinite | Active configuration, rarely deleted |
-| Patterns                    | Indefinite | Knowledge base grows over time       |
-| Skills                      | Indefinite | Reusable tooling definitions         |
-| Enrichment Jobs (completed) | 7 days     | Debugging, can be recreated          |
-| Enrichment Jobs (failed)    | 30 days    | Root cause analysis                  |
+| Data Type | Retention | Rationale |
+| --- | --- | --- |
+| Agents | Indefinite | Active configuration, rarely deleted |
+| Patterns | Indefinite | Knowledge base grows over time |
+| Skills | Indefinite | Reusable tooling definitions |
+| Enrichment Jobs (completed) | 7 days | Debugging, can be recreated (implemented: `enrichment.completed_retention`, default 168h) |
+| Enrichment Jobs (failed) | 30 days | Root cause analysis (implemented: `enrichment.failed_retention`, default 720h) |
 
 #### Archival Strategies
 
 **Enrichment Jobs Cleanup:**
 
+Already implemented: the enricher's maintenance loop (every 5 minutes) runs the equivalent of these statements, with the cutoffs taken from `enrichment.completed_retention` and `enrichment.failed_retention`:
+
 ```sql
--- Archive completed jobs older than 7 days
+-- Delete completed jobs older than 7 days
 DELETE FROM enrichment_jobs
 WHERE status = 'completed'
   AND completed_at < NOW() - INTERVAL '7 days';
@@ -902,6 +790,8 @@ CREATE TABLE pattern_history (
 #### Cleanup Procedures
 
 **Orphaned Graph Nodes:**
+
+Not implemented as a sweep. The Admin API already deletes a deleted pattern's orphaned concepts; a periodic sweep would also catch concepts orphaned by re-enrichment and `Pattern` nodes left behind when the API's Neo4j delete failed.
 
 ```cypher
 // Remove Concept nodes with no relationships
@@ -1030,7 +920,7 @@ This section extends the [MVP: Cross-Database Consistency](#cross-database-consi
 
 When a Postgres write succeeds but the Neo4j sync fails (as described in [Cross-Database Consistency](#cross-database-consistency)), a background reconciliation job periodically detects and repairs drift between Postgres (source of truth) and Neo4j. The job:
 
-1. Queries Postgres for agents and patterns modified since the last reconciliation run
+1. Queries Postgres for patterns modified since the last reconciliation run
 2. Compares against corresponding Neo4j nodes
 3. Re-applies any missing MERGE operations for out-of-sync entities
 4. Logs a reconciliation report for observability

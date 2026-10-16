@@ -44,11 +44,32 @@ Your team owns a knowledge base — a collection of patterns that matter to you.
 
 When a pattern is submitted:
 
-1. Mnemonic stores it in PostgreSQL
-2. An enrichment worker reads the pattern and generates a semantic embedding using OpenAI's text-embedding-3-large model
-3. The embedding gets stored in PGVector, a PostgreSQL extension that makes semantic search fast
-4. A Neo4j graph captures relationships between patterns — which patterns are related, which concepts they share
+1. The API stores it in PostgreSQL, splits its content into chunks (one per `[//]: pattern` section), and queues one enrichment job per chunk on RabbitMQ
+2. The enrichment worker (mnemonic-enricher) generates a semantic embedding for each chunk using OpenAI's `text-embedding-3-large` model
+3. The embeddings are stored in PGVector, a PostgreSQL extension that makes semantic search fast
+4. Once every chunk is embedded, the worker asks OpenAI (`gpt-4o-mini`) to extract the pattern's key concepts and writes them to a Neo4j graph, linking patterns that share concepts
 5. Within a few moments, the pattern becomes searchable
+
+```mermaid
+sequenceDiagram
+    participant Admin as Admin / CI
+    participant API as mnemonic-api
+    participant PG as PostgreSQL
+    participant MQ as RabbitMQ
+    participant ENR as mnemonic-enricher
+    participant OAI as OpenAI
+    participant NEO as Neo4j
+    Admin->>API: POST /v1/api/patterns
+    API->>PG: pattern + chunks + jobs (one transaction)
+    API->>MQ: one message per chunk job
+    API-->>Admin: 202 Accepted (pending)
+    MQ->>ENR: job
+    ENR->>OAI: embed chunk
+    ENR->>PG: store embedding
+    ENR->>OAI: extract concepts (after last chunk)
+    ENR->>NEO: concepts + RELATED_TO edges
+    ENR->>PG: status enriched
+```
 
 This happens asynchronously and transparently. You don't need to understand embeddings to use Mnemonic — the system handles that.
 
@@ -58,7 +79,7 @@ This guide series is written for three audiences:
 
 **Developers:** You want to connect Claude Code to your team's Mnemonic instance and start using shared knowledge. See the Quick Start guide.
 
-**Admins:** You deploy and maintain Mnemonic for your team, manage access, load patterns, and oversee the knowledge base. See Setting Up for Your Team.
+**Admins:** You deploy and maintain Mnemonic for your team, load patterns, and oversee the knowledge base. See Setting Up for Your Team.
 
 **Pattern authors:** You write and maintain the patterns your team stores in Mnemonic. See Authoring Patterns and Managing Patterns.
 
@@ -94,13 +115,13 @@ Mnemonic is in **Emerging** status — it works, but the design is still evolvin
 - MCP tool surface for developers
 - Basic REST API for pattern management
 - Graph relationships between patterns
-- Web UI for pattern management
+- Web UI for pattern browsing and import (mnemonic-admin, early)
 
 **Phase 1 limitations:**
 
-- No authentication or authorization (runs in trusted local/team networks only)
-- No versioning or rollback of patterns
-- Limited audit trail
+- No authentication or authorization on the REST API or the MCP endpoint (runs in trusted local/team networks only)
+- No versioning or rollback of patterns (`version` is a free-text label; an update replaces the pattern)
+- No audit trail
 - No complex query language
 
 If you're thinking about adopting Mnemonic for your team, that maturity level should inform your expectations. It's solid for what it does, but it's not a hardened enterprise system. You can run it today, and it will improve.

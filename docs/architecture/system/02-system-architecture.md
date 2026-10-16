@@ -28,24 +28,32 @@
 
 Mnemonic uses a decomposed service architecture with three independent services communicating through a message queue and shared data stores.
 
-| Service | Repository | Port | Role |
-| --- | --- | --- | --- |
-| MCP Server | `mnemonic-mcp` | 8081 | Sole read-only MCP interface for Claude Code |
-| Admin API | `mnemonic-api` | 8080 | REST API for pattern CRUD and administration |
-| Enricher | `mnemonic-enricher` | -- | Standalone worker for async pattern enrichment |
+| Service    | Repository          | Image                                         | Ports                                                           | Role                                           |
+| ---------- | ------------------- | --------------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------- |
+| MCP Server | `mnemonic-mcp`      | `ghcr.io/twistingmercury/mnemonic`            | 8081 `/mcp`, 8080 `/health` `/version`, 9090 `/metrics`         | Sole read-only MCP interface for Claude Code   |
+| Admin API  | `mnemonic-api`      | `ghcr.io/twistingmercury/mnemonic-api`        | 8080 `/v1/api` `/swagger` `/health` `/version`, 9090 `/metrics` | REST API for pattern CRUD and search           |
+| Enricher   | `mnemonic-enricher` | `ghcr.io/twistingmercury/mnemonic-enrichment` | 8080 `/health` `/version`, 9090 `/metrics`                      | Standalone worker for async pattern enrichment |
+
+All three services serve `/health` and `/version` on `server.port` (default 8080) and Prometheus metrics on `observability.metrics.port` (default 9090, path `/metrics`). Only `mnemonic-mcp` listens on 8081 (`mcp.port`).
 
 ```mermaid
-flowchart TB
-  claude["Claude Code"] -->|MCP| mcp["mnemonic MCP server\n:8081"]
-  admin["Admin Tools"] -->|REST| api["mnemonic Admin API\n:8080"]
-  api --> pg[("PostgreSQL + PGVector")]
-  api --> queue[("RabbitMQ")]
-  queue --> enricher["mnemonic Enricher"]
-  enricher --> pg
-  enricher --> neo4j[("Neo4j")]
-  mcp -->|read only| pg
-  mcp -->|read only| neo4j
+flowchart LR
+    CC["Claude Code"] -- "Streamable HTTP<br/>POST /mcp :8081" --> MCP["mnemonic-mcp<br/>(read-only tools)"]
+    Admin["Admin UI / curl"] -- "REST /v1/api :8080" --> API["mnemonic-api"]
+    API -- "write pattern, chunks,<br/>enrichment jobs (one tx)" --> PG[("PostgreSQL<br/>+ pgvector")]
+    API -- "publish job_id<br/>(traceparent header)" --> MQ[["RabbitMQ<br/>enrichment-jobs"]]
+    MQ -- consume --> ENR["mnemonic-enricher"]
+    ENR -- "15s retry sweep<br/>(SKIP LOCKED)" --> PG
+    ENR -- "chunk embeddings,<br/>job and pattern status" --> PG
+    ENR -- "concepts, RELATED_TO" --> NEO[("Neo4j")]
+    ENR & API & MCP -- "embeddings / extraction" --> OAI(["OpenAI<br/>(openai.base_url)"])
+    MCP -- "vector search" --> PG
+    MCP -- "graph traversal" --> NEO
+    API -- "search, read" --> PG
+    API -- "graph read,<br/>delete cleanup" --> NEO
 ```
+
+Only the enricher calls the extraction (chat completion) model; the API and MCP server call the embedding model to vectorize search queries. Every service also reports on OpenAI reachability in `/health`.
 
 This is the MVP 2 topology. For the full evolution from monolith through cloud deployment, see diagrams [01](../../diagrams/01-concept-local-iteration.md) through [05](../../diagrams/05-concept-cloud-iteration.md).
 
@@ -55,59 +63,61 @@ This is the MVP 2 topology. For the full evolution from monolith through cloud d
 
 ### Mnemonic MCP Server
 
-The MCP server (`mnemonic-mcp`, port 8081) exclusively provides the read-only MCP interface for Claude Code to search the team knowledge graph. `mnemonic-api` does not serve MCP or listen on port 8081.
+The MCP server (`mnemonic-mcp`, MCP on port 8081) exclusively provides the read-only MCP interface for Claude Code to search the team knowledge graph. `mnemonic-api` does not serve MCP or listen on port 8081.
 
 **Responsibilities:**
 
 - Expose three MCP tools: `search_patterns`, `find_related_patterns`, `get_pattern`
 - Query PostgreSQL + PGVector for semantic search over pattern chunks
-- Query Neo4j for graph-based pattern relationships
+- Query Neo4j for graph-based pattern relationships (`find_related_patterns`, and graph expansion of `search_patterns` results)
 
 **Key Characteristics:**
 
 - Read-only access to all data stores (no writes to any database)
-- Streamable HTTP transport, stateless
-- Lightweight service (calls embedding API for query vectorization only; no generative inference)
-- No authentication (MVP, local trusted environment)
+- Streamable HTTP transport at `/mcp`, stateless mode, wrapped in `otelhttp` so incoming W3C trace context is continued
+- Lightweight service (calls the embedding API for query vectorization only)
+- No authentication (local, single-user phase)
 
 ### Mnemonic Admin API
 
-The Admin API (`mnemonic-api`, port 8080) provides a REST interface for pattern management and administration. Its operational endpoints, including health, version, metrics, and Swagger, remain part of the API service boundary.
+The Admin API (`mnemonic-api`, port 8080) provides a REST interface for pattern management and search under `/v1/api`, plus Swagger at `/swagger/*any`. Health and version are served on the same port; metrics on port 9090.
 
 **Responsibilities:**
 
-- CRUD operations for patterns and agents
-- Validate and store patterns in PostgreSQL
-- Publish enrichment jobs to RabbitMQ on pattern create/update
-- Sync Neo4j graph state on best-effort basis (per ADR-009)
+- CRUD and semantic search for patterns: `POST`/`GET /patterns`, `GET /patterns/search`, `GET`/`PUT`/`DELETE /patterns/:id`, `GET /patterns/:id/chunks`
+- Validate patterns (including the configured language and domain vocabulary, per ADR-007)
+- Store the pattern, its chunks and one pending enrichment job per chunk in a single PostgreSQL transaction on create and update
+- Publish each job ID to the RabbitMQ `enrichment-jobs` queue after the transaction commits
+- Read Neo4j graph context for `GET /patterns/:id`; on delete, clean up the pattern's Neo4j node best-effort (the API never builds the graph)
 
 **Key Characteristics:**
 
-- Writes to PostgreSQL for all pattern and agent data
-- Returns 202 Accepted for pattern create/update (enrichment is async)
-- Best-effort RabbitMQ publish: if the queue is unavailable, the pattern is stored with `pending` status and a recovery process can re-publish
-- No authentication (MVP)
+- Returns 202 Accepted for pattern create (enrichment is async); `PUT` returns 204 No Content (ADR-006)
+- Best-effort RabbitMQ publish (ADR-009): if the publish fails after one reconnect and retry, the job row stays `pending` and the enricher's retry sweep claims it
+- No authentication (local, single-user phase)
 
 ### Mnemonic Enricher
 
-The Enricher (`mnemonic-enricher`) is a standalone worker that processes pattern enrichment asynchronously.
+The Enricher (`mnemonic-enricher`) is a standalone worker that processes pattern enrichment asynchronously. Its only HTTP surface is `/health` and `/version` on port 8080 and metrics on port 9090.
 
 **Responsibilities:**
 
-- Consume enrichment job messages from RabbitMQ
-- Generate embeddings via the OpenAI Embedding API
-- Store chunk embeddings and update enrichment status in PostgreSQL
-- Extract concepts and create relationships in Neo4j
+- Consume enrichment job messages (`{"job_id": "<uuid>"}`) from the RabbitMQ `enrichment-jobs` queue, continuing the API's trace from the message headers
+- Every 15 seconds, claim jobs due for retry, and jobs never delivered within a 2-minute grace period, from PostgreSQL with `FOR UPDATE SKIP LOCKED`
+- Generate one embedding per chunk via the OpenAI embeddings API and store it in PostgreSQL
+- When a pattern's last chunk is embedded, extract concepts via the OpenAI chat completions API, write `MENTIONED_IN` and `RELATED_TO` relationships to Neo4j, and mark the pattern `enriched`
+- Every 5 minutes, return stale `processing` jobs to `pending` and delete old completed and failed jobs
 
 **Key Characteristics:**
 
-- Decoupled from the Admin API via RabbitMQ
-- Horizontally scalable (multiple instances consume from the same queue)
-- Writes to PostgreSQL (chunk embeddings, enrichment status) and Neo4j (concept graph)
+- Decoupled from the Admin API via RabbitMQ; PostgreSQL job rows are the source of truth
+- Horizontally scalable: job start is conditional (`pending` and due) and the sweep uses `SKIP LOCKED`, so multiple instances can share the queue and table
+- Bounded concurrency (`enrichment.worker_count`, default 2; `queue.rabbitmq.prefetch_count`, default 5)
+- Writes to PostgreSQL (chunk embeddings, job and enrichment status) and Neo4j (concept graph)
 
 **What Mnemonic Services Do NOT Do:**
 
-- Perform LLM inference (services call an embedding API, but do not perform generative AI inference)
+- Host or run models (embeddings and concept extraction are calls to the OpenAI API; Mnemonic never answers user prompts)
 - Store user credentials
 - Execute tools or file operations
 - Maintain session state
@@ -118,19 +128,19 @@ Claude Code integrates with Mnemonic via the MCP (Model Context Protocol) interf
 
 **MCP Tools Provided (3 pattern search tools):**
 
-| Tool                    | Purpose                                  |
-| ----------------------- | ---------------------------------------- |
+| Tool                    | Purpose                                   |
+| ----------------------- | ----------------------------------------- |
 | `search_patterns`       | Semantic search over team knowledge graph |
-| `find_related_patterns` | Find patterns related to a given pattern |
-| `get_pattern`           | Retrieve specific pattern by ID          |
+| `find_related_patterns` | Find patterns related to a given pattern  |
+| `get_pattern`           | Retrieve specific pattern by ID           |
 
 For full tool definitions and parameters, see [MCP Tools](../mnemonic/08-mcp-tools.md).
 
 **Integration Characteristics:**
 
-- Read-only access via MCP
-- Runs in trusted environment (local network)
-- No authentication (MVP)
+- Read-only access via MCP over Streamable HTTP (`http://<host>:8081/mcp`)
+- Runs in a trusted environment (local, single user)
+- No authentication
 - Searches team knowledge for workflow patterns
 
 ## Data Flow
@@ -146,86 +156,105 @@ sequenceDiagram
     participant MCP as MCP Server
     participant OPENAI as OpenAI Embedding API
     participant PG as Postgres + PGVector
+    participant NEO as Neo4j
 
     User->>CC: Ask question
     CC->>CC: Determine need for team knowledge
 
-    CC->>MCP: search_patterns(query, limit)
+    CC->>MCP: search_patterns(query, limit, threshold, tags, language, domain)
 
     MCP->>OPENAI: Generate query embedding
     OPENAI-->>MCP: vector(2000)
-    MCP->>PG: Vector similarity search (PGVector)
-    PG-->>MCP: Ranked patterns + similarity scores
+    MCP->>PG: Chunk similarity search (PGVector)
+    PG-->>MCP: Ranked chunks + similarity scores
+    MCP->>NEO: RELATED_TO expansion from top 3 matched patterns
+    NEO-->>MCP: Related patterns (skipped if Neo4j fails)
 
-    MCP-->>CC: {patterns ranked by vector similarity}
+    MCP-->>CC: Markdown: matched sections, then "Related Patterns (via graph)"
 
     CC->>CC: Incorporate team knowledge
     CC-->>User: Answer with team context
 ```
 
-Post-MVP: search_patterns will incorporate Neo4j graph scores for blended ranking.
+Graph matches are listed separately (at most 5) and do not change the vector ranking. Post-MVP: blended vector and graph ranking.
 
 ### Data Loading via Admin API
 
-Pattern creation follows a synchronous write to PostgreSQL followed by asynchronous enrichment via the Enricher.
+Pattern creation is a synchronous transactional write to PostgreSQL, followed by asynchronous enrichment by the Enricher. One trace spans the whole flow: the API injects W3C `traceparent` into the AMQP message headers and the Enricher continues it. The activity-level detail (validation, error branches, retries) is in [POST /v1/api/patterns — Activity Diagram](../../diagrams/post-pattern-flow.md).
 
 ```mermaid
 sequenceDiagram
     participant Admin
-    participant API as Admin API
+    participant API as mnemonic-api
     participant PG as PostgreSQL
-    participant RMQ as RabbitMQ
-    participant Enricher as Enricher
-    participant OPENAI as OpenAI Embedding API
+    participant RMQ as RabbitMQ (enrichment-jobs)
+    participant ENR as mnemonic-enricher
+    participant OPENAI as OpenAI
     participant NEO as Neo4j
 
     Admin->>API: POST /v1/api/patterns (JSON)
-    API->>API: Validate request
-    API->>PG: Insert pattern (enrichment_status: pending)
-    PG-->>API: Pattern ID
-    API->>RMQ: Publish enrichment job
-    API-->>Admin: 202 Accepted
+    API->>API: Validate fields and vocabulary
+    API->>PG: BEGIN
+    API->>PG: INSERT pattern (enrichment_status = pending)
+    API->>PG: INSERT chunks (one per "[//]: pattern" section)
+    API->>PG: INSERT one pending enrichment job per chunk
+    API->>PG: COMMIT
+    loop each job
+        API->>RMQ: publish {"job_id"} (persistent, traceparent header)
+    end
+    API-->>Admin: 202 Accepted + Location
 
-    Note over RMQ,Enricher: Async enrichment
-    RMQ->>Enricher: Deliver enrichment message
-    Enricher->>OPENAI: Generate embeddings
-    OPENAI-->>Enricher: vector(2000)
-    Enricher->>PG: Store chunk embeddings
-    Enricher->>OPENAI: Extract concepts
-    OPENAI-->>Enricher: Concept list
-    Enricher->>NEO: Create concept nodes and relationships
-    NEO-->>Enricher: Success
-    Enricher->>PG: Update enrichment_status to enriched
+    Note over RMQ,ENR: Async enrichment, one delivery per chunk job
+    RMQ->>ENR: deliver message
+    ENR->>PG: Start job (pending and due -> processing)
+    ENR->>PG: Load chunk with pattern name and tags
+    ENR->>OPENAI: POST /embeddings
+    OPENAI-->>ENR: vector(2000)
+    ENR->>PG: Store chunk embedding, chunk enriched
+    ENR->>PG: Check pattern chunk progress
+    opt last chunk of the pattern
+        ENR->>PG: Load pattern content
+        ENR->>OPENAI: POST /chat/completions (extract concepts)
+        OPENAI-->>ENR: Concept list
+        ENR->>NEO: SyncPattern (Pattern, MENTIONED_IN, RELATED_TO) in one transaction
+        ENR->>PG: enrichment_status = enriched
+    end
+    ENR->>PG: Mark job completed
+    ENR->>RMQ: ack
+
+    Note over ENR,PG: Fallback: every 15s the retry sweep claims failed jobs whose retry is due and jobs never delivered after 2 minutes
 ```
+
+If a step fails, the Enricher marks the job (and the chunk and pattern) failed and schedules a retry after `enrichment.retry_delay` (default 30s), up to the job's `max_attempts`; the retry sweep, not RabbitMQ, re-runs it.
 
 ## Component Interactions
 
 ### Claude Code to MCP Server
 
-| Aspect            | Detail                                         |
-| ----------------- | ---------------------------------------------- |
-| Protocol          | MCP over Streamable HTTP                       |
-| Authentication    | None (MVP, local trusted environment)          |
-| Request contains  | MCP tool name, parameters                      |
-| Response contains | Search results, pattern details               |
+| Aspect            | Detail                                                 |
+| ----------------- | ------------------------------------------------------ |
+| Protocol          | MCP over Streamable HTTP (stateless), `/mcp` on :8081  |
+| Authentication    | None (local, single-user phase)                        |
+| Request contains  | MCP tool name, parameters                              |
+| Response contains | Markdown text content: search results, pattern details |
 
 ### Admin Tools to REST API
 
-| Aspect            | Detail                                                                            |
-| ----------------- | --------------------------------------------------------------------------------- |
-| Protocol          | REST (HTTP/HTTPS)                                                                 |
-| Authentication    | None (MVP); see [Security Architecture](01-security-architecture.md) for Post-MVP |
-| Request contains  | JSON payloads for CRUD operations                                                 |
-| Response contains | Created/updated resources, success/error status                                   |
+| Aspect            | Detail                                                                                              |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| Protocol          | REST over HTTP, `/v1/api` on :8080 (TLS, if any, terminates at a reverse proxy)                     |
+| Authentication    | None (local phase); see [Security Architecture](01-security-architecture.md) for the planned design |
+| Request contains  | JSON payloads for CRUD operations                                                                   |
+| Response contains | Created/updated resources, or RFC 7807 problem details on error                                     |
 
 ### Admin API to Enricher
 
-| Aspect              | Detail                                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------- |
-| Protocol            | AMQP via RabbitMQ                                                                        |
-| Message trigger     | Pattern create or update in Admin API                                                    |
-| Message contains    | Pattern ID and enrichment action                                                         |
-| Failure handling    | Best-effort publish (ADR-009): if RabbitMQ is unavailable, pattern stored with `pending` status; recovery process can re-publish |
+| Aspect           | Detail                                                                                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol         | AMQP via RabbitMQ, default exchange, durable queue `enrichment-jobs`                                                                                                          |
+| Message trigger  | Pattern create or update in Admin API (after commit), one message per chunk job                                                                                               |
+| Message contains | JSON body `{"job_id": "<uuid>"}`; W3C trace context in the message headers                                                                                                    |
+| Failure handling | Best-effort publish (ADR-009): one reconnect and retry, then the job stays `pending` in PostgreSQL and the enricher's 15s retry sweep claims it after a 2-minute grace period |
 
 ## Boundary Definitions
 
@@ -250,7 +279,6 @@ graph TB
 
     subgraph "Admin Domain"
         AD1[Pattern CRUD]
-        AD2[Agent management]
     end
 
     UD1 --> CD3
@@ -269,8 +297,8 @@ graph TB
 
 ### Cross-Cutting Concerns
 
-- **Observability**: All three services emit structured logs, expose health check endpoints, and publish metrics. See [Observability Architecture](07-observability-architecture.md).
-- **Schema migration**: Migrations are pre-applied at Docker image build time via entrypoint scripts. Services verify schema compatibility at startup but do not run migrations. See [Data Architecture - Migration Strategy](04-data-architecture.md#migration-strategy).
+- **Observability**: All three services emit structured logs, expose `/health` and `/version` on port 8080, publish OpenTelemetry metrics for Prometheus on port 9090 (`/metrics`), and export traces over OTLP gRPC when `observability.tracing.enabled` is true (off by default). One trace spans API to RabbitMQ to Enricher. See [Observability Architecture](07-observability-architecture.md).
+- **Schema migration**: Migrations are pre-applied at Docker image build time via entrypoint scripts. The services neither run migrations nor check the schema version at startup; they assume the schema shipped in the database images. See [Data Architecture - Migration Strategy](04-data-architecture.md#migration-strategy).
 
 ## Post-MVP
 

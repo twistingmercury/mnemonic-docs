@@ -37,6 +37,7 @@
 - [Repository Interfaces](#repository-interfaces)
   - [AgentRepository](#agentrepository)
   - [PatternRepository](#patternrepository)
+  - [ChunkRepository](#chunkrepository)
   - [SkillRepository](#skillrepository)
   - [SkillFileRepository](#skillfilerepository)
   - [EnrichmentJob Repository](#enrichmentjob-repository)
@@ -58,24 +59,50 @@ This document provides implementation details for the Mnemonic data storage laye
 **Implementation Scope:**
 
 | Component | Technology | Purpose |
-|-----------|------------|---------|
-| Relational Storage | PostgreSQL 15+ | Document tables (JSONB), patterns, jobs |
-| Vector Storage | PGVector extension | Pattern embeddings for semantic search |
+| ----------- | ------------ | --------- |
+| Relational Storage | PostgreSQL 16 (`pgvector/pgvector:pg16` base image) | Patterns, pattern chunks, enrichment jobs; reserved JSONB document tables |
+| Vector Storage | PGVector extension | Pattern chunk embeddings (`vector(2000)`) for semantic search |
 | Graph Storage | Neo4j 5.x | Knowledge graph relationships |
-| Migrations | Docker entrypoint scripts | Schema pre-applied at image build time via `docker-entrypoint-initdb.d` (Postgres) and `cypher-shell` (Neo4j); no runtime migration tool |
+| Migrations | Docker entrypoint scripts | Schema baked into the images: `docker-entrypoint-initdb.d` on first container start (Postgres) and `cypher-shell` at image build (Neo4j); no runtime migration tool |
 
-**JSONB Document Model:**
+**Implementation Status:**
 
-- `agents`, `skills` use JSONB document model with `crc64` change detection
-- `skill_files` stores skill child files with path and content columns
-- `patterns` use relational columns (enrichment workflow, pgvector embeddings, graph context)
-- `pattern_agent_associations` is a join table for agent-scoped pattern filtering
-- `enrichment_jobs` is a background processing queue
+| Store | Object | Status | Read by | Written by |
+| ------- | -------- | -------- | --------- | ------------ |
+| PostgreSQL | `patterns` | Implemented | api, enricher, mcp | api (CRUD), enricher (enrichment status) |
+| PostgreSQL | `pattern_chunks` | Implemented | api, enricher, mcp | api (insert/delete), enricher (embedding, status) |
+| PostgreSQL | `enrichment_jobs` | Implemented | enricher | api (insert), enricher (claim, update, delete) |
+| PostgreSQL | `agents`, `skills`, `skill_files`, `pattern_agent_associations` | Schema only (planned) | none | none |
+| Neo4j | `Pattern`, `Concept`, `MENTIONED_IN`, `RELATED_TO` | Implemented | api, mcp | enricher (`SyncPattern`); api deletes on pattern delete |
+| Neo4j | `Agent`, `RELEVANT_FOR` | Schema only (planned) | none | none |
+
+The `mnemonic-mcp` server is read-only against both databases. The sections below on the JSONB document model, agents and skills describe the planned design for the schema-only tables; the pattern, chunk, job and graph sections describe what the services do today.
+
+```mermaid
+flowchart LR
+    API["mnemonic-api"] -->|"patterns, pattern_chunks,<br/>enrichment_jobs (one tx)"| PG[("PostgreSQL<br/>+ pgvector")]
+    API -->|"job id"| MQ[("RabbitMQ")]
+    MQ --> ENR["mnemonic-enricher"]
+    ENR -->|"embeddings, statuses,<br/>job lifecycle"| PG
+    ENR -->|"SyncPattern<br/>(one write tx)"| NEO[("Neo4j")]
+    API -.->|"read; DeletePattern"| NEO
+    MCP["mnemonic-mcp"] -.->|read| PG
+    MCP -.->|read| NEO
+```
+
+**Data Model:**
+
+- `agents`, `skills` use JSONB document model with `crc64` change detection (planned; not used yet)
+- `skill_files` stores skill child files with path and content columns (planned; not used yet)
+- `patterns` use relational columns (metadata, enrichment status); their embeddings live in `pattern_chunks`
+- `pattern_chunks` holds one row per `[//]: pattern`-marked section, each with its own embedding
+- `pattern_agent_associations` is a join table for agent-scoped pattern filtering (planned; not used yet)
+- `enrichment_jobs` is the durable state for the background enrichment queue
 - Neo4j is required for the knowledge graph
 
 **Deployment Independence:**
 
-Database migrations and application code are versioned and deployed independently. Migrations have their own CI/CD pipeline that triggers only on changes to the `migrations/` directory. This enables:
+Database migrations and application code are versioned and deployed independently. Migrations live in the separate `mnemonic-dbs` repository, whose CI builds the `mnemonic-postgres` and `mnemonic-neo4j` images; the services pin an image tag (currently `v1.0.0-dev`). This enables:
 
 - Logic bug fixes in Go without database deployment
 - Schema changes without rebuilding application containers
@@ -86,6 +113,8 @@ Database migrations and application code are versioned and deployed independentl
 [Table of Contents](#table-of-contents)
 
 ### Design Rationale
+
+> **Status:** Planned. The `agents`, `skills` and `skill_files` tables exist in the schema, but no current service reads or writes them, and there is no agent/skill API or sync protocol yet. This section is the design for that work.
 
 Agents, skills, and skill files are markdown documents synced to disk. Their field sets evolve as the Claude Code Agent Skills spec evolves. Storing each field as an individual relational column creates migration churn every time a field is added, renamed, or removed.
 
@@ -107,7 +136,7 @@ The JSONB document model stores the full document as a single JSONB column. Only
 All document tables (agents, skills) share the same column structure:
 
 | Column | Type | Constraints | Purpose |
-|--------|------|-------------|---------|
+| -------- | ------ | ------------- | --------- |
 | `id` | UUID | PK, DEFAULT gen_random_uuid() | Internal identifier |
 | `name` | VARCHAR(255) | UNIQUE NOT NULL | Lookup key; the one field always queried by |
 | `definition` | JSONB | NOT NULL | Complete document (all entity fields) |
@@ -155,7 +184,7 @@ The `definition` column stores the complete agent specification:
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `description` | string | yes | Short summary of the agent's purpose |
 | `system_prompt` | string | yes | Full system prompt content |
 | `model` | string | yes | Claude model: sonnet, opus, haiku |
@@ -180,7 +209,7 @@ Aligned with the [Claude Code Agent Skills spec](https://docs.anthropic.com/en/d
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `description` | string | yes | Short summary of the skill |
 | `content` | string | yes | Full skill markdown content |
 | `tags` | string[] | no | Categorization tags |
@@ -195,7 +224,7 @@ Aligned with the [Claude Code Agent Skills spec](https://docs.anthropic.com/en/d
 Skill files do not use the JSONB document model. They store file content directly in a TEXT column with a `path` column for identification within the skill directory. The `crc64` column provides change detection on the file content.
 
 | Column | Type | Purpose |
-|--------|------|---------|
+| -------- | ------ | --------- |
 | `id` | UUID | PK, DEFAULT gen_random_uuid() |
 | `skill_id` | UUID | FK to parent skill (CASCADE DELETE) |
 | `path` | VARCHAR(1024) | File path within the skill directory |
@@ -240,7 +269,7 @@ The path-specific indexes are smaller and faster for tag-only queries. Use full-
 Because JSONB contents are not constrained at the database level, the application enforces all field validation:
 
 | Entity | Field | Constraint | Enforced By |
-|--------|-------|-----------|-------------|
+| -------- | ------- | ----------- | ------------- |
 | Agent | name | max 255 chars, unique | DB (VARCHAR + UNIQUE) |
 | Agent | name | `^[a-z][a-z0-9-]*$` format | Application |
 | Agent | definition.description | max 500 chars | Application |
@@ -270,10 +299,10 @@ For database-level JSONB schema validation, consider the [pg_jsonschema](https:/
 
 ### Migration File Structure
 
-All PostgreSQL migrations are `.up.sql` files applied at Docker image build time via `docker-entrypoint-initdb.d`. Mnemonic does not run or manage migrations at runtime. There are no `.down.sql` files — rollback is accomplished by pulling a prior image tag (see [dbs ADR-001](../architecture/dbs/02-architectural-decisions.md)).
+All PostgreSQL migrations are `.up.sql` files copied into the `mnemonic-postgres` image and applied by `docker-entrypoint-initdb.d` when the container first starts with an empty data directory. Mnemonic does not run or manage migrations at runtime. There are no `.down.sql` files — rollback is accomplished by pulling a prior image tag (see [dbs ADR-001](../architecture/dbs/02-architectural-decisions.md)).
 
 ```text
-src/migrations/
+mnemonic-dbs/src/
 ├── postgres/
 │   ├── 000001_extensions.up.sql
 │   ├── 000002_create_agents.up.sql
@@ -300,19 +329,12 @@ Neo4j migrations are numbered `.cypher` files applied via `cypher-shell` during 
 **Purpose:** Enable required PostgreSQL extensions.
 
 ```sql
--- src/migrations/postgres/000001_extensions.up.sql
+-- src/postgres/000001_extensions.up.sql
 -- Enables required PostgreSQL extensions.
 -- Part of Mnemonic MVP
 
 -- Enable vector operations for embeddings (pgvector extension)
 create extension if not exists vector;
-```
-
-```sql
--- src/migrations/postgres/000001_extensions.down.sql
--- Extensions are not dropped to avoid breaking other schemas that may use them.
--- If you need to drop extensions, uncomment the following line:
--- drop extension if exists vector;
 ```
 
 **Note:** Per the storage-only database philosophy, no trigger functions are created. `updated_at` management is the application's responsibility. The application sets `updated_at = now()` on every UPDATE.
@@ -322,7 +344,7 @@ create extension if not exists vector;
 **Purpose:** Create the agents table using the JSONB document model with CRC64 change detection.
 
 ```sql
--- src/migrations/postgres/000002_create_agents.up.sql
+-- src/postgres/000002_create_agents.up.sql
 -- Creates the agents table with JSONB document model.
 -- Part of Mnemonic MVP
 
@@ -354,12 +376,6 @@ comment on column agents.definition is 'Complete agent definition as JSONB docum
 comment on column agents.crc64 is 'CRC-64 checksum of serialized definition for change detection';
 ```
 
-```sql
--- src/migrations/postgres/000002_create_agents.down.sql
-drop index if exists idx_agents_definition;
-drop table if exists agents;
-```
-
 ### Migration 003: Patterns Table
 
 **Purpose:** Create the patterns table with PGVector embedding column for semantic search.
@@ -367,7 +383,7 @@ drop table if exists agents;
 **Note:** Patterns use relational columns (not the JSONB document model) because they have enrichment status, graph context, and pgvector embeddings that require individual columns. Performance indexes (IVFFlat, GIN, full-text) are created separately in migration 006.
 
 ```sql
--- src/migrations/postgres/000003_create_patterns.up.sql
+-- src/postgres/000003_create_patterns.up.sql
 -- Creates the patterns table with PGVector embedding support.
 -- Part of Mnemonic MVP
 
@@ -412,11 +428,6 @@ comment on column patterns.embedding is 'Vector embedding (2000d, text-embedding
 comment on column patterns.enrichment_status is 'Processing state: pending, enriched, or failed';
 ```
 
-```sql
--- src/migrations/postgres/000003_create_patterns.down.sql
-drop table if exists patterns;
-```
-
 ### Migration 004: Pattern-Agent Associations
 
 **Purpose:** Create the many-to-many association table between patterns and agents with relevance scores.
@@ -424,7 +435,7 @@ drop table if exists patterns;
 **Note:** The `agent_id` column references `agents(id)` (UUID), not the agent name. This follows the post-pivot schema where agents have a UUID primary key.
 
 ```sql
--- src/migrations/postgres/000004_create_pattern_agent_associations.up.sql
+-- src/postgres/000004_create_pattern_agent_associations.up.sql
 -- Creates the pattern-agent association table for many-to-many relationships.
 -- Part of Mnemonic MVP
 
@@ -459,18 +470,12 @@ comment on table pattern_agent_associations is
     'Many-to-many relationship between patterns and agents with relevance scores';
 ```
 
-```sql
--- src/migrations/postgres/000004_create_pattern_agent_associations.down.sql
-drop index if exists idx_pattern_agent_assoc_agent;
-drop table if exists pattern_agent_associations;
-```
-
 ### Migration 005: Enrichment Jobs Table
 
 **Purpose:** Create the enrichment jobs queue table for background pattern processing.
 
 ```sql
--- src/migrations/postgres/000005_create_enrichment_jobs.up.sql
+-- src/postgres/000005_create_enrichment_jobs.up.sql
 -- Creates the enrichment jobs queue table for background pattern processing.
 -- Part of Mnemonic MVP
 
@@ -527,19 +532,12 @@ comment on column enrichment_jobs.status is 'Job state: pending, processing, com
 comment on column enrichment_jobs.scheduled_for is 'When the job should be processed (supports delayed retry)';
 ```
 
-```sql
--- src/migrations/postgres/000005_create_enrichment_jobs.down.sql
-drop index if exists idx_enrichment_jobs_unique_pending;
-drop index if exists idx_enrichment_jobs_pattern;
-drop table if exists enrichment_jobs;
-```
-
 ### Migration 006: Performance Indexes
 
 **Purpose:** Create performance-optimized indexes for common query patterns.
 
 ```sql
--- src/migrations/postgres/000006_create_performance_indexes.up.sql
+-- src/postgres/000006_create_performance_indexes.up.sql
 -- Creates performance-optimized indexes for common query patterns.
 -- Part of Mnemonic MVP
 
@@ -590,22 +588,12 @@ comment on index idx_enrichment_jobs_pending is
     'Optimizes worker polling for pending jobs';
 ```
 
-```sql
--- src/migrations/postgres/000006_create_performance_indexes.down.sql
-drop index if exists idx_enrichment_jobs_processing;
-drop index if exists idx_enrichment_jobs_pending;
-drop index if exists idx_patterns_search;
-drop index if exists idx_patterns_tags;
-drop index if exists idx_patterns_embedding;
-drop index if exists idx_patterns_enriched;
-```
-
 ### Migration 007: Create Skills Table
 
 **Purpose:** Create the skills table using the JSONB document model.
 
 ```sql
--- src/migrations/postgres/000007_create_skills.up.sql
+-- src/postgres/000007_create_skills.up.sql
 -- Creates the skills table with JSONB document model.
 -- Part of Mnemonic MVP
 
@@ -636,18 +624,12 @@ comment on column skills.definition is 'Complete skill definition as JSONB docum
 comment on column skills.crc64 is 'CRC-64 checksum of serialized definition for change detection';
 ```
 
-```sql
--- src/migrations/postgres/000007_create_skills.down.sql
-drop index if exists idx_skills_definition;
-drop table if exists skills;
-```
-
 ### Migration 008: Create Skill Files Table
 
 **Purpose:** Create the skill_files table for files associated with skills.
 
 ```sql
--- src/migrations/postgres/000008_create_skill_files.up.sql
+-- src/postgres/000008_create_skill_files.up.sql
 -- Creates the skill_files table for files associated with skills.
 -- Part of Mnemonic MVP
 
@@ -685,12 +667,6 @@ comment on column skill_files.content is 'File content';
 comment on column skill_files.crc64 is 'CRC-64 checksum of content for change detection';
 ```
 
-```sql
--- src/migrations/postgres/000008_create_skill_files.down.sql
-drop index if exists idx_skill_files_skill_id;
-drop table if exists skill_files;
-```
-
 ### Migration 009: Pattern Chunks Table
 
 **Purpose:** Introduce chunk-based semantic search by creating the `pattern_chunks` table, moving embeddings from patterns to per-chunk rows, adding structured metadata columns to patterns, and updating enrichment jobs to support chunk-level processing.
@@ -698,7 +674,7 @@ drop table if exists skill_files;
 > **Architecture Reference:** [Data Architecture - Pattern Chunks](../architecture/dbs/08-data-architecture.md#tables) | [Pattern Enrichment - Generate Embeddings](pattern-processing.md#step-2-generate-embeddings)
 
 ```sql
--- src/migrations/postgres/000009_pattern_schema_chunks.up.sql
+-- src/postgres/000009_pattern_schema_chunks.up.sql
 -- Adds structured metadata columns to patterns, introduces chunk-based
 -- semantic search via pattern_chunks, and updates enrichment_jobs to
 -- support chunk-level enrichment jobs.
@@ -810,7 +786,7 @@ Key changes in this migration:
 > **Architecture Reference:** [Data Architecture - Embedding Dimensions](../architecture/dbs/08-data-architecture.md#embedding-dimensions) | [Pattern Enrichment - OpenAI Embeddings](pattern-processing.md#openai-api-embeddings)
 
 ```sql
--- src/migrations/postgres/000010_update_embedding_dimensions.up.sql
+-- src/postgres/000010_update_embedding_dimensions.up.sql
 -- Updates pattern_chunks.embedding from vector(1536) to vector(2000)
 -- to support text-embedding-3-large with Matryoshka truncation at 2000 dimensions.
 -- 2000 is the maximum supported by pgvector's HNSW and IVFFlat index types.
@@ -843,116 +819,100 @@ This migration is separated from 009 because the embedding dimension is a deploy
 
 ### Index Selection Guidelines
 
-The vector index type should match the expected pattern count:
+Embeddings live only in `pattern_chunks.embedding` (`vector(2000)`); `patterns.embedding` and its IVFFlat index were dropped in migration 009. The current index is:
 
-| Pattern Count | Index Type | Configuration | Query Performance |
-|---------------|------------|---------------|-------------------|
-| < 1,000 | None (exact search) | N/A | ~10ms |
-| 1,000 - 100,000 | IVFFlat | `lists = sqrt(N)` | ~20-50ms |
-| > 100,000 | HNSW | `m=16, ef_construction=64` | ~5-20ms |
+| Index | Column | Type | Notes |
+| ------- | -------- | ------ | ------- |
+| `idx_pattern_chunks_embedding` | `pattern_chunks.embedding` | HNSW, `vector_cosine_ops`, pgvector default build parameters | Created in 009, recreated at 2000 dimensions in 010 |
 
-**MVP Recommendation:** IVFFlat with 100 lists (suitable for 1,000-10,000 patterns).
+HNSW was chosen over IVFFlat because IVFFlat builds its centroids from existing rows and degrades to sequential scans when created on an empty table, which is exactly how the image-baked schema starts. 2000 dimensions is the most pgvector can index for the `vector` type, which is why the services default `openai.embedding_dimensions` to 2000.
 
-**Upgrading to HNSW** (when pattern count exceeds 100,000):
+**Tuning HNSW** (when recall or build time becomes a problem):
 
 ```sql
--- Drop existing IVFFlat index
-drop index if exists idx_patterns_embedding;
-
--- Create HNSW index (higher memory usage, better recall)
-create index idx_patterns_embedding
-    on patterns using hnsw (embedding vector_cosine_ops)
+-- Rebuild with explicit parameters (higher m / ef_construction: better recall, more memory, slower build)
+drop index if exists idx_pattern_chunks_embedding;
+create index idx_pattern_chunks_embedding
+    on pattern_chunks using hnsw (embedding vector_cosine_ops)
     with (m = 16, ef_construction = 64);
 ```
 
 ### Similarity Search Queries
 
-**Basic Similarity Search:**
+Both the Admin API (`GET /v1/api/patterns/search`) and the MCP server (`search_patterns`) search chunks, not patterns, with one query joined to `patterns` for metadata. This is the Admin API's version (`internal/repository/chunk/repository.go`); the MCP version is the same `WHERE`/`ORDER BY` but selects only `pc.pattern_id, p.name, p.tags, pc.section_title, pc.content, similarity` and has no pattern-ID filter.
 
 ```sql
--- Find patterns similar to a given embedding
--- Returns patterns with similarity score (1.0 = identical)
-select
-    id,
-    name,
-    content,
-    1 - (embedding <=> $1::vector) as similarity
-from patterns
-where enrichment_status = 'enriched'
-  and embedding is not null
-order by embedding <=> $1::vector
-limit $2;  -- max_patterns parameter
+-- $1: query embedding (vector(2000))
+-- $2: minimum similarity (0.0-1.0; MCP default 0.5)
+-- $3: language filter ('' disables)
+-- $4: domain filter ('' disables)
+select pc.id, pc.pattern_id, p.name, p.entity_type, p.language, p.domain, p.tags,
+       pc.section_title, pc.chunk_index, pc.content,
+       1 - (pc.embedding <=> $1) as similarity
+from pattern_chunks pc
+join patterns p on p.id = pc.pattern_id
+where pc.embedding is not null
+  and pc.enrichment_status = 'enriched'
+  and 1 - (pc.embedding <=> $1) >= $2
+  and ($3::text = '' or p.language = $3)
+  and ($4::text = '' or p.domain = $4)
+  -- appended only when set:
+  --   and pc.pattern_id = any($5)     -- API only
+  --   and p.tags @> $6::jsonb         -- pattern must have all requested tags
+order by pc.embedding <=> $1
+limit $7;  -- default 10
 ```
 
-**Similarity Search with Threshold:**
+Other pattern queries the services run:
 
 ```sql
--- Find patterns above a similarity threshold
--- $1: query embedding, $2: minimum similarity (e.g., 0.7), $3: limit
-select
-    id,
-    name,
-    content,
-    tags,
-    1 - (embedding <=> $1::vector) as similarity
+-- Admin API list (content omitted; total via window function)
+select id, name, description, tags, entity_type, language, domain, version,
+       related_patterns, enrichment_status, enrichment_error, enriched_at,
+       created_at, updated_at, count(*) over() as total_count
 from patterns
-where enrichment_status = 'enriched'
-  and embedding is not null
-  and (embedding <=> $1::vector) < (1 - $2)  -- convert similarity to distance
-order by embedding <=> $1::vector
-limit $3;
-```
+where tags ?& $1                                         -- has all tags (optional)
+  and to_tsvector('english', name || ' ' || coalesce(description, ''))
+      @@ plainto_tsquery('english', $2)                  -- search (optional)
+  and language = $3 and domain = $4 and entity_type = $5 -- each optional
+order by name asc
+limit $6 offset $7;
 
-**Similarity Search with Tag Filter:**
-
-```sql
--- Find similar patterns filtered by tags
--- $1: query embedding, $2: required tag, $3: limit
-select
-    id,
-    name,
-    content,
-    1 - (embedding <=> $1::vector) as similarity
-from patterns
-where enrichment_status = 'enriched'
-  and embedding is not null
-  and tags @> $2::jsonb  -- contains the specified tag
-order by embedding <=> $1::vector
-limit $3;
+-- MCP graph-expansion metadata
+select id, name, tags, language, domain from patterns where id = any($1);
 ```
 
 ### Index Maintenance
 
-**Adjusting IVFFlat Probes:**
+**Adjusting HNSW search breadth:**
 
 ```sql
--- Increase probes for better recall (at cost of latency)
--- Default is 1, higher values check more lists
-set ivfflat.probes = 10;
+-- Default ef_search is 40; higher values improve recall at the cost of latency.
+-- The services do not set it, so the server default applies.
+set hnsw.ef_search = 100;
 
--- Query with increased probes
-select id, name, 1 - (embedding <=> $1::vector) as similarity
-from patterns
-where enrichment_status = 'enriched'
-order by embedding <=> $1::vector
+select pc.id, 1 - (pc.embedding <=> $1) as similarity
+from pattern_chunks pc
+where pc.enrichment_status = 'enriched'
+order by pc.embedding <=> $1
 limit 5;
 
--- Reset to default
-reset ivfflat.probes;
+reset hnsw.ef_search;
 ```
+
+Because the similarity threshold and the language/domain/tag filters are applied to the rows the index returns, a heavily filtered search can return fewer than `limit` rows.
 
 **Reindexing After Bulk Updates:**
 
 ```sql
--- Reindex if significant portion of patterns updated
--- Use CONCURRENTLY to avoid blocking reads
-reindex index concurrently idx_patterns_embedding;
+-- Pattern updates delete and re-insert chunks, so heavy churn can bloat the index.
+reindex index concurrently idx_pattern_chunks_embedding;
 ```
 
 **Analyzing for Query Planner:**
 
 ```sql
--- Update statistics after bulk operations
+analyze pattern_chunks;
 analyze patterns;
 ```
 
@@ -961,6 +921,15 @@ analyze patterns;
 [Table of Contents](#table-of-contents)
 
 > **Architecture Reference:** [Data Architecture - Neo4j Graph Model](../architecture/system/04-data-architecture.md#neo4j-graph-model)
+
+What the services use: `Pattern` and `Concept` nodes, `MENTIONED_IN` (Concept to Pattern) and `RELATED_TO` (Pattern to Pattern). The schema also defines an `Agent` constraint and `RELEVANT_FOR` index for planned agent features; no current service writes either.
+
+```mermaid
+graph LR
+    C(["Concept<br/>name UNIQUE, type, createdAt"]) -->|MENTIONED_IN| P["Pattern<br/>id UNIQUE, name, description, updatedAt"]
+    P -->|"RELATED_TO<br/>similarity, updatedAt"| P2["Pattern"]
+    P -.->|"RELEVANT_FOR (reserved)"| A["Agent<br/>name UNIQUE (reserved)"]
+```
 
 ### Schema Constraints
 
@@ -971,7 +940,7 @@ Create these constraints during initial Neo4j setup.
 These constraints are compatible with all Neo4j editions and are created by `001_create_constraints.cypher`:
 
 ```cypher
-// src/migrations/neo4j/001_create_constraints.cypher
+// src/neo4j/001_create_constraints.cypher
 // Creates uniqueness constraints for node labels
 // Part of Mnemonic MVP
 
@@ -979,7 +948,7 @@ These constraints are compatible with all Neo4j editions and are created by `001
 CREATE CONSTRAINT pattern_id_unique IF NOT EXISTS
 FOR (p:Pattern) REQUIRE p.id IS UNIQUE;
 
-// Agent nodes: name from Postgres
+// Agent nodes: name from Postgres (reserved; no service creates Agent nodes)
 CREATE CONSTRAINT agent_name_unique IF NOT EXISTS
 FOR (a:Agent) REQUIRE a.name IS UNIQUE;
 
@@ -990,10 +959,10 @@ FOR (c:Concept) REQUIRE c.name IS UNIQUE;
 
 **Existence Constraints (Enterprise Edition Only):**
 
-These constraints require Neo4j Enterprise Edition and are created by `002_create_existence_constraints.cypher`. Community Edition users should skip this migration. The application layer enforces property completeness regardless of whether these database-level constraints are present.
+These constraints require Neo4j Enterprise Edition and are created by `002_create_existence_constraints.cypher`. The Community Edition image skips this migration (see [dbs ADR-004](../architecture/dbs/02-architectural-decisions.md)). The enricher rejects a nil pattern ID or an empty pattern name before writing, regardless of whether these constraints are present.
 
 ```cypher
-// src/migrations/neo4j/002_create_existence_constraints.cypher
+// src/neo4j/002_create_existence_constraints.cypher
 // Requires Neo4j Enterprise Edition
 // Part of Mnemonic MVP
 
@@ -1010,49 +979,26 @@ FOR (c:Concept) REQUIRE c.name IS NOT NULL;
 
 ### Startup Constraint Validation
 
-Neo4j is required. Mnemonic fails to start if Neo4j is unreachable. Missing constraints are not fatal -- Mnemonic validates constraints at startup and logs warnings, allowing operators to remediate without blocking service startup.
+Neo4j is required. Each service creates its driver at startup and calls `VerifyConnectivity`; if that fails, startup fails. The services do **not** check that constraints or indexes exist: they rely on the `mnemonic-neo4j` image having them baked in. A constraint check that logs missing constraints at startup is not implemented.
 
-**Validation Behavior:**
-
-| Constraint Status | Mnemonic Behavior |
-|-------------------|-------------------|
-| All constraints exist | Log info message, continue startup |
-| One or more missing | Log warning with missing constraint names, continue startup |
-| Connection failure | Fatal error, Mnemonic refuses to start |
-
-**Constraints Checked:**
-
-The constraints checked depend on the Neo4j edition:
-
-**Community Edition (3 constraints):**
-
-- `pattern_id_unique` - Uniqueness on Pattern.id
-- `agent_name_unique` - Uniqueness on Agent.name
-- `concept_name_unique` - Uniqueness on Concept.name
-
-**Enterprise Edition (6 constraints):**
-
-- All Community Edition constraints above, plus:
-- `pattern_name_exists` - Existence of Pattern.name
-- `agent_name_exists` - Existence of Agent.name
-- `concept_name_exists` - Existence of Concept.name
+Neo4j reachability is also part of every service's `GET /health` check.
 
 **Manual Constraint Creation:**
 
-If constraints are missing, run the appropriate migration scripts manually:
+If you run against a Neo4j that was not started from the `mnemonic-neo4j` image, apply the migration scripts manually:
 
 ```bash
 # Using cypher-shell (Community + Enterprise)
-cypher-shell -u neo4j -p <password> -f src/migrations/neo4j/001_create_constraints.cypher
+cypher-shell -u neo4j -p <password> -f src/neo4j/001_create_constraints.cypher
 
 # Enterprise Edition only (optional)
-cypher-shell -u neo4j -p <password> -f src/migrations/neo4j/002_create_existence_constraints.cypher
+cypher-shell -u neo4j -p <password> -f src/neo4j/002_create_existence_constraints.cypher
 ```
 
 ### Index Configuration
 
 ```cypher
-// src/migrations/neo4j/003_create_indexes.cypher
+// src/neo4j/003_create_indexes.cypher
 // Creates indexes for common query patterns
 // Part of Mnemonic MVP
 
@@ -1073,154 +1019,88 @@ CREATE FULLTEXT INDEX concept_name_fulltext IF NOT EXISTS
 FOR (c:Concept) ON EACH [c.name];
 ```
 
+The services' Cypher looks nodes up by `Pattern.id` and `Concept.name` (the uniqueness constraints' indexes); none of their queries use the full-text indexes today.
+
 ### Node Creation Patterns
 
-**Agent Node:**
-
-```cypher
-// Create or update agent node (sync from Postgres)
-MERGE (a:Agent {name: $name})
-ON CREATE SET
-    a.createdAt = datetime()
-ON MATCH SET
-    a.updatedAt = datetime()
-RETURN a;
-```
+Only the enricher creates nodes, and only inside `SyncPattern` (see [Graph Synchronization Queries](#graph-synchronization-queries)).
 
 **Pattern Node:**
 
 ```cypher
-// Create or update pattern node (sync from Postgres after enrichment)
-MERGE (p:Pattern {id: $id})
-ON CREATE SET
-    p.name = $name,
-    p.description = $description,
-    p.createdAt = datetime()
-ON MATCH SET
-    p.name = $name,
-    p.description = $description,
+// Create or update pattern node (enricher, after all chunks are enriched)
+MERGE (p:Pattern {id: $patternId})
+SET p.name = $patternName,
+    p.description = $patternDescription,
     p.updatedAt = datetime()
-RETURN p;
 ```
+
+`id` is the Postgres pattern UUID as a string. There is no `createdAt` on Pattern nodes.
 
 **Concept Node:**
 
 ```cypher
-// Create concept if not exists (extracted during enrichment)
-MERGE (c:Concept {name: $name})
-ON CREATE SET
-    c.type = $type,
-    c.createdAt = datetime()
-RETURN c;
+// Create concept if not exists (extracted during enrichment); type follows the latest extraction
+MERGE (c:Concept {name: concept.name})
+ON CREATE SET c.type = concept.type, c.createdAt = datetime()
+ON MATCH SET c.type = concept.type
 ```
+
+Concept names are lowercased and trimmed by the extraction service before they reach Neo4j.
+
+**Agent Node:** Not implemented. No service creates `Agent` nodes.
 
 ### Relationship Definitions
 
-**RELEVANT_FOR (Pattern to Agent):**
+**MENTIONED_IN (Concept to Pattern):** created with `MERGE (c)-[:MENTIONED_IN]->(p)` inside `SyncPattern`; no properties.
 
-```cypher
-// Create pattern-agent relevance relationship
-// Mirrors pattern_agent_associations table
-MATCH (p:Pattern {id: $patternId})
-MATCH (a:Agent {name: $agentName})
-MERGE (p)-[r:RELEVANT_FOR]->(a)
-SET r.relevance = $relevance,
-    r.updatedAt = datetime()
-RETURN r;
-```
+**RELATED_TO (Pattern to Pattern):** created with `CREATE` by the RELATED_TO computation inside `SyncPattern`, with properties `similarity` (float, 0.0-1.0) and `updatedAt`. Each sync deletes the pattern's existing `RELATED_TO` edges (both directions) first, so edges are never updated in place. Edges are stored one way and always queried undirected.
 
-**MENTIONED_IN (Concept to Pattern):**
-
-```cypher
-// Create concept-pattern mention relationship
-MATCH (c:Concept {name: $conceptName})
-MATCH (p:Pattern {id: $patternId})
-MERGE (c)-[r:MENTIONED_IN]->(p)
-ON CREATE SET r.createdAt = datetime()
-RETURN r;
-```
-
-**RELATED_TO (Pattern to Pattern):**
-
-```cypher
-// Create pattern-pattern similarity relationship
-// Computed from shared concepts
-MATCH (p1:Pattern {id: $patternId1})
-MATCH (p2:Pattern {id: $patternId2})
-WHERE p1 <> p2
-MERGE (p1)-[r:RELATED_TO]->(p2)
-SET r.similarity = $similarity,
-    r.updatedAt = datetime()
-RETURN r;
-```
+**RELEVANT_FOR (Pattern to Agent):** Not implemented. The schema indexes `RELEVANT_FOR.relevance`, but no service creates the relationship and there is no `pattern_agent_associations` sync.
 
 ### Graph Synchronization Queries
 
-**Sync Agent from Postgres:**
+**Sync Pattern (enricher `graph.Repository.SyncPattern`):**
+
+Called once per pattern, by the job that finds all of the pattern's chunks enriched, after concept extraction. All five statements run in one managed write transaction (`session.ExecuteWrite`), so a pattern's node, concepts and edges change together or not at all. Statement 3 is skipped when extraction returned no concepts.
 
 ```cypher
-// Called on agent create/update in Postgres
-MERGE (a:Agent {name: $name})
-SET a.updatedAt = datetime()
-RETURN a;
-```
-
-**Sync Pattern with Associations:**
-
-```cypher
-// Called after pattern enrichment completes
-// Transaction: create/update pattern, then set all associations
-
-// Step 1: Create/update pattern node
+// 1. Create/update pattern node
 MERGE (p:Pattern {id: $patternId})
 SET p.name = $patternName,
     p.description = $patternDescription,
-    p.updatedAt = datetime();
+    p.updatedAt = datetime()
 
-// Step 2: Remove old RELEVANT_FOR relationships
-MATCH (p:Pattern {id: $patternId})-[r:RELEVANT_FOR]->()
-DELETE r;
+// 2. Remove MENTIONED_IN edges to concepts no longer extracted for this pattern
+MATCH (c:Concept)-[r:MENTIONED_IN]->(p:Pattern {id: $patternId})
+WHERE NOT c.name IN $conceptNames
+DELETE r
 
-// Step 3: Create new RELEVANT_FOR relationships
-UNWIND $associations AS assoc
-MATCH (p:Pattern {id: $patternId})
-MATCH (a:Agent {name: assoc.agentName})
-CREATE (p)-[:RELEVANT_FOR {relevance: assoc.relevance}]->(a);
-```
-
-**Sync Concepts for Pattern:**
-
-```cypher
-// Called during enrichment to add extracted concepts
+// 3. Create concepts and relationships
 // $concepts: array of {name: string, type: string}
-
-// Step 1: Remove old MENTIONED_IN relationships for this pattern
-MATCH (:Concept)-[r:MENTIONED_IN]->(:Pattern {id: $patternId})
-DELETE r;
-
-// Step 2: Create concepts and relationships
 UNWIND $concepts AS concept
 MERGE (c:Concept {name: concept.name})
 ON CREATE SET c.type = concept.type, c.createdAt = datetime()
+ON MATCH SET c.type = concept.type
 WITH c
 MATCH (p:Pattern {id: $patternId})
-CREATE (c)-[:MENTIONED_IN]->(p);
-```
+MERGE (c)-[:MENTIONED_IN]->(p)
 
-**Compute RELATED_TO Edges:**
-
-Called by `EnrichmentService.ProcessJob` after concept extraction to compute and store pattern-to-pattern similarity edges. Existing RELATED_TO edges for the pattern are deleted first, then recomputed from shared concepts. Only edges meeting the minimum similarity threshold are created. RELATED_TO is symmetric; edges are stored in one direction and queried without direction. See [Pattern Processing - RELATED_TO Edge Computation](pattern-processing.md#related_to-edge-computation) for the similarity formula.
-
-```cypher
-// ComputeRelatedToEdges: delete old edges, recompute from shared concepts
-// Parameters: $patternId (UUID), $minSimilarity (float, e.g. 0.3)
-
-// Step 1: Delete existing RELATED_TO edges for this pattern
+// 4. Delete existing RELATED_TO edges for this pattern
 MATCH (p:Pattern {id: $patternId})-[r:RELATED_TO]-()
 DELETE r
 
-// Step 2: Find other patterns sharing concepts, compute similarity, create edges
-WITH 1 AS dummy
+// 5. Compute RELATED_TO edges (below)
+```
+
+Statement 2 deletes edges, not nodes: a concept that loses its last `MENTIONED_IN` edge this way stays in the graph as an orphan.
+
+**Compute RELATED_TO Edges (statement 5):**
+
+Recomputes pattern-to-pattern similarity edges from shared concepts. Only edges meeting the minimum similarity threshold (`enrichment.related_to_min_similarity`, default 0.3) are created. See [Pattern Processing - RELATED_TO Edge Computation](pattern-processing.md#related_to-edge-computation) for the similarity formula.
+
+```cypher
+// Parameters: $patternId (UUID string), $minSimilarity (float, default 0.3)
 MATCH (p1:Pattern {id: $patternId})<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2:Pattern)
 WHERE p1 <> p2
 WITH p1, p2, count(DISTINCT c) AS sharedCount
@@ -1244,61 +1124,117 @@ WHERE similarity >= $minSimilarity
 CREATE (p1)-[:RELATED_TO {similarity: similarity, updatedAt: datetime()}]->(p2)
 ```
 
-**Find Related Patterns:**
+**Find Related Patterns (Admin API and MCP server, read-only):**
 
-Uses pre-computed RELATED_TO edges (created during enrichment) and collects shared concept names. See [service-layer.md "Resolving the find_related_patterns Data Gap"](service-layer.md#resolving-the-find_related_patterns-data-gap) for the design decision to use pre-computed edges rather than recomputing similarity at query time.
+Uses pre-computed RELATED_TO edges and collects shared concept names. See [service-layer.md "Resolving the find_related_patterns Data Gap"](service-layer.md#resolving-the-find_related_patterns-data-gap) for the design decision to use pre-computed edges rather than recomputing similarity at query time.
 
 ```cypher
-// Query: find patterns related to a given pattern using pre-computed RELATED_TO edges
 MATCH (p1:Pattern {id: $patternId})-[r:RELATED_TO]-(p2:Pattern)
-WITH p2, r.similarity AS similarity
-
-// Collect shared concept names
-OPTIONAL MATCH (p1:Pattern {id: $patternId})<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2)
+WITH p1, p2, r.similarity AS similarity
+OPTIONAL MATCH (p1)<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2)
 WITH p2, similarity, collect(c.name) AS conceptNames, count(c) AS sharedConcepts
-
 ORDER BY similarity DESC
 LIMIT $limit
 RETURN p2.id AS id, p2.name AS name, sharedConcepts, similarity, conceptNames
 ```
 
-**Find Patterns for Agent:**
+**Pattern Concepts (Admin API and MCP server, read-only):**
 
 ```cypher
-// Query: find patterns relevant to an agent, ordered by relevance
-MATCH (p:Pattern)-[r:RELEVANT_FOR]->(a:Agent {name: $agentName})
-RETURN p.id AS id, p.name AS name, r.relevance AS relevance
-ORDER BY r.relevance DESC
-LIMIT $limit;
+MATCH (c:Concept)-[:MENTIONED_IN]->(p:Pattern {id: $patternId})
+RETURN c.name AS name, c.type AS type
+ORDER BY c.name
 ```
 
-**Cleanup Orphaned Concepts:**
+The Admin API's `GetPatternGraph` runs this and the related-patterns query in one read transaction (related limit 10) for `GET /v1/api/patterns/:id`.
+
+**Delete Pattern (Admin API, best-effort after the Postgres delete):**
 
 ```cypher
-// Maintenance: remove concepts with no pattern relationships
+// Collect the pattern's concepts, detach-delete the pattern,
+// then delete only those concepts no other pattern mentions.
+MATCH (p:Pattern {id: $patternId})
+OPTIONAL MATCH (c:Concept)-[:MENTIONED_IN]->(p)
+WITH p, collect(c) AS concepts
+DETACH DELETE p
+WITH concepts
+UNWIND concepts AS c
+WITH c WHERE NOT (c)-[:MENTIONED_IN]->()
+DELETE c
+```
+
+This is the Admin API's only graph write. A failure is logged as a warning and not retried.
+
+**Cleanup Orphaned Concepts (not implemented):**
+
+No service runs a graph-wide sweep. Concepts orphaned by statement 2 of `SyncPattern` remain until something like this is run manually:
+
+```cypher
 MATCH (c:Concept)
 WHERE NOT (c)-[:MENTIONED_IN]->()
 DELETE c
 RETURN count(c) AS deletedCount;
 ```
 
+**Find Patterns for Agent:** Not implemented (depends on `RELEVANT_FOR`).
+
 ## Repository Interfaces
 
 [Table of Contents](#table-of-contents)
 
-> **Note:** These are interface definitions only. Implementation is handled by the go-software-engineer.
+Each service has its own `internal/repository` packages containing only what it needs; there is no shared repository module. The interfaces below are copied from the code (doc comments trimmed).
 
-> **Note:** Each service contains only the repositories relevant to its responsibilities:
-> - `mnemonic-mcp`: PatternRepository (read), AgentRepository (read), GraphRepository (read)
-> - `mnemonic-api`: All repositories (full CRUD)
-> - `mnemonic-enricher`: PatternRepository (write embeddings/status), GraphRepository (write), EnrichmentJobRepository
+| Service | Packages | PostgreSQL access | Neo4j access |
+| --------- | ---------- | ------------------- | -------------- |
+| `mnemonic-api` | `pattern`, `chunk`, `enrichmentjob`, `graph` | Pattern CRUD, chunk insert/list/delete/search, job insert | Read; `DeletePattern` only write |
+| `mnemonic-enricher` | `pattern`, `chunk`, `enrichmentjob`, `graph` | Pattern read + status, chunk read + embedding/status, full job lifecycle | `SyncPattern` only |
+| `mnemonic-mcp` | `pattern`, `chunk`, `graph` | Read-only | Read-only |
+
+All Postgres repositories take a `repository.DBTX` (the `Exec`/`Query`/`QueryRow` subset of `pgxpool.Pool` and `pgx.Tx`). In `mnemonic-api`, `WithTx` enlists a repository in a caller-owned transaction; pattern create/update use it to write the pattern, chunks and jobs atomically.
+
+```mermaid
+flowchart LR
+    subgraph API["mnemonic-api"]
+        AP["pattern.Repository"]
+        AC["chunk.Repository"]
+        AJ["enrichmentjob.Repository"]
+        AG["graph.Repository"]
+    end
+    subgraph ENR["mnemonic-enricher"]
+        EP["pattern.Repository"]
+        EC["chunk.Repository"]
+        EJ["enrichmentjob.Repository"]
+        EG["graph.Repository"]
+    end
+    subgraph MCP["mnemonic-mcp"]
+        MP["pattern.Repository"]
+        MC["chunk.Repository"]
+        MG["graph.Repository"]
+    end
+    T1[("patterns")]
+    T2[("pattern_chunks")]
+    T3[("enrichment_jobs")]
+    G[("Neo4j")]
+    AP -->|CRUD| T1
+    AC -->|"insert / delete / search"| T2
+    AJ -->|insert| T3
+    AG -.->|"read + DeletePattern"| G
+    EP -->|"read + status"| T1
+    EC -->|"read + embedding/status"| T2
+    EJ -->|"claim / update / delete"| T3
+    EG -->|SyncPattern| G
+    MP -.->|read| T1
+    MC -.->|search| T2
+    MG -.->|read| G
+```
 
 ### AgentRepository
+
+**Status: planned, not implemented.** No service contains an agent repository; the interface below is the design for the `agents` table.
 
 ```go
 // AgentRepository defines data access operations for agents.
 // Agents are stored as JSONB documents with name as the unique lookup key.
-// Implementation: internal/repository/agent/repository.go
 type AgentRepository interface {
     // Create stores a new agent. The application computes crc64 from the
     // serialized definition before calling this method.
@@ -1311,24 +1247,14 @@ type AgentRepository interface {
     // GetByID retrieves an agent by UUID. Returns ErrNotFound if not found.
     GetByID(ctx context.Context, id uuid.UUID) (*Agent, error)
 
-    // Update modifies an existing agent. The application computes crc64
-    // from the serialized definition and sets updated_at before calling
-    // this method. Returns ErrNotFound if not found.
+    // Update modifies an existing agent. Returns ErrNotFound if not found.
     Update(ctx context.Context, agent *Agent) error
 
     // Delete removes an agent by name. Returns ErrNotFound if not found.
     Delete(ctx context.Context, name string) error
 
-    // DeleteByID removes an agent by UUID. Returns ErrNotFound if not found.
-    // The REST API routes DELETE by name; DeleteByID supports internal callers
-    // that resolve agents by UUID (e.g., cascade operations, programmatic cleanup).
-    DeleteByID(ctx context.Context, id uuid.UUID) error
-
     // List retrieves all agents with optional pagination.
     List(ctx context.Context, opts ListOptions) ([]*Agent, int64, error)
-
-    // Exists checks if an agent with the given name exists.
-    Exists(ctx context.Context, name string) (bool, error)
 
     // GetManifest returns name and crc64 for all agents (used by sync protocol).
     GetManifest(ctx context.Context) ([]ManifestEntry, error)
@@ -1353,136 +1279,126 @@ type ManifestEntry struct {
 
 ### PatternRepository
 
+**mnemonic-api** (`internal/repository/pattern`): full CRUD. `Create` inserts with `enrichment_status = 'pending'`; `Update` resets `enrichment_status` to `pending` and clears `enrichment_error` and `enriched_at`; a unique violation on `name` returns `ErrNameExists`.
+
 ```go
-// PatternRepository defines data access operations for patterns.
-// Patterns use relational columns (NOT the JSONB document model).
-// Implementation: internal/repository/pattern/repository.go
-type PatternRepository interface {
-    // Create stores a new pattern. Returns ErrNameExists if name exists.
+type Repository interface {
     Create(ctx context.Context, pattern *Pattern) error
-
-    // Get retrieves a pattern by ID. Returns ErrNotFound if not found.
     Get(ctx context.Context, id uuid.UUID) (*Pattern, error)
-
-    // GetByName retrieves a pattern by name. Returns ErrNotFound if not found.
-    GetByName(ctx context.Context, name string) (*Pattern, error)
-
-    // Update modifies an existing pattern. The application sets updated_at
-    // before calling this method. Returns ErrNotFound if not found.
     Update(ctx context.Context, pattern *Pattern) error
-
-    // Delete removes a pattern by ID. Returns ErrNotFound if not found.
     Delete(ctx context.Context, id uuid.UUID) error
-
-    // List retrieves patterns with filtering and pagination.
-    List(ctx context.Context, filter Filter, opts ListOptions) ([]*Pattern, int64, error)
-
-    // UpdateEmbedding stores the embedding vector for a pattern.
-    UpdateEmbedding(ctx context.Context, id uuid.UUID, embedding []float32) error
-
-    // UpdateEnrichmentStatus updates the enrichment state of a pattern.
-    UpdateEnrichmentStatus(ctx context.Context, id uuid.UUID, status string, err error) error
-
-    // FindSimilar finds patterns similar to the given embedding vector.
-    FindSimilar(ctx context.Context, embedding []float32, opts SimilarityOptions) ([]*Match, error)
-
-    // SetAgentAssociations replaces all agent associations for a pattern.
-    SetAgentAssociations(ctx context.Context, patternID uuid.UUID, associations []AgentAssociation) error
-
-    // GetAgentAssociations retrieves all agent associations for a pattern.
-    GetAgentAssociations(ctx context.Context, patternID uuid.UUID) ([]AgentAssociation, error)
-
-    // GetPatternIDsByAgent returns all pattern IDs associated with the given agent.
-    // Used by SearchService for agent-scoped similarity search pre-filtering.
-    // See: service-layer.md "Agent Filter for search_patterns"
-    GetPatternIDsByAgent(ctx context.Context, agentID uuid.UUID) ([]uuid.UUID, error)
+    // List leaves Content empty; total count comes from COUNT(*) OVER().
+    List(ctx context.Context, filter Filter, opts repository.ListOptions) ([]*Pattern, int64, error)
+    Exists(ctx context.Context, id uuid.UUID) (bool, error)
+    WithTx(db repository.DBTX) Repository
 }
 
-// Pattern represents a context pattern (relational columns, not JSONB).
 type Pattern struct {
     ID               uuid.UUID  `db:"id"`
     Name             string     `db:"name"`
     Description      *string    `db:"description"`
     Content          string     `db:"content"`
-    Tags             []string   `db:"-"` // Unmarshaled from JSONB
-    Embedding        []float32  `db:"-"` // Vector type
-    EnrichmentStatus string     `db:"enrichment_status"`
+    Tags             []string   `db:"-"` // JSONB array
+    EntityType       string     `db:"entity_type"`
+    Language         string     `db:"language"`
+    Domain           string     `db:"domain"`
+    Version          *string    `db:"version"`
+    RelatedPatterns  []string   `db:"-"` // JSONB array of pattern names
+    EnrichmentStatus string     `db:"enrichment_status"` // pending | enriched | failed
     EnrichmentError  *string    `db:"enrichment_error"`
     EnrichedAt       *time.Time `db:"enriched_at"`
     CreatedAt        time.Time  `db:"created_at"`
     UpdatedAt        time.Time  `db:"updated_at"`
 }
 
-// SimilarityOptions defines options for similarity search.
-type SimilarityOptions struct {
-    MinSimilarity float64     // Minimum similarity threshold (0.0-1.0)
-    MaxResults    int         // Maximum number of results
-    Tags          []string    // Optional tag filter
-    PatternIDs    []uuid.UUID // Optional filter to specific pattern IDs
-}
-
-// Match represents a similarity search result.
-type Match struct {
-    Pattern    *Pattern
-    Similarity float64
-}
-
-// AgentAssociation represents a pattern-agent relationship.
-type AgentAssociation struct {
-    AgentID   uuid.UUID `db:"agent_id"`
-    Relevance float64   `db:"relevance"`
+type Filter struct {
+    Tags             []string // pattern must have ALL of these (tags ?& $n)
+    EnrichmentStatus string   // supported by the repository; not exposed by the list endpoint
+    SearchQuery      string   // full-text search on name + description
+    Language         string
+    Domain           string
+    EntityType       string
 }
 ```
 
-**GetPatternIDsByAgent SQL:**
-
-```sql
--- GetPatternIDsByAgent: returns all pattern IDs associated with a given agent.
--- Uses idx_pattern_agent_assoc_agent index for efficient lookup.
-SELECT pattern_id FROM pattern_agent_associations WHERE agent_id = $1;
-```
+**mnemonic-enricher** (`internal/repository/pattern`):
 
 ```go
-// Filter defines filtering options for pattern queries.
-// This type is package-specific to internal/repository/pattern.
-type Filter struct {
-    Tags             []string // Filter by any of these tags
-    EnrichmentStatus string   // Filter by enrichment status
-    SearchQuery      string   // Full-text search in name/description
+type Repository interface {
+    // Get returns id, name, description and content.
+    Get(ctx context.Context, id uuid.UUID) (*Pattern, error)
+    // UpdateEnrichmentStatus sets status, error and enriched_at (now() when status is "enriched").
+    UpdateEnrichmentStatus(ctx context.Context, id uuid.UUID, status string, errMsg *string) error
 }
 ```
 
+**mnemonic-mcp** (`internal/repository/pattern`, read-only):
+
+```go
+type Repository interface {
+    Get(ctx context.Context, id uuid.UUID) (*Pattern, error)          // fields get_pattern shows
+    GetName(ctx context.Context, id uuid.UUID) (string, error)
+    GetByIDs(ctx context.Context, ids []uuid.UUID) ([]*Pattern, error) // id, name, tags, language, domain
+}
+```
+
+There is no pattern-level `FindSimilar`, `UpdateEmbedding` or agent-association method in any service: embeddings and similarity search are on chunks.
+
+### ChunkRepository
+
+**mnemonic-api** (`internal/repository/chunk`):
+
+```go
+type Repository interface {
+    // CreateBatch inserts all chunks of one pattern with a single INSERT ... SELECT FROM unnest.
+    CreateBatch(ctx context.Context, chunks []*Chunk) error
+    // ListSummariesByPatternID returns chunks ordered by chunk_index, without content or embedding.
+    ListSummariesByPatternID(ctx context.Context, patternID uuid.UUID) ([]*Chunk, error)
+    DeleteByPatternID(ctx context.Context, patternID uuid.UUID) error
+    FindSimilar(ctx context.Context, embedding []float32, opts SimilarityOptions) ([]*Match, error)
+    WithTx(db repository.DBTX) Repository
+}
+
+type SimilarityOptions struct {
+    MinSimilarity float64
+    MaxResults    int         // defaults to 10 when <= 0
+    Language      string      // "" disables
+    Domain        string      // "" disables
+    PatternIDs    []uuid.UUID // empty disables
+    Tags          []string    // pattern must contain all; empty disables
+}
+```
+
+**mnemonic-enricher** (`internal/repository/chunk`):
+
+```go
+type Repository interface {
+    // Get returns the chunk joined with its pattern's name and tags (used to build the embedding input).
+    Get(ctx context.Context, id uuid.UUID) (*Chunk, error)
+    // MarkEnriched stores the embedding and sets status 'enriched', enriched_at = now().
+    MarkEnriched(ctx context.Context, id uuid.UUID, embedding []float32) error
+    MarkFailed(ctx context.Context, id uuid.UUID, errMsg string) error
+    // PatternProgress reports whether any chunk failed and whether all are enriched.
+    PatternProgress(ctx context.Context, patternID uuid.UUID) (Progress, error)
+}
+```
+
+**mnemonic-mcp** (`internal/repository/chunk`, read-only): `FindSimilar(ctx, embedding, opts)` with `MinSimilarity`, `MaxResults`, `Language`, `Domain` and `Tags`.
+
 ### SkillRepository
+
+**Status: planned, not implemented.** No service contains a skill repository.
 
 ```go
 // SkillRepository defines data access operations for skills.
 // Skills are stored as JSONB documents with name as the unique lookup key.
-// Implementation: internal/repository/skill/repository.go
 type SkillRepository interface {
-    // Create stores a new skill. The application computes crc64 from the
-    // serialized definition before calling this method.
-    // Returns ErrExists if name already exists.
     Create(ctx context.Context, skill *Skill) error
-
-    // Get retrieves a skill by ID. Returns ErrNotFound if not found.
     Get(ctx context.Context, id uuid.UUID) (*Skill, error)
-
-    // GetByName retrieves a skill by name. Returns ErrNotFound if not found.
     GetByName(ctx context.Context, name string) (*Skill, error)
-
-    // Update modifies an existing skill. Returns ErrNotFound if not found.
     Update(ctx context.Context, skill *Skill) error
-
-    // Delete removes a skill by ID. Returns ErrNotFound if not found.
     Delete(ctx context.Context, id uuid.UUID) error
-
-    // List retrieves skills with optional pagination.
     List(ctx context.Context, opts ListOptions) ([]*Skill, int64, error)
-
-    // Exists checks if a skill with the given ID exists.
-    Exists(ctx context.Context, id uuid.UUID) (bool, error)
-
-    // GetManifest returns name and crc64 for all skills (used by sync protocol).
     GetManifest(ctx context.Context) ([]ManifestEntry, error)
 }
 
@@ -1499,32 +1415,18 @@ type Skill struct {
 
 ### SkillFileRepository
 
+**Status: planned, not implemented.** No service contains a skill-file repository.
+
 ```go
 // SkillFileRepository defines data access operations for skill child files.
 // Skill files are keyed by (skill_id, path).
-// Implementation: internal/repository/skillfile/repository.go
 type SkillFileRepository interface {
-    // Create stores a new skill file. Returns ErrExists if the
-    // (skill_id, path) combination already exists.
     Create(ctx context.Context, file *SkillFile) error
-
-    // Get retrieves a skill file by ID. Returns ErrNotFound if not found.
     Get(ctx context.Context, id uuid.UUID) (*SkillFile, error)
-
-    // GetByPath retrieves a skill file by skill ID and path.
-    // Returns ErrNotFound if not found.
     GetByPath(ctx context.Context, skillID uuid.UUID, path string) (*SkillFile, error)
-
-    // Update modifies an existing skill file. Returns ErrNotFound if not found.
     Update(ctx context.Context, file *SkillFile) error
-
-    // Delete removes a skill file by ID. Returns ErrNotFound if not found.
     Delete(ctx context.Context, id uuid.UUID) error
-
-    // ListBySkill retrieves all files for a given skill.
     ListBySkill(ctx context.Context, skillID uuid.UUID) ([]*SkillFile, error)
-
-    // DeleteBySkill removes all files for a given skill.
     DeleteBySkill(ctx context.Context, skillID uuid.UUID) error
 }
 
@@ -1542,204 +1444,153 @@ type SkillFile struct {
 
 ### EnrichmentJob Repository
 
+**mnemonic-api** (`internal/repository/enrichmentjob`): creates jobs only.
+
 ```go
-// EnrichmentJobRepository defines data access operations for enrichment jobs.
-// Implementation: internal/repository/enrichmentjob/repository.go
-type EnrichmentJobRepository interface {
-    // Create stores a new enrichment job.
-    Create(ctx context.Context, job *Job) error
+type Repository interface {
+    // CreatePendingForChunks inserts one pending job per chunk (chunk_id set, pattern_id NULL,
+    // max_attempts 3) in one INSERT ... SELECT FROM unnest and returns the job IDs in chunk order.
+    // A unique violation returns ErrJobAlreadyPending; a check violation ErrInvalidJobTarget.
+    CreatePendingForChunks(ctx context.Context, chunkIDs []uuid.UUID) ([]uuid.UUID, error)
+    WithTx(db repository.DBTX) Repository
+}
+```
 
-    // Get retrieves an enrichment job by ID. Returns ErrNotFound if not found.
-    Get(ctx context.Context, id uuid.UUID) (*Job, error)
+**mnemonic-enricher** (`internal/repository/enrichmentjob`): the whole lifecycle.
 
-    // GetByPatternID retrieves the latest job for a pattern.
-    GetByPatternID(ctx context.Context, patternID uuid.UUID) (*Job, error)
+```go
+type Repository interface {
+    // Start moves one job pending -> processing if it is due (message path).
+    // Returns ErrUnavailable if the job is not pending or not yet due.
+    Start(ctx context.Context, id uuid.UUID) (*Job, error)
 
-    // ClaimPending atomically claims a pending job for processing.
-    // Uses FOR UPDATE SKIP LOCKED for safe concurrent processing.
-    // Returns nil if no pending jobs are available.
-    ClaimPending(ctx context.Context) (*Job, error)
+    // ClaimDue claims up to limit due pending jobs (retry sweep) using
+    // UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED).
+    // Never-attempted jobs are only claimed once older than grace (2 minutes).
+    ClaimDue(ctx context.Context, grace time.Duration, limit int) ([]*Job, error)
 
-    // MarkProcessing updates job status to processing with start time.
-    MarkProcessing(ctx context.Context, id uuid.UUID) error
-
-    // MarkCompleted updates job status to completed with completion time.
     MarkCompleted(ctx context.Context, id uuid.UUID) error
 
-    // MarkFailed updates job status to failed with error message.
-    // Increments attempt count and schedules retry if under max_attempts.
+    // MarkFailed increments attempts; reschedules (status pending,
+    // scheduled_for = now() + retryDelay) while attempts < max_attempts, else sets failed.
     MarkFailed(ctx context.Context, id uuid.UUID, err error, retryDelay time.Duration) error
 
-    // ReclaimStale reclaims jobs stuck in processing state.
-    // Jobs older than timeout are reset to pending for retry.
+    // ReclaimStale returns processing jobs older than timeout to pending
+    // (or failed with "job timed out" when out of attempts).
     ReclaimStale(ctx context.Context, timeout time.Duration) (int64, error)
 
-    // DeleteCompleted removes completed jobs older than the retention period.
+    // DeleteCompleted / DeleteFailed remove jobs past their retention
+    // (completed_at for completed jobs, updated_at for failed jobs).
     DeleteCompleted(ctx context.Context, retention time.Duration) (int64, error)
-
-    // DeleteFailed removes failed jobs older than the retention period.
     DeleteFailed(ctx context.Context, retention time.Duration) (int64, error)
-
-    // List retrieves enrichment jobs with filtering and pagination.
-    List(ctx context.Context, filter Filter, opts ListOptions) ([]*Job, int64, error)
 }
 
-// Job represents a background enrichment task.
+// Job (enricher view; Start/ClaimDue return id, pattern_id, chunk_id).
 type Job struct {
-    ID           uuid.UUID  `db:"id"`
-    PatternID    uuid.UUID  `db:"pattern_id"`
-    Status       string     `db:"status"`
-    Attempts     int        `db:"attempts"`
-    MaxAttempts  int        `db:"max_attempts"`
-    LastError    *string    `db:"last_error"`
-    ScheduledFor time.Time  `db:"scheduled_for"`
-    StartedAt    *time.Time `db:"started_at"`
-    CompletedAt  *time.Time `db:"completed_at"`
-    CreatedAt    time.Time  `db:"created_at"`
-    UpdatedAt    time.Time  `db:"updated_at"`
+    ID        uuid.UUID
+    PatternID *uuid.UUID // set on legacy pattern-level jobs only
+    ChunkID   *uuid.UUID // set on chunk jobs (everything the API creates)
+    // The table also has status, attempts, max_attempts, last_error,
+    // scheduled_for, started_at, completed_at, created_at, updated_at.
 }
+```
 
-// Filter defines filtering options for job queries.
-// This type is package-specific to internal/repository/enrichmentjob.
-type Filter struct {
-    Status    *string    // Filter by job status (pending, processing, completed, failed)
-    PatternID *uuid.UUID // Filter by the associated pattern ID
-}
+The claim query:
+
+```sql
+update enrichment_jobs set
+    status = 'processing', started_at = now(), updated_at = now()
+where id in (
+    select id from enrichment_jobs
+    where status = 'pending'
+      and ((attempts > 0 and scheduled_for <= now())
+           or scheduled_for <= now() - $grace::interval)
+    order by scheduled_for
+    limit $limit
+    for update skip locked
+)
+returning id, pattern_id, chunk_id;
 ```
 
 ### GraphRepository
 
+**mnemonic-api** (`internal/repository/graph`):
+
 ```go
-// GraphRepository defines data access operations for the Neo4j knowledge graph.
-// Implementation: internal/repository/graph/repository.go
-type GraphRepository interface {
-    // SyncAgent creates or updates an agent node in the graph.
-    SyncAgent(ctx context.Context, agentName string) error
-
-    // DeleteAgent removes an agent node and its relationships.
-    DeleteAgent(ctx context.Context, agentName string) error
-
-    // SyncPattern creates or updates a pattern node with its relationships.
-    SyncPattern(ctx context.Context, pattern *GraphPattern) error
-
-    // DeletePattern removes a pattern node and its relationships.
+// Writing concepts and RELATED_TO edges is the enricher's job.
+type Repository interface {
+    // DeletePattern removes a Pattern node and all its relationships, along
+    // with any of its concepts that no other pattern mentions.
     DeletePattern(ctx context.Context, patternID uuid.UUID) error
-
-    // SyncConcepts creates concepts and their relationships to a pattern.
-    SyncConcepts(ctx context.Context, patternID uuid.UUID, concepts []Concept) error
-
-    // SetPatternAgentRelevance sets the relevance relationships for a pattern.
-    SetPatternAgentRelevance(ctx context.Context, patternID uuid.UUID, associations []AgentAssociation) error
-
-    // ComputeRelatedToEdges computes and creates RELATED_TO edges between
-    // the given pattern and other patterns sharing concepts. Existing
-    // RELATED_TO edges for this pattern are deleted first, then recomputed.
-    // Only edges with similarity >= minSimilarity are created.
-    // Called by EnrichmentService.ProcessJob after concept extraction.
-    // See: service-layer.md "RELATED_TO Edge Computation"
-    ComputeRelatedToEdges(ctx context.Context, patternID uuid.UUID, minSimilarity float64) error
-
-    // FindRelatedPatterns finds patterns related through shared concepts.
-    // Uses pre-computed RELATED_TO edges and collects shared concept names.
+    // GetPatternGraph returns up to relatedLimit related patterns and all
+    // concepts for a pattern, using a single session and read transaction.
+    GetPatternGraph(ctx context.Context, patternID uuid.UUID, relatedLimit int) (*PatternGraph, error)
     FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, limit int) ([]RelatedPattern, error)
+}
+```
 
-    // FindPatternsByAgent finds patterns relevant to an agent.
-    FindPatternsByAgent(ctx context.Context, agentName string, limit int) ([]PatternRelevance, error)
+**mnemonic-enricher** (`internal/repository/graph`):
 
-    // CleanupOrphanedConcepts removes concepts with no pattern relationships.
-    CleanupOrphanedConcepts(ctx context.Context) (int64, error)
-
-    // HealthCheck verifies the graph database connection.
-    HealthCheck(ctx context.Context) error
+```go
+type Repository interface {
+    // SyncPattern merges the Pattern node, prunes stale MENTIONED_IN edges,
+    // merges concepts and MENTIONED_IN edges, and recomputes RELATED_TO
+    // (similarity >= minSimilarity), all in one write transaction.
+    SyncPattern(ctx context.Context, pattern Pattern, concepts []Concept, minSimilarity float64) error
 }
 
-// GraphPattern represents pattern data for graph synchronization.
-type GraphPattern struct {
+type Pattern struct {
     ID          uuid.UUID
     Name        string
     Description *string
 }
+```
 
-// Concept represents an extracted concept entity.
-type Concept struct {
-    Name string // Normalized lowercase
-    Type string // technology, practice, domain
-}
+**mnemonic-mcp** (`internal/repository/graph`, read-only sessions):
 
-// RelatedPattern represents a pattern found through graph traversal.
-// Updated to include similarity score and shared concept names for the
-// MCP find_related_patterns tool.
-// See: service-layer.md "Resolving the find_related_patterns Data Gap"
-type RelatedPattern struct {
-    ID             uuid.UUID
-    Name           string
-    SharedConcepts int      // Count of shared concepts (retained for backward compat)
-    Similarity     float64  // Pre-computed similarity score from RELATED_TO edge (0.0-1.0)
-    ConceptNames   []string // Names of the shared concepts
-}
-
-// AgentAssociation represents an agent relevance pair for graph sync.
-// Uses AgentName (not AgentID) because Neo4j Agent nodes are keyed by name.
-// See: service-layer.md "Enrichment Job Lifecycle" step 6
-type AgentAssociation struct {
-    AgentName string
-    Relevance float64
-}
-
-// PatternRelevance represents a pattern with its relevance to an agent.
-type PatternRelevance struct {
-    ID        uuid.UUID
-    Name      string
-    Relevance float64
+```go
+type Repository interface {
+    GetPatternConcepts(ctx context.Context, patternID uuid.UUID) ([]Concept, error)
+    FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, limit int) ([]RelatedPattern, error)
 }
 ```
 
+Shared shapes:
+
+```go
+// Concept is a node linked to patterns via MENTIONED_IN.
+type Concept struct {
+    Name string // normalized lowercase
+    Type string // technology, practice, or domain
+}
+
+// RelatedPattern is a pattern reached through a RELATED_TO edge.
+type RelatedPattern struct {
+    ID             uuid.UUID
+    Name           string
+    SharedConcepts int      // count of shared concepts
+    Similarity     float64  // from the RELATED_TO edge (0.0-1.0)
+    ConceptNames   []string // names of the shared concepts
+}
+```
+
+Graph health is checked by the `/health` handler through the driver's `VerifyConnectivity`, not through a repository method.
+
 ### Common Types
 
-`ListOptions` is a shared type used across all repository packages that support pagination.
+`ListOptions` (in `mnemonic-api`'s `internal/repository` package) is the pagination type for pattern listing.
 
-`Filter` types are **not** shared -- each repository package defines its own `Filter` struct with fields specific to that entity. See the Filter definitions in [PatternRepository](#patternrepository) and [EnrichmentJob Repository](#enrichmentjob-repository).
+`Filter` types are **not** shared -- each repository package defines its own `Filter` struct with fields specific to that entity. See the Filter definition in [PatternRepository](#patternrepository).
 
 ```go
 // ListOptions defines pagination parameters.
-// Shared across all repository packages.
 type ListOptions struct {
     Offset int // Number of items to skip
     Limit  int // Maximum items to return (0 = no limit)
 }
-
-// Repository errors (package-specific)
-
-// agent package errors
-var (
-    ErrNotFound = errors.New("agent not found")
-    ErrExists   = errors.New("agent already exists")
-)
-
-// pattern package errors
-var (
-    ErrNotFound   = errors.New("pattern not found")
-    ErrNameExists = errors.New("pattern name already exists")
-)
-
-// skill package errors
-var (
-    ErrNotFound = errors.New("skill not found")
-    ErrExists   = errors.New("skill already exists")
-)
-
-// skillfile package errors
-var (
-    ErrNotFound  = errors.New("skill file not found")
-    ErrExists    = errors.New("skill file already exists")
-)
-
-// enrichmentjob package errors
-var (
-    ErrNotFound  = errors.New("enrichment job not found")
-    ErrNoPending = errors.New("no pending enrichment jobs available")
-)
 ```
+
+Repository errors are defined per package, for example `pattern.ErrNotFound` and `pattern.ErrNameExists` (api), `enrichmentjob.ErrJobAlreadyPending` and `enrichmentjob.ErrInvalidJobTarget` (api), and `enrichmentjob.ErrUnavailable` and `enrichmentjob.ErrNotFound` (enricher). Check each package's `errors.go` for the full set.
 
 ## Connection Configuration
 
@@ -1767,10 +1618,12 @@ type PostgresConfig struct {
 }
 ```
 
+Keys live under `database.postgres.*` (env `MNEMONIC_DATABASE_POSTGRES_*`). Defaults in all three services: `max_open_conns` 25, `max_idle_conns` 5, `conn_max_lifetime` 5m, `ssl_mode` `prefer`. The pool is a `pgxpool.Pool`: `max_open_conns` sets `MaxConns` and `max_idle_conns` sets `MinConns`.
+
 **Recommended Pool Settings:**
 
 | Setting | Development | Production (Single Pod) | Production (Multi-Pod) |
-|---------|-------------|-------------------------|------------------------|
+| --------- | ------------- | ------------------------- | ------------------------ |
 | MaxOpenConns | 5 | 25 | 15 per pod |
 | MaxIdleConns | 2 | 5 | 3 per pod |
 | ConnMaxLifetime | 5m | 1h | 1h |
@@ -1792,10 +1645,12 @@ type Neo4jConfig struct {
 }
 ```
 
+Defaults in all three services: `max_connection_pool_size` 50, `connection_acquisition_timeout` 60s, `database` `neo4j`, `uri` `bolt://localhost:7687`.
+
 **Recommended Pool Settings:**
 
 | Setting | Development | Production |
-|---------|-------------|------------|
+| --------- | ------------- | ------------ |
 | MaxConnectionPoolSize | 10 | 50 |
 | ConnectionAcquisitionTimeout | 30s | 60s |
 

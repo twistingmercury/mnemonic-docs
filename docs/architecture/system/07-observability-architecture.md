@@ -28,229 +28,262 @@ Observability enables understanding system behavior through external outputs. Fo
 
 **Scope:**
 
-| Component           | Observability Scope                        |
-| ------------------- | ------------------------------------------ |
-| MCP Server          | Full observability (metrics, logs, traces) |
-| Admin API           | Full observability (metrics, logs, traces) |
-| Enricher            | Full observability (metrics, logs, traces) |
-| Postgres + PGVector | Database metrics and query logging         |
-| Neo4j               | Query metrics and performance              |
-| RabbitMQ            | Queue depth, consumer connectivity         |
+| Component           | Observability Scope                                                 |
+| ------------------- | ------------------------------------------------------------------- |
+| MCP Server          | Metrics, logs, traces                                               |
+| Admin API           | Metrics, logs, traces                                               |
+| Enricher            | Metrics, logs, traces                                               |
+| Postgres + PGVector | Client-side query spans and pool metrics (otelpgx); query latency   |
+| Neo4j               | Client-side query spans and latency/error metrics from each service |
+| RabbitMQ            | Producer/consumer spans; API publisher connectivity on `/health`    |
 
 **Key Characteristic:** All three services are lightweight (no LLM inference), so observability focuses on pattern search performance, MCP tool serving, admin API operations, enrichment pipeline throughput, and database health rather than compute-intensive operations.
 
-MVP focuses on instrumenting each service to emit telemetry data via OpenTelemetry. This establishes the foundation for observability without requiring external infrastructure.
+MVP instruments each service with OpenTelemetry through the [`otelx`](https://github.com/twistingmercury/otelx) v2 library. This establishes the foundation for observability without requiring external infrastructure: nothing in the MVP needs a collector to run.
 
-**In scope:**
+**In scope (implemented):**
 
-- OpenTelemetry SDK integration in all three services
-- Structured logging with trace correlation
-- Metrics emission (counters, histograms, gauges) with a `service` label to distinguish sources
-- Distributed tracing with span creation
-- OTLP export configuration (exporters can be disabled or pointed to stdout/file for development)
+- OpenTelemetry SDK integration in all three services via otelx
+- Structured JSON logging (zerolog) with trace and span IDs
+- Metrics (counters, histograms, gauges) served in Prometheus format on `:9090/metrics`
+- Distributed tracing with W3C Trace Context, including across RabbitMQ
+- OTLP gRPC trace export, off by default (`observability.tracing.enabled: false`)
 
 **Why this first:** Proper instrumentation is the foundation. Once the application emits telemetry correctly, the collection and visualization infrastructure can be added without code changes.
+
+For the Go implementation (packages, middleware order, exact attributes), see [Observability Implementation Design](../../design/observability-implementation.md). For the configuration keys, see [Configuration](../../design/configuration.md#configuration-reference).
 
 ### Metrics
 
 [Back to Table of Contents](#table-of-contents)
 
-Each service emits metrics via OpenTelemetry. All metrics include a `service` label (`mcp-server`, `admin-api`, or `enricher`) to distinguish sources across the shared collection pipeline.
+Each service serves its metrics in Prometheus format on a separate port (`observability.metrics.port`, default `9090`, path `/metrics`), alongside Go runtime and process metrics. Metrics are pulled; there is no OTLP metrics push.
 
-**Request metrics** (MCP Server and Admin API) - Track HTTP requests including:
+**Telling services apart:** All three services currently set the OpenTelemetry resource attribute `service.name` to `mnemonic`, and the Prometheus exporter puts resource attributes on `target_info` rather than on every series. There is no `service` label on the metrics. Distinguish services by scrape target (Prometheus `job`/`instance`), or set `OTEL_SERVICE_NAME` per container.
 
-- MCP tool invocations by tool name (MCP Server)
-- Admin API operations by endpoint and status code (Admin API)
-- Request duration histograms (for percentile calculations)
-- In-flight request count
+Names below are the OpenTelemetry instrument names. In Prometheus, dots become underscores and unit or `_total` suffixes are added, for example `mnemonic_http_request_count_total` and `mnemonic_http_request_duration_milliseconds`.
 
-**Pattern metrics** (MCP Server) - Track pattern operations:
+| Metric                                  | Type          | Unit    | Attributes                                                            | Services |
+| --------------------------------------- | ------------- | ------- | --------------------------------------------------------------------- | -------- |
+| `mnemonic.http.request.count`           | counter       | request | `http.method`, `http.route`, `http.status_code`                       | all      |
+| `mnemonic.http.request.duration`        | histogram     | ms      | `http.method`, `http.route`, `http.status_code`                       | all      |
+| `mnemonic.http.request.in_flight`       | up-down gauge | request | none                                                                  | all      |
+| `mnemonic.db.query_latency`             | histogram     | ms      | `database`, `operation`                                               | all      |
+| `mnemonic.db.query_errors`              | counter       | error   | `database`, `operation`                                               | all      |
+| `mnemonic.patterns.query_latency`       | histogram     | ms      | `database`                                                            | API, MCP |
+| `mnemonic.patterns.returned`            | histogram     | pattern | `database`                                                            | API, MCP |
+| `mnemonic.queue.publish_failures_total` | counter       | failure | none                                                                  | API      |
+| `mnemonic.enrichment.jobs`              | counter       | job     | `outcome` (`completed`, `failed`, `error`, `rejected`)                | Enricher |
+| `mnemonic.enrichment.job_duration`      | histogram     | ms      | `outcome`                                                             | Enricher |
+| `mnemonic.mcp.tool_calls`               | counter       | call    | `tool`, `outcome` (`ok`, `invalid_input`, `not_found`, `unavailable`) | MCP      |
+| `mnemonic.mcp.tool_duration`            | histogram     | ms      | `tool`, `outcome`                                                     | MCP      |
 
-- Pattern search latency (semantic search via PGVector)
-- Pattern query latency (Neo4j relationship traversal)
-- Patterns returned per search request
-- Pattern cache effectiveness
+Notes:
 
-**Admin write metrics** (Admin API) - Track pattern management operations:
+- **Request metrics** cover the Gin routers only (the API's REST routes and every service's `/version`); `/health` and `/metrics` are skipped. The MCP endpoint (`/mcp` on port 8081) is not a Gin route: per-tool metrics come from `mnemonic.mcp.tool_*`, and the `otelhttp` wrapper adds the standard OpenTelemetry `http.server.*` metrics.
+- **Database metrics** (`mnemonic.db.*`) are recorded for Neo4j operations (`database="neo4j"`). Postgres is covered by otelpgx connection-pool metrics and query spans rather than these instruments.
+- **Pattern metrics** are recorded for the semantic search step (`database="pgvector"`).
+- **Publish failures** count enrichment jobs the API could not publish after one reconnect and retry. The job row stays `pending` in Postgres and the enricher's retry sweep picks it up, so this is a delay signal rather than data loss.
 
-- Write operations (create, update, delete) by resource type
-- Validation failures by reason
-- RabbitMQ publish latency (time to enqueue enrichment jobs)
-
-**Enrichment job metrics** (Enricher) - Track background enrichment pipeline:
-
-- Jobs consumed, completed, and failed (counters)
-- Job processing duration (histogram from consume to completion)
-- Retry attempt counts (per pattern and overall)
-- Enrichment failure rate and failure reasons
-- RabbitMQ consumer connectivity status
-
-**Database metrics** (all services) - Track storage layer health:
-
-- Connection pool utilization
-- Query latency by type
-- Error rates by database
-
-For implementation details including specific metric names and labels, see operations documentation (TBD).
+**Not implemented:** cache metrics (there is no pattern cache), validation-failure counters by reason, RabbitMQ publish latency, retry-attempt histograms and consumer connectivity gauges. Retry state lives on the `enrichment_jobs` rows in Postgres.
 
 ### Structured Logging
 
 [Back to Table of Contents](#table-of-contents)
 
-Each service emits structured logs with trace correlation. All logs use structured JSON format for consistent parsing and querying. Every log entry includes:
+Each service writes structured JSON logs (zerolog via otelx) to stdout. Logs are not sent through the OpenTelemetry logs signal; they are joined to traces through `trace_id` and `span_id` fields.
 
 **Standard fields:**
 
-- Timestamp, log level, service name
-- Trace and span IDs for correlation
-- Human-readable message
+- Timestamp, log level, message
+- `service`, `version` and `environment` (from `MNEMONIC_ENV`) added by otelx; the caller location is added at `debug` level
+- `trace_id` and `span_id` when the event happens inside a recording span
 
 **Context fields:**
 
-- Request ID for request correlation
-- Agent name (from pattern association)
-- Any relevant domain data
+- `request_id` from the `X-Request-ID` header (the API generates one if the header is missing or malformed and echoes it in the response)
+- `job_id`, `pattern_id`, `chunk_id` on enrichment logs
+- Method, status and duration on request logs; the API logs the route template, the MCP server and enricher log the path
 
 **What We Log**
 
-**Request events** (MCP Server and Admin API):
+**Request events** (all services):
 
-- MCP tool invoked (tool name, parameters, request ID)
-- Admin API operation (method, path, request ID)
-- Pattern search executed (query, results count)
-- Request completed (status, duration)
+- Request completed: one line per Gin request. The API uses its own completion logger (`info`, or `error` for 5xx), which records the route template and a bounded, redacted error diagnostic and never logs request bodies or query strings. The MCP server and enricher use the otelx Gin logging middleware (`info`, `warn` for 4xx, `error` for 5xx, with `latency_ms`, `client_ip`, `request_id`, `correlation_id`). `/health` and `/metrics` are skipped (the API still logs them when they fail with 5xx). Requests to `/mcp` do not pass through Gin and get no request-completed line.
+
+**MCP tool events** (MCP Server):
+
+- Tool logs carry the trace and span IDs of the `tools/call` span.
 
 **Admin write events** (Admin API):
 
-- Pattern created, updated, or deleted (pattern ID, operation)
-- Enrichment job enqueued (pattern ID, queue name)
-- RabbitMQ publish succeeded or failed
+- Failure to publish an enrichment job (warn, with `job_id` and `pattern_id`; the job remains pending in Postgres)
 
 **Enrichment job events** (Enricher):
 
-- Job consumed from queue (pattern ID, worker ID)
-- Embedding generated (pattern ID, duration)
-- Concepts extracted (pattern ID, concept count)
-- Graph nodes created (pattern ID)
-- Job completed (pattern ID, total duration)
-- Job failed (pattern ID, error, attempt count)
-- Job retried (pattern ID, attempt number, next scheduled time)
+- Processing enrichment job (job, pattern or chunk ID)
+- Job completed
+- Job failed with the failure recorded for retry (warn)
+- Job failed with an unrecoverable error, delivery nacked (error)
+- Job not available to start, delivery acked (a redelivery or a job owned by the retry sweep)
+- Unparseable delivery, nacked
 
 **System events** (all services):
 
-- Service started/stopped
-- Configuration loaded
-- Health check status changes
-- Database connection events
-- RabbitMQ connection events (Admin API, Enricher)
+- Service started and listening (ports, whether metrics and tracing are enabled)
+- Shutdown of each HTTP server
+- Database and RabbitMQ connection errors
 
-**Error events:**
-
-- Validation failures
-- Database errors
-- Unexpected exceptions
+**Not logged:** request and response bodies, raw upstream error bodies, credentials. Health check status changes are not logged; read `/health` instead.
 
 ### Distributed Tracing
 
 [Back to Table of Contents](#table-of-contents)
 
-Each service creates spans and propagates trace context. **W3C Trace Context** headers propagate trace IDs across service boundaries.
+Tracing is off by default. When `observability.tracing.enabled` is `true`, each service exports spans over OTLP gRPC to `observability.tracing.endpoint` and propagates **W3C Trace Context** (plus Baggage). Sampling is `ParentBased(TraceIDRatioBased(sample_rate))`: a sampled incoming parent is always continued, and new traces are sampled at `sample_rate` (default `0.1`).
+
+**Where spans come from:**
+
+| Source                      | Spans                                                         | Services |
+| --------------------------- | ------------------------------------------------------------- | -------- |
+| `otelgin` middleware        | One server span per Gin request (skips `/health`, `/metrics`) | all      |
+| `otelhttp` handler          | Server span for each `/mcp` request                           | MCP      |
+| MCP tool middleware         | `tools/call <tool>` with `mcp.tool.name`, `mcp.tool.outcome`  | MCP      |
+| `otelhttp` client transport | Client span for each OpenAI API call                          | all      |
+| `otelpgx`                   | Postgres query spans                                          | all      |
+| Graph repository            | `neo4j <operation>`                                           | all      |
+| RabbitMQ publisher          | `publish enrichment-jobs` (producer)                          | API      |
+| Enrichment worker           | `process enrichment-jobs` (consumer), `retry enrichment job`  | Enricher |
 
 **Trace Structure**
 
-A pattern search request trace shows the journey through the MCP Server:
+A `search_patterns` call to the MCP Server produces this span tree:
 
 ```mermaid
 flowchart TB
-    subgraph Trace["Trace ID: abc123"]
-        MCP["MCP: search_patterns<br/>45ms"]
+    subgraph Trace["One trace"]
+        HTTP["POST /mcp<br/>(otelhttp server span)"]
+        Tool["tools/call search_patterns"]
+        Embed["OpenAI embeddings request<br/>(otelhttp client span)"]
+        PGV["Postgres: chunk similarity query<br/>(otelpgx)"]
+        NEO["neo4j FindRelatedPatterns<br/>(one per seed pattern)"]
 
-        subgraph MCPSpans[" "]
-            Valid["Validate Parameters<br/>2ms"]
-            Embed["Generate Embedding<br/>8ms"]
-            Search["Search Patterns<br/>30ms"]
-            Resp["Build Response<br/>5ms"]
-        end
-
-        subgraph SearchSpans[" "]
-            PGV["PGVector Semantic Search<br/>15ms"]
-            NEO["Neo4j Relationship Fetch<br/>15ms"]
-        end
-
-        MCP --> Valid --> Embed --> Search --> Resp
-        Search --> PGV
-        Search --> NEO
+        HTTP --> Tool
+        Tool --> Embed
+        Tool --> PGV
+        Tool --> NEO
     end
 ```
 
-**Trace Propagation**
+**Trace Propagation: MCP**
 
-Traces flow from Claude Code through the MCP Server:
+The MCP endpoint continues an incoming `traceparent` header if the client sends one; otherwise it starts a new trace.
 
 ```mermaid
 sequenceDiagram
     participant CC as Claude Code
     participant MCP as MCP Server
+    participant OAI as OpenAI
     participant PGV as PGVector
     participant NEO as Neo4j
 
-    Note over CC: Generate trace ID
-    CC->>MCP: search_patterns(query)<br/>traceparent: 00-abc123-...
-    MCP->>PGV: Semantic search<br/>(child span)
-    PGV-->>MCP: Top N results
-    MCP->>NEO: Fetch relationships<br/>(child span)
+    CC->>MCP: POST /mcp tools/call search_patterns<br/>(traceparent optional)
+    Note over MCP: Continue or start trace
+    MCP->>OAI: Embed query (child span)
+    OAI-->>MCP: Query embedding
+    MCP->>PGV: Semantic search (child span)
+    PGV-->>MCP: Top N chunks
+    MCP->>NEO: Fetch related patterns (child spans)
     NEO-->>MCP: Related patterns
-    MCP-->>CC: Response<br/>(trace complete)
+    MCP-->>CC: Tool result
 ```
+
+**Trace Propagation: API to Enricher**
+
+Writing a pattern produces one trace that crosses RabbitMQ. The API commits the pattern, its chunks and their enrichment job rows in one transaction, then publishes each job ID with the trace context injected into the AMQP message headers. The enricher extracts that context, so its consumer span is a child of the API's producer span.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as mnemonic-api
+    participant PG as Postgres
+    participant MQ as RabbitMQ<br/>queue enrichment-jobs
+    participant ENR as mnemonic-enricher
+    participant N4J as Neo4j
+
+    C->>API: POST /v1/api/patterns<br/>(traceparent optional)
+    Note over API: otelgin server span
+    API->>PG: Insert pattern, chunks, job rows (one transaction)
+    loop each enrichment job
+        Note over API: Producer span "publish enrichment-jobs"
+        API->>MQ: {"job_id"} + traceparent in AMQP headers
+    end
+    API-->>C: 202 Accepted
+    MQ->>ENR: Delivery with headers
+    Note over ENR: Extract traceparent<br/>Consumer span "process enrichment-jobs"<br/>(child of the producer span)
+    ENR->>PG: Start job, load chunk (child spans)
+    ENR->>ENR: OpenAI embedding call (child span)
+    ENR->>PG: Store chunk embedding
+    opt every chunk of the pattern is now enriched
+        ENR->>ENR: OpenAI concept extraction (child span)
+        ENR->>N4J: Sync pattern and concepts (child spans)
+    end
+    ENR->>PG: Mark job completed or failed
+    ENR->>MQ: Ack (or nack)
+```
+
+Jobs that the enricher's retry sweep claims from Postgres (failed jobs whose retry delay has passed, or jobs that were never published) are processed under a new root span, `retry enrichment job`, because no message carries their original trace context. The span has the `mnemonic.job_id` attribute, which links it to the original request by job ID.
 
 ### Health Check Endpoint
 
 [Back to Table of Contents](#table-of-contents)
 
-Each service exposes its own `GET /health` endpoint. Health checks are used by container orchestration, load balancers, and monitoring infrastructure to determine service availability.
+Each service exposes `GET /health` on `server.port` (default `8080`; the MCP endpoint on `8081` has no health route). The handler comes from [`heartbeat`](https://github.com/twistingmercury/heartbeat) v2, which runs every dependency check concurrently with a 3-second timeout each. Health checks are used by container orchestration, load balancers and monitoring infrastructure to determine service availability; each binary's `--health` flag calls the endpoint for the container `HEALTHCHECK`.
 
-**MCP Server** (`:8081`) — checks Postgres and Neo4j connectivity:
+**Dependency checks:**
 
-```json
-{
-  "status": "healthy",
-  "postgres": "reachable",
-  "neo4j": "reachable"
-}
-```
+| Service   | Dependency (`name`)       | Probe                                                        | Severity on failure |
+| --------- | ------------------------- | ------------------------------------------------------------ | ------------------- |
+| all       | `PostgreSQL`              | Pool ping                                                    | Critical            |
+| all       | `Neo4j`                   | Driver `VerifyConnectivity`                                  | Critical            |
+| all       | `OpenAI embedding model`  | `GET {openai.base_url}/models/{embedding_model}` (free call) | Warning             |
+| Enricher  | `OpenAI extraction model` | `GET {openai.base_url}/models/{extraction_model}`            | Warning             |
+| Admin API | `RabbitMQ`                | Publisher connection and channel open                        | Warning             |
 
-**Admin API** (`:8080`) — checks Postgres, Neo4j, and RabbitMQ publisher connectivity:
+The Enricher does not report its RabbitMQ consumer connection on `/health`.
 
-```json
-{
-  "status": "healthy",
-  "postgres": "reachable",
-  "neo4j": "reachable",
-  "rabbitmq": "reachable"
-}
-```
-
-**Enricher** — checks RabbitMQ consumer connectivity:
+**Response** (example from the Admin API with OpenAI unreachable):
 
 ```json
 {
-  "status": "healthy",
-  "rabbitmq": "reachable"
+  "status": "Warning",
+  "name": "mnemonic",
+  "resource": "mnemonic",
+  "machine": "a1b2c3d4e5f6",
+  "utc_date_time": "2026-10-15T12:00:00.123456Z",
+  "request_duration_ms": 41.2,
+  "dependencies": [
+    { "status": "OK", "name": "PostgreSQL", "resource": "PostgreSQL", "request_duration_ms": 1.8, "http_status_code": 0, "message": "ok" },
+    { "status": "OK", "name": "Neo4j", "resource": "Neo4j", "request_duration_ms": 4.1, "http_status_code": 0, "message": "ok" },
+    { "status": "Warning", "name": "OpenAI embedding model", "resource": "text-embedding-3-large", "request_duration_ms": 40.9, "http_status_code": 0, "message": "request failed" },
+    { "status": "OK", "name": "RabbitMQ", "resource": "RabbitMQ", "request_duration_ms": 0.01, "http_status_code": 0, "message": "ok" }
+  ]
 }
 ```
 
-**Health determination:** All declared dependencies must be reachable for a service to report healthy. A failure of any dependency results in an HTTP 503 unhealthy response. Checks perform a lightweight connectivity probe; they do not execute business logic.
+**Health determination:** The overall `status` is the most severe dependency status: `OK`, `Warning` or `Critical`. `OK` and `Warning` return HTTP 200; `Critical` returns HTTP 503. A Warning means degraded but serving: an OpenAI outage blocks new embeddings but not reads of existing data, and a disconnected API publisher reconnects on the next publish while unpublished jobs wait in Postgres. Checks perform a lightweight connectivity probe; they do not execute business logic. Concurrent requests share one run of the checks.
 
-**Logging:** Health check status changes (healthy to unhealthy, unhealthy to healthy) are logged as system events. Repeated healthy checks are not logged to avoid log noise.
+**Logging and tracing:** `/health` is excluded from tracing, request metrics and request logging. Status changes are not logged.
 
 ### Key Takeaways
 
 [Back to Table of Contents](#table-of-contents)
 
-- **OpenTelemetry** - Standard collection layer for metrics, logs, and traces; the MVP foundation across all three services
-- **Service label** - Every metric carries a `service` label so signals from MCP Server, Admin API, and Enricher remain distinguishable in shared dashboards
-- **Correlation** - Trace IDs connect signals for root cause analysis
+- **OpenTelemetry via otelx** - One initialization per service for logs, Prometheus metrics and OTLP traces; tracing is opt-in
+- **Service identity** - All three services report `service.name=mnemonic`; tell them apart by scrape target or by setting `OTEL_SERVICE_NAME`
+- **Correlation** - Trace IDs connect logs and spans, and a pattern write is one trace from the API through RabbitMQ to the enricher
 - **Lightweight focus** - Observability focuses on knowledge graph query performance, MCP serving efficiency, and enrichment pipeline throughput, not LLM costs
+- **Degraded, not down** - OpenAI and RabbitMQ problems are Warnings on `/health`; only the databases are Critical
 - **Foundation first** - MVP instruments each service; collection and operational tooling are added in Post-MVP without code changes
 
 ## Post-MVP
@@ -272,7 +305,7 @@ After MVP, deploy the observability stack to collect and store the telemetry the
 
 [Back to Table of Contents](#table-of-contents)
 
-The observability stack uses industry-standard open-source tools. The full stack connects the instrumented application (see [MVP](#mvp)) to collection, storage, and visualization layers:
+The observability stack uses industry-standard open-source tools. The full stack connects the instrumented application (see [MVP](#mvp)) to collection, storage, and visualization layers. Traces are pushed to the collector over OTLP; metrics are scraped from each service's `/metrics` endpoint; logs are collected from container stdout.
 
 ```mermaid
 graph TB
@@ -296,10 +329,12 @@ graph TB
         Grafana[Grafana<br/>Dashboards]
     end
 
-    MCP --> OTel
-    API --> OTel
-    ENR --> OTel
-    OTel --> Prom
+    MCP -- "OTLP traces" --> OTel
+    API -- "OTLP traces" --> OTel
+    ENR -- "OTLP traces" --> OTel
+    Prom -- "scrape :9090/metrics" --> MCP
+    Prom -- "scrape :9090/metrics" --> API
+    Prom -- "scrape :9090/metrics" --> ENR
     OTel --> Loki
     OTel --> Jaeger
     Grafana --> Prom
@@ -327,16 +362,17 @@ We alert on conditions that require attention:
 
 **Critical alerts** (immediate response required):
 
-- Any service unavailable (health check failing on MCP Server, Admin API, or Enricher)
+- Any service unavailable (`/health` returning 503 on MCP Server, Admin API, or Enricher)
 - High error rate (>5% of requests failing over 5 minutes)
 - Database unreachable (Postgres or Neo4j connection failures)
-- RabbitMQ unreachable (Admin API publisher or Enricher consumer connectivity lost)
 
 **Warning alerts** (investigate soon):
 
+- `/health` reporting `Warning` (OpenAI unreachable or key invalid, API publisher disconnected)
 - Elevated latency (P95 > 200ms for pattern searches)
 - Connection pool saturation (>80% utilization)
-- High cache miss rate (pattern search efficiency degraded)
+- Enrichment jobs failing (`mnemonic.enrichment.jobs` with `outcome` `failed` or `error`) or publish failures (`mnemonic.queue.publish_failures_total`)
+- Enrichment backlog: `pending` jobs older than 10 minutes in `enrichment_jobs` (a SQL check; no metric exists for it)
 
 **Alert routing:**
 
@@ -371,11 +407,12 @@ Answers: "How is pattern search behaving?"
 
 **What it shows:**
 
-- Pattern searches over time (search volume)
-- Top search queries (what users search for)
+- Pattern searches over time (search volume, from `mnemonic.mcp.tool_calls`)
 - Search result quality (patterns returned per query)
-- Cache hit rates (are we efficiently caching?)
 - Pattern search performance (semantic search latency)
+- Tool outcomes (`invalid_input`, `not_found`, `unavailable`)
+
+Query text is not recorded in metrics or logs, so a "top queries" view would need new instrumentation.
 
 This dashboard helps understand pattern usage and search optimization opportunities.
 
@@ -414,7 +451,7 @@ successful requests / total requests >= 0.999
 requests completing < 100ms / total requests >= 0.99
 ```
 
-Note: These are aggressive targets because the services do no LLM inference. Knowledge graph queries and MCP serving should be fast.
+Note: These are aggressive targets because the services do no LLM inference. Knowledge graph queries and MCP serving should be fast. Searches embed the query through OpenAI (`GET /v1/api/patterns/search` and the `search_patterns` tool), so their latency includes an OpenAI call and may need a separate target.
 
 ### Runbooks
 
@@ -424,13 +461,13 @@ Runbooks are implemented alongside the alerting described in [Alerting Strategy]
 
 **Required runbooks:**
 
-| Alert                    | Runbook Focus                                         |
-| ------------------------ | ----------------------------------------------------- |
-| Service unavailable      | Check container health, database and queue connectivity |
-| High error rate          | Identify error types, check recent deployments        |
-| Elevated latency         | Check database performance, pattern cache             |
-| Database unreachable     | Connection strings, network, database health          |
-| RabbitMQ unreachable     | Queue connectivity for Admin API publisher and Enricher consumer |
+| Alert                | Runbook Focus                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| Service unavailable  | Check container health, database and queue connectivity                               |
+| High error rate      | Identify error types, check recent deployments                                        |
+| Elevated latency     | Check database performance and OpenAI latency                                         |
+| Database unreachable | Connection strings, network, database health                                          |
+| RabbitMQ unreachable | Queue connectivity for Admin API publisher and Enricher consumer; pending job backlog |
 
 Runbooks live in operations documentation and are linked directly from alert annotations.
 
@@ -440,7 +477,7 @@ For runbook templates and content, see operations documentation (TBD).
 
 [Back to Table of Contents](#table-of-contents)
 
-Sampling configuration is applied to the trace collection infrastructure in [Collection and Storage](#collection-and-storage). For lightweight services like the Mnemonic components, we can trace more aggressively:
+The services already apply head sampling at `observability.tracing.sample_rate` (default 10%) while honoring a sampled parent. The strategy below is applied to the trace collection infrastructure in [Collection and Storage](#collection-and-storage) (tail sampling in the collector). For lightweight services like the Mnemonic components, we can trace more aggressively:
 
 **Always captured:**
 
@@ -450,6 +487,8 @@ Sampling configuration is applied to the trace collection infrastructure in [Col
 **Sampled:**
 
 - Successful requests - 10-20% sampling for baseline understanding
+
+Tail sampling only sees spans the services export, so capturing all errors requires raising `sample_rate` (up to `1.0`) and letting the collector drop the rest.
 
 This provides visibility without excessive storage costs.
 

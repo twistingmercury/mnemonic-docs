@@ -9,9 +9,9 @@
   - [Precedence Rules](#precedence-rules)
   - [Loading Behavior](#loading-behavior)
 - [Configuration File](#configuration-file)
-  - [MCP Server](#mcp-server-mnemonic-mcpconfigyaml)
-  - [Admin API](#admin-api-mnemonic-apiconfigyaml)
-  - [Enricher](#enricher-mnemonic-enricherconfigyaml)
+  - [MCP Server](#mcp-server-mnemonic-mcp)
+  - [Admin API](#admin-api-mnemonic-api)
+  - [Enricher](#enricher-mnemonic-enricher)
 - [Environment Variables](#environment-variables)
 - [OpenTelemetry Standard Variables](#opentelemetry-standard-variables)
 - [otelx Dependency](#otelx-dependency)
@@ -36,7 +36,7 @@
 
 > **Architecture Reference:** [System Architecture - Component Breakdown](../architecture/system/02-system-architecture.md#component-breakdown) | [Deployment Architecture - Component Deployment](../architecture/system/06-deployment-architecture.md#component-deployment)
 
-Each Mnemonic service (`mnemonic-mcp`, `mnemonic-api`, `mnemonic-enricher`) uses the same layered configuration system built on Viper, but each service has its own configuration file containing only the settings relevant to that service.
+Each Mnemonic service (`mnemonic-mcp`, `mnemonic-api`, `mnemonic-enricher`) uses the same layered configuration system built on Viper, but each service has its own `internal/config` package (`config.go` and `defaults.go`) that defines only the settings relevant to that service.
 
 The configuration system is built on [`github.com/spf13/viper`](https://github.com/spf13/viper). Viper provides unified support for multiple configuration sources with well-defined precedence. This design enables:
 
@@ -44,11 +44,13 @@ The configuration system is built on [`github.com/spf13/viper`](https://github.c
 - **File-based configuration**: Persistent settings in YAML format (via `viper.ReadInConfig()`)
 - **Environment overrides**: Container and CI/CD friendly (via `viper.AutomaticEnv()` with the `MNEMONIC_` prefix)
 
-| Service              | Config Prefix | Config File                 | Primary Use Case                          |
-| -------------------- | ------------- | --------------------------- | ----------------------------------------- |
-| `mnemonic-mcp`       | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | MCP server and read-only database access  |
-| `mnemonic-api`       | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | Admin API, publishing, and OpenAI access  |
-| `mnemonic-enricher`  | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | Queue consumer, enrichment, and OpenAI    |
+| Service             | Config Prefix | Config File                 | Service-specific sections             |
+| ------------------- | ------------- | --------------------------- | ------------------------------------- |
+| `mnemonic-mcp`      | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | `mcp.*` (MCP endpoint on port 8081)   |
+| `mnemonic-api`      | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | `queue.*` (publisher), `vocabulary.*` |
+| `mnemonic-enricher` | `MNEMONIC_`   | `/etc/mnemonic/config.yaml` | `queue.*` (consumer), `enrichment.*`  |
+
+All three share `server.*` (health/version HTTP server), `database.*`, `openai.*`, `logging.*` and `observability.*`.
 
 Admin operations use curl or similar HTTP clients against the REST API. No separate CLI is planned for MVP.
 
@@ -66,185 +68,270 @@ Configuration values are loaded in the following order, with later sources overr
 3. Environment variables (highest priority)
 ```
 
-```mermaid <!-- JKJ: remove the gradient -->
+```mermaid
 flowchart LR
     A[Defaults] --> B[Config File]
     B --> C[Environment]
-
-    style A fill:#e0e0e0
-    style B fill:#c0c0c0
-    style C fill:#a0a0a0
 ```
 
 ### Loading Behavior
 
-Viper's `MergeInConfig()` is NOT used. Configuration is loaded with `ReadInConfig()`, which replaces the entire file layer. Environment variables are bound via `AutomaticEnv()` with prefix replacement, so that `MNEMONIC_SERVER_ADMIN_PORT` maps to the Viper key `server.admin.port`.
+Viper's `MergeInConfig()` is NOT used. Configuration is loaded with `ReadInConfig()`, which replaces the entire file layer. Environment variables are bound via `AutomaticEnv()` with key replacement (`.` becomes `_`), so `MNEMONIC_QUEUE_RABBITMQ_HOST` maps to the Viper key `queue.rabbitmq.host`.
 
 **Merge vs Replace**:
 
 - Scalar values (strings, numbers, booleans): Later sources replace earlier values
-- Arrays: Later sources replace entire array (no merging)
+- Arrays: Later sources replace entire array (no merging). From the environment, a list such as `vocabulary.languages` is given comma-separated.
 - Maps/Objects: Keys are merged; later sources override individual keys
+
+**Missing or broken files** (differs slightly per service):
+
+| Service             | No file found  | Selected file cannot be read or parsed                                                   |
+| ------------------- | -------------- | ---------------------------------------------------------------------------------------- |
+| `mnemonic-api`      | Defaults + env | Always fatal, whether the file came from `--config`, `MNEMONIC_CONFIG_FILE` or discovery |
+| `mnemonic-enricher` | Defaults + env | Fatal only when set explicitly via `MNEMONIC_CONFIG_FILE`; a discovered file is ignored  |
+| `mnemonic-mcp`      | Defaults + env | Fatal only when set explicitly via `MNEMONIC_CONFIG_FILE`; a discovered file is ignored  |
+
+After loading, every service validates the result and refuses to start if validation fails (see [Configuration Validation](#configuration-validation)).
 
 ## Configuration File
 
 [Table of Contents](#table-of-contents)
 
-> **Architecture Reference:** [System Architecture - Mnemonic](../architecture/system/02-system-architecture.md#mnemonic-server) | [Deployment Architecture](../architecture/system/06-deployment-architecture.md#component-deployment)
+> **Architecture Reference:** [System Architecture - Component Breakdown](../architecture/system/02-system-architecture.md#component-breakdown) | [Deployment Architecture](../architecture/system/06-deployment-architecture.md#component-deployment)
 
-Each Mnemonic service reads configuration from its own YAML file. Each file contains only the settings relevant to that service.
+Each Mnemonic service reads configuration from its own YAML file. Each file contains only the settings relevant to that service. Every key is optional; the examples below show the compiled defaults (secrets left empty).
 
 **Default location**: `/etc/mnemonic/config.yaml` (production) or `./config.yaml` (development)
 
-### MCP Server (`mnemonic-mcp/config.yaml`)
+### MCP Server (`mnemonic-mcp`)
 
 ```yaml
-server:
-  mcp:
-    port: 8081
-    session_timeout: "30m"
+server:                     # health/version HTTP server
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: "30s"
+  write_timeout: "30s"
+  idle_timeout: "120s"
+  shutdown_timeout: "5s"
+  tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
+mcp:                        # Streamable HTTP MCP endpoint at /mcp
+  port: 8081
+  read_timeout: "30s"
+  write_timeout: "30s"
+  idle_timeout: "120s"
+  default_search_threshold: 0.5
 database:
   postgres:
     host: "localhost"
     port: 5432
-    user: "mnemonic"
-    password: ""
     database: "mnemonic"
-    max_connections: 10
+    username: "mnemonic"
+    password: ""
+    ssl_mode: "prefer"
+    max_open_conns: 25
+    max_idle_conns: 5
+    conn_max_lifetime: "5m"
   neo4j:
     uri: "bolt://localhost:7687"
-    user: "neo4j"
+    username: "neo4j"
     password: ""
     database: "neo4j"
-observability:
-  service_name: "mnemonic-mcp"
-  log_level: "info"
-  log_format: "json"
-```
-
-### Admin API (`mnemonic-api/config.yaml`)
-
-```yaml
-server:
-  admin:
-    port: 8080
-database:
-  postgres:
-    host: "localhost"
-    port: 5432
-    user: "mnemonic"
-    password: ""
-    database: "mnemonic"
-    max_connections: 10
-  neo4j:
-    uri: "bolt://localhost:7687"
-    user: "neo4j"
-    password: ""
-    database: "neo4j"
-rabbitmq:
-  url: "amqp://guest:guest@localhost:5672/"
-  exchange: "mnemonic.enrichment"
-  routing_key: "enrichment.job"
-  publisher_confirms: true
+    max_connection_pool_size: 50
+    connection_acquisition_timeout: "60s"
 openai:
   api_key: ""
+  base_url: "https://api.openai.com/v1"
   embedding_model: "text-embedding-3-large"
   embedding_dimensions: 2000
+  retry_attempts: 3
+  retry_delay: "1s"
+logging:
+  level: "info"
 observability:
-  service_name: "mnemonic-api"
-  log_level: "info"
-  log_format: "json"
+  metrics:
+    enabled: true
+    path: "/metrics"
+    port: 9090
+  tracing:
+    enabled: false
+    endpoint: ""            # OTLP gRPC host:port, required when enabled
+    sample_rate: 0.1
+    otlp_insecure: true
 ```
 
-### Enricher (`mnemonic-enricher/config.yaml`)
+### Admin API (`mnemonic-api`)
+
+The `database` section is the same as for the MCP server. The API's `server` section has no `tls` block.
 
 ```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080                # REST API (/v1/api), /health, /version, /swagger
+  read_timeout: "30s"
+  write_timeout: "30s"
+  idle_timeout: "120s"
+  shutdown_timeout: "5s"
 database:
-  postgres:
+  # ... same keys and defaults as mnemonic-mcp
+queue:
+  provider: "rabbitmq"
+  rabbitmq:
     host: "localhost"
-    port: 5432
-    user: "mnemonic"
+    port: 5672
+    user: "guest"
     password: ""
-    database: "mnemonic"
-    max_connections: 10
-  neo4j:
-    uri: "bolt://localhost:7687"
-    user: "neo4j"
-    password: ""
-    database: "neo4j"
-rabbitmq:
-  url: "amqp://guest:guest@localhost:5672/"
-  queue: "mnemonic.enrichment.jobs"
-  prefetch_count: 5
-  consumer_tag: "enricher-1"
+    vhost: "/"
+    queue: "enrichment-jobs"
+    reconnect_delay: "5s"
 openai:
   api_key: ""
+  base_url: "https://api.openai.com/v1"
+  embedding_model: "text-embedding-3-large"
+  embedding_dimensions: 2000
+  extraction_model: "gpt-4o-mini"   # accepted, not used by the API
+  max_requests_per_minute: 500      # validated (>= 1), not enforced
+  retry_attempts: 3
+  retry_delay: "1s"
+vocabulary:
+  languages: ["agnostic", "bash", "c", "go", "python", "..."]  # 42 values by default, see defaults.go
+  domains: ["api-design", "backend", "frontend", "testing", "..."]  # 14 values by default
+logging:
+  level: "info"
+  format: "json"            # validated (json|text), not currently applied
+  include_caller: false     # not currently applied
+observability:
+  metrics:
+    enabled: true
+    path: "/metrics"
+    port: 9090
+  health:
+    enabled: true           # validated only; /health is always registered
+    path: "/health"         # validated only; the route is fixed at /health
+  tracing:
+    enabled: false
+    endpoint: ""
+    sample_rate: 0.1
+    otlp_insecure: true
+```
+
+### Enricher (`mnemonic-enricher`)
+
+The `server` section matches `mnemonic-mcp` (including `tls`), and `database` matches both other services.
+
+```yaml
+server:
+  # ... same keys and defaults as mnemonic-mcp, port 8080 serves /health and /version
+database:
+  # ... same keys and defaults as mnemonic-mcp
+queue:
+  provider: "rabbitmq"      # only supported value
+  rabbitmq:
+    host: "localhost"
+    port: 5672
+    user: "guest"
+    password: ""
+    vhost: "/"
+    queue: "enrichment-jobs"
+    prefetch_count: 5
+    reconnect_delay: "5s"
+openai:
+  api_key: ""
+  base_url: "https://api.openai.com/v1"
   embedding_model: "text-embedding-3-large"
   embedding_dimensions: 2000
   extraction_model: "gpt-4o-mini"
+  retry_attempts: 3
+  retry_delay: "1s"
 enrichment:
-  max_retries: 3
+  worker_count: 2
   retry_delay: "30s"
+  job_timeout: "5m"
+  drain_timeout: "30s"
+  completed_retention: "168h"   # 7 days
+  failed_retention: "720h"      # 30 days
   related_to_min_similarity: 0.3
+logging:
+  level: "info"
 observability:
-  service_name: "mnemonic-enricher"
-  log_level: "info"
-  log_format: "json"
+  metrics:
+    enabled: true
+    path: "/metrics"
+    port: 9090
+  tracing:
+    enabled: false
+    endpoint: ""
+    sample_rate: 0.1
+    otlp_insecure: true
 ```
 
 ## Environment Variables
 
 [Table of Contents](#table-of-contents)
 
-All Mnemonic configuration options can be set via environment variables using the `MNEMONIC_` prefix.
+All Mnemonic configuration options can be set via environment variables using the `MNEMONIC_` prefix. Two further variables are read directly rather than through Viper keys:
+
+| Variable               | Services | Purpose                                                                                |
+| ---------------------- | -------- | -------------------------------------------------------------------------------------- |
+| `MNEMONIC_CONFIG_FILE` | all      | Explicit config file path (see [File Discovery Order](#file-discovery-order))          |
+| `MNEMONIC_ENV`         | all      | Value of the `deployment.environment.name` telemetry attribute (default `development`) |
 
 ```bash
-# Server
-export MNEMONIC_SERVER_ADMIN_PORT="8080"
-export MNEMONIC_SERVER_MCP_PORT="8081"
-export MNEMONIC_SERVER_MCP_SESSION_TIMEOUT="30m"
+# Server and MCP endpoint
+export MNEMONIC_SERVER_PORT="8080"
+export MNEMONIC_MCP_PORT="8081"                 # mnemonic-mcp only
 
 # Database credentials (recommended for secrets)
 export MNEMONIC_DATABASE_POSTGRES_PASSWORD="secret"
 export MNEMONIC_DATABASE_NEO4J_PASSWORD="secret"
 
 # RabbitMQ (Admin API and Enricher)
-export MNEMONIC_RABBITMQ_URL="amqp://guest:guest@localhost:5672/"
-export MNEMONIC_RABBITMQ_EXCHANGE="mnemonic.enrichment"
-export MNEMONIC_RABBITMQ_QUEUE="mnemonic.enrichment.jobs"
+export MNEMONIC_QUEUE_RABBITMQ_HOST="rabbitmq"
+export MNEMONIC_QUEUE_RABBITMQ_USER="mnemonic"
+export MNEMONIC_QUEUE_RABBITMQ_PASSWORD="secret"
+export MNEMONIC_QUEUE_RABBITMQ_QUEUE="enrichment-jobs"
 
-# OpenAI (required for Admin API and Enricher)
+# OpenAI (all three services embed text; the enricher also extracts concepts)
 export MNEMONIC_OPENAI_API_KEY="sk-..."
+export MNEMONIC_OPENAI_BASE_URL="http://openai-stub:8080/v1"   # e.g. the integration-test stub
 
-# Logging
+# Logging and tracing
 export MNEMONIC_LOGGING_LEVEL="debug"
+export MNEMONIC_OBSERVABILITY_TRACING_ENABLED="true"
+export MNEMONIC_OBSERVABILITY_TRACING_ENDPOINT="otel-collector:4317"
 ```
 
 ## OpenTelemetry Standard Variables
 
 [Table of Contents](#table-of-contents)
 
-In addition to `MNEMONIC_` prefixed variables, Mnemonic respects standard OpenTelemetry environment variables for tracing configuration:
+In addition to `MNEMONIC_` prefixed variables, the otelx library reads the standard OpenTelemetry environment variables. How they interact with Mnemonic's own keys:
 
-| Variable                      | Description                         | Example          |
-| ----------------------------- | ----------------------------------- | ---------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint             | `localhost:4317` |
-| `OTEL_EXPORTER_OTLP_INSECURE` | Use insecure connection             | `true`           |
-| `OTEL_SERVICE_NAME`           | Service name (overridden by config) | `mnemonic`       |
+| Variable                                                                                 | Effect in Mnemonic                                                                                                                                   |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OTEL_SERVICE_NAME`                                                                      | Overrides the `service.name` resource attribute (the code sets `mnemonic` in every service)                                                          |
+| `OTEL_RESOURCE_ATTRIBUTES`                                                               | Adds resource attributes and overrides the code's values                                                                                             |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT`, other `OTEL_EXPORTER_OTLP_*` | Read by the OTLP gRPC trace exporter for anything the service does not set itself                                                                    |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`                      | Overridden by `observability.tracing.endpoint`, which is required whenever tracing is enabled                                                        |
+| `OTEL_EXPORTER_OTLP_INSECURE`                                                            | Overridden when `observability.tracing.otlp_insecure` is `true` (the default); set the key to `false` to let TLS settings from the environment apply |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`                                         | Ignored: the services always set `ParentBased(TraceIDRatioBased(observability.tracing.sample_rate))`                                                 |
 
-These variables are used by the otelx library and take precedence when set.
+otelx v2 no longer has endpoint or insecure settings in its own config. Each service therefore builds the OTLP gRPC trace exporter itself from `observability.tracing.endpoint` and `otlp_insecure` and hands it to otelx, so the `MNEMONIC_` keys keep working (see `src/internal/telemetry/telemetry.go` in each service).
 
 ## otelx Dependency
 
 [Table of Contents](#table-of-contents)
 
-Mnemonic uses the `github.com/twistingmercury/otelx` package (v1.0.0) to simplify OpenTelemetry integration. This library provides:
+Mnemonic uses the `github.com/twistingmercury/otelx/v2` package (v2.0.0) to simplify OpenTelemetry integration. This library provides:
 
 - **Unified initialization**: Single `Initialize()` call for logging, metrics, and tracing
-- **Zerolog-based structured logging**: With automatic trace correlation (trace_id, span_id in log entries)
-- **Prometheus metrics exporter**: Exposes metrics on a configurable port and path
-- **OTLP gRPC trace exporter**: Sends traces to an OpenTelemetry collector
-- **Gin middleware**: Request logging with automatic trace context propagation
+- **Zerolog-based structured logging**: JSON lines with trace correlation helpers (trace_id, span_id in log entries)
+- **Prometheus metrics exporter**: Its own registry and HTTP server on a configurable address and path, including Go runtime and process metrics
+- **Trace provider**: OTLP gRPC by default, or a supplied exporter (Mnemonic supplies one, see above); sets the W3C Trace Context and Baggage propagator globally
+- **Gin middleware** (`github.com/twistingmercury/otelx/middleware/gin/v2`): Request logging with trace correlation, used by `mnemonic-mcp` and `mnemonic-enricher`
 
 The otelx package handles the complexity of OpenTelemetry SDK setup, allowing Mnemonic to focus on emitting telemetry rather than configuring exporters. For detailed implementation patterns using otelx, see [Observability Implementation Design](observability-implementation.md).
 
@@ -252,97 +339,90 @@ The otelx package handles the complexity of OpenTelemetry SDK setup, allowing Mn
 
 [Table of Contents](#table-of-contents)
 
-RabbitMQ is used for asynchronous communication between the Admin API (publisher) and the Enricher (consumer). The Admin API publishes enrichment jobs to an exchange; the Enricher consumes from a bound queue.
+RabbitMQ is used for asynchronous communication between the Admin API (publisher) and the Enricher (consumer). The Admin API publishes each enrichment job as a persistent JSON message (`{"job_id": "..."}`) through the default exchange directly to the durable queue `enrichment-jobs`, with the W3C trace context in the message headers. The Enricher consumes from the same queue. There is no named exchange, routing key, publisher confirms setting or consumer tag setting.
 
-Publisher settings apply only to `mnemonic-api`. Consumer settings apply only to `mnemonic-enricher`. The connection URL is shared by both.
+The keys live under `queue.rabbitmq` in both services. Credentials are sent via SASL PLAIN and are never embedded in a URL.
 
-| Key | Type | Default | Env Var | Description |
-| --- | ---- | ------- | ------- | ----------- |
-| `rabbitmq.url` | string | `amqp://guest:guest@localhost:5672/` | `MNEMONIC_RABBITMQ_URL` | AMQP connection string |
-| `rabbitmq.exchange` | string | `mnemonic.enrichment` | `MNEMONIC_RABBITMQ_EXCHANGE` | Exchange name (Admin API publisher) |
-| `rabbitmq.routing_key` | string | `enrichment.job` | `MNEMONIC_RABBITMQ_ROUTING_KEY` | Routing key (Admin API publisher) |
-| `rabbitmq.queue` | string | `mnemonic.enrichment.jobs` | `MNEMONIC_RABBITMQ_QUEUE` | Queue name (Enricher consumer) |
-| `rabbitmq.prefetch_count` | integer | `5` | `MNEMONIC_RABBITMQ_PREFETCH_COUNT` | Consumer prefetch count (Enricher) |
-| `rabbitmq.consumer_tag` | string | `enricher-1` | `MNEMONIC_RABBITMQ_CONSUMER_TAG` | Consumer identifier (Enricher) |
-| `rabbitmq.publisher_confirms` | boolean | `true` | `MNEMONIC_RABBITMQ_PUBLISHER_CONFIRMS` | Enable publisher confirms (Admin API) |
+| Key                              | Type     | Default           | Env Var                                   | Services      | Description                                                             |
+| -------------------------------- | -------- | ----------------- | ----------------------------------------- | ------------- | ----------------------------------------------------------------------- |
+| `queue.provider`                 | string   | `rabbitmq`        | `MNEMONIC_QUEUE_PROVIDER`                 | api, enricher | Queue backend; the enricher rejects any other value, the API ignores it |
+| `queue.rabbitmq.host`            | string   | `localhost`       | `MNEMONIC_QUEUE_RABBITMQ_HOST`            | api, enricher | Broker host                                                             |
+| `queue.rabbitmq.port`            | int      | `5672`            | `MNEMONIC_QUEUE_RABBITMQ_PORT`            | api, enricher | Broker AMQP port                                                        |
+| `queue.rabbitmq.user`            | string   | `guest`           | `MNEMONIC_QUEUE_RABBITMQ_USER`            | api, enricher | Broker user                                                             |
+| `queue.rabbitmq.password`        | string   | `""`              | `MNEMONIC_QUEUE_RABBITMQ_PASSWORD`        | api, enricher | Broker password                                                         |
+| `queue.rabbitmq.vhost`           | string   | `/`               | `MNEMONIC_QUEUE_RABBITMQ_VHOST`           | api, enricher | Virtual host                                                            |
+| `queue.rabbitmq.queue`           | string   | `enrichment-jobs` | `MNEMONIC_QUEUE_RABBITMQ_QUEUE`           | api, enricher | Queue name (declared durable by both sides)                             |
+| `queue.rabbitmq.prefetch_count`  | int      | `5`               | `MNEMONIC_QUEUE_RABBITMQ_PREFETCH_COUNT`  | enricher      | Consumer QoS prefetch                                                   |
+| `queue.rabbitmq.reconnect_delay` | duration | `5s`              | `MNEMONIC_QUEUE_RABBITMQ_RECONNECT_DELAY` | api, enricher | Wait before reconnecting after a broker failure                         |
 
 ## Configuration Reference
 
 [Table of Contents](#table-of-contents)
 
-| Setting                                         | Type     | Default                  | Environment Variable                                     | Description                                                                                 |
-| ----------------------------------------------- | -------- | ------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `server.admin.host`                             | string   | `0.0.0.0`                | `MNEMONIC_SERVER_ADMIN_HOST`                             | Admin API listen address                                                                    |
-| `server.admin.port`                             | int      | `8080`                   | `MNEMONIC_SERVER_ADMIN_PORT`                             | Admin API listen port                                                                       |
-| `server.admin.read_timeout`                     | duration | `30s`                    | `MNEMONIC_SERVER_ADMIN_READ_TIMEOUT`                     | Admin API read timeout                                                                      |
-| `server.admin.write_timeout`                    | duration | `30s`                    | `MNEMONIC_SERVER_ADMIN_WRITE_TIMEOUT`                    | Admin API write timeout                                                                     |
-| `server.admin.idle_timeout`                     | duration | `120s`                   | `MNEMONIC_SERVER_ADMIN_IDLE_TIMEOUT`                     | Admin API idle timeout                                                                      |
-| `server.admin.shutdown_timeout`                 | duration | `5s`                     | `MNEMONIC_SERVER_ADMIN_SHUTDOWN_TIMEOUT`                 | Admin API graceful shutdown timeout                                                         |
-| `server.admin.tls.enabled`                      | bool     | `false`                  | `MNEMONIC_SERVER_ADMIN_TLS_ENABLED`                      | Enable TLS for Admin API                                                                    |
-| `server.admin.tls.cert_file`                    | string   | `""`                     | `MNEMONIC_SERVER_ADMIN_TLS_CERT_FILE`                    | Admin API TLS certificate path                                                              |
-| `server.admin.tls.key_file`                     | string   | `""`                     | `MNEMONIC_SERVER_ADMIN_TLS_KEY_FILE`                     | Admin API TLS key path                                                                      |
-| `server.mcp.host`                               | string   | `0.0.0.0`                | `MNEMONIC_SERVER_MCP_HOST`                               | MCP endpoint listen address                                                                 |
-| `server.mcp.port`                               | int      | `8081`                   | `MNEMONIC_SERVER_MCP_PORT`                               | MCP endpoint listen port                                                                    |
-| `server.mcp.read_timeout`                       | duration | `30s`                    | `MNEMONIC_SERVER_MCP_READ_TIMEOUT`                       | MCP endpoint read timeout                                                                   |
-| `server.mcp.write_timeout`                      | duration | `120s`                   | `MNEMONIC_SERVER_MCP_WRITE_TIMEOUT`                      | MCP endpoint write timeout (longer for SSE streaming)                                       |
-| `server.mcp.idle_timeout`                       | duration | `120s`                   | `MNEMONIC_SERVER_MCP_IDLE_TIMEOUT`                       | MCP endpoint idle timeout                                                                   |
-| `server.mcp.shutdown_timeout`                   | duration | `5s`                     | `MNEMONIC_SERVER_MCP_SHUTDOWN_TIMEOUT`                   | MCP endpoint graceful shutdown timeout                                                      |
-| `server.mcp.session_timeout`                    | duration | `30m`                    | `MNEMONIC_SERVER_MCP_SESSION_TIMEOUT`                    | MCP session timeout                                                                         |
-| `server.mcp.tls.enabled`                        | bool     | `false`                  | `MNEMONIC_SERVER_MCP_TLS_ENABLED`                        | Enable TLS for MCP endpoint                                                                 |
-| `server.mcp.tls.cert_file`                      | string   | `""`                     | `MNEMONIC_SERVER_MCP_TLS_CERT_FILE`                      | MCP endpoint TLS certificate path                                                           |
-| `server.mcp.tls.key_file`                       | string   | `""`                     | `MNEMONIC_SERVER_MCP_TLS_KEY_FILE`                       | MCP endpoint TLS key path                                                                   |
-| `database.postgres.host`                        | string   | `localhost`              | `MNEMONIC_DATABASE_POSTGRES_HOST`                        | PostgreSQL host                                                                             |
-| `database.postgres.port`                        | int      | `5432`                   | `MNEMONIC_DATABASE_POSTGRES_PORT`                        | PostgreSQL port                                                                             |
-| `database.postgres.database`                    | string   | `mnemonic`               | `MNEMONIC_DATABASE_POSTGRES_DATABASE`                    | Database name                                                                               |
-| `database.postgres.username`                    | string   | `mnemonic`               | `MNEMONIC_DATABASE_POSTGRES_USERNAME`                    | Database username                                                                           |
-| `database.postgres.password`                    | string   | `""`                     | `MNEMONIC_DATABASE_POSTGRES_PASSWORD`                    | Database password                                                                           |
-| `database.postgres.ssl_mode`                    | string   | `prefer`                 | `MNEMONIC_DATABASE_POSTGRES_SSL_MODE`                    | SSL mode                                                                                    |
-| `database.postgres.max_open_conns`              | int      | `25`                     | `MNEMONIC_DATABASE_POSTGRES_MAX_OPEN_CONNS`              | Max open connections                                                                        |
-| `database.postgres.max_idle_conns`              | int      | `5`                      | `MNEMONIC_DATABASE_POSTGRES_MAX_IDLE_CONNS`              | Max idle connections                                                                        |
-| `database.postgres.conn_max_lifetime`           | duration | `5m`                     | `MNEMONIC_DATABASE_POSTGRES_CONN_MAX_LIFETIME`           | Connection max lifetime                                                                     |
-| `database.neo4j.uri`                            | string   | `bolt://localhost:7687`  | `MNEMONIC_DATABASE_NEO4J_URI`                            | Neo4j URI                                                                                   |
-| `database.neo4j.username`                       | string   | `neo4j`                  | `MNEMONIC_DATABASE_NEO4J_USERNAME`                       | Neo4j username                                                                              |
-| `database.neo4j.password`                       | string   | `""`                     | `MNEMONIC_DATABASE_NEO4J_PASSWORD`                       | Neo4j password                                                                              |
-| `database.neo4j.database`                       | string   | `neo4j`                  | `MNEMONIC_DATABASE_NEO4J_DATABASE`                       | Neo4j database                                                                              |
-| `database.neo4j.max_connection_pool_size`       | int      | `50`                     | `MNEMONIC_DATABASE_NEO4J_MAX_CONNECTION_POOL_SIZE`       | Neo4j max connection pool size                                                              |
-| `database.neo4j.connection_acquisition_timeout` | duration | `60s`                    | `MNEMONIC_DATABASE_NEO4J_CONNECTION_ACQUISITION_TIMEOUT` | Neo4j connection acquisition timeout                                                        |
-| `rabbitmq.url`                                  | string   | `amqp://guest:guest@localhost:5672/` | `MNEMONIC_RABBITMQ_URL`                          | AMQP connection string                                                                      |
-| `rabbitmq.exchange`                             | string   | `mnemonic.enrichment`    | `MNEMONIC_RABBITMQ_EXCHANGE`                             | Exchange name (Admin API publisher)                                                         |
-| `rabbitmq.routing_key`                          | string   | `enrichment.job`         | `MNEMONIC_RABBITMQ_ROUTING_KEY`                          | Routing key (Admin API publisher)                                                           |
-| `rabbitmq.queue`                                | string   | `mnemonic.enrichment.jobs` | `MNEMONIC_RABBITMQ_QUEUE`                              | Queue name (Enricher consumer)                                                              |
-| `rabbitmq.prefetch_count`                       | int      | `5`                      | `MNEMONIC_RABBITMQ_PREFETCH_COUNT`                       | Consumer prefetch count (Enricher)                                                          |
-| `rabbitmq.consumer_tag`                         | string   | `enricher-1`             | `MNEMONIC_RABBITMQ_CONSUMER_TAG`                         | Consumer identifier (Enricher)                                                              |
-| `rabbitmq.publisher_confirms`                   | bool     | `true`                   | `MNEMONIC_RABBITMQ_PUBLISHER_CONFIRMS`                   | Enable publisher confirms (Admin API)                                                       |
-| `openai.api_key`                                | string   | `""`                     | `MNEMONIC_OPENAI_API_KEY`                                | OpenAI API key                                                                              |
-| `openai.embedding_model`                        | string   | `text-embedding-3-large` | `MNEMONIC_OPENAI_EMBEDDING_MODEL`                        | Embedding model                                                                             |
-| `openai.embedding_dimensions`                   | int      | `2000`                   | `MNEMONIC_OPENAI_EMBEDDING_DIMENSIONS`                   | Embedding dimensions                                                                        |
-| `openai.extraction_model`                       | string   | `gpt-4o-mini`            | `MNEMONIC_OPENAI_EXTRACTION_MODEL`                       | Entity extraction model                                                                     |
-| `rate_limit.enabled`                            | bool     | `false`                  | `MNEMONIC_RATE_LIMIT_ENABLED`                            | Enable rate limiting (Post-MVP)                                                             |
-| `rate_limit.requests_per_second`                | int      | `100`                    | `MNEMONIC_RATE_LIMIT_REQUESTS_PER_SECOND`                | Global RPS limit (Post-MVP)                                                                 |
-| `rate_limit.burst_size`                         | int      | `200`                    | `MNEMONIC_RATE_LIMIT_BURST_SIZE`                         | Burst size (Post-MVP)                                                                       |
-| `rate_limit.per_user.requests_per_minute`       | int      | `60`                     | `MNEMONIC_RATE_LIMIT_PER_USER_REQUESTS_PER_MINUTE`       | Per-user RPM (Post-MVP)                                                                     |
-| `rate_limit.per_user.burst_size`                | int      | `10`                     | `MNEMONIC_RATE_LIMIT_PER_USER_BURST_SIZE`                | Per-user burst size (Post-MVP)                                                              |
-| `enrichment.worker_count`                       | int      | `2`                      | `MNEMONIC_ENRICHMENT_WORKER_COUNT`                       | Concurrent workers                                                                          |
-| `enrichment.poll_interval`                      | duration | `5s`                     | `MNEMONIC_ENRICHMENT_POLL_INTERVAL`                      | Job poll interval                                                                           |
-| `enrichment.max_attempts`                       | int      | `3`                      | `MNEMONIC_ENRICHMENT_MAX_ATTEMPTS`                       | Max retry attempts                                                                          |
-| `enrichment.retry_delay`                        | duration | `30s`                    | `MNEMONIC_ENRICHMENT_RETRY_DELAY`                        | Delay between retry attempts for failed enrichment jobs                                     |
-| `enrichment.job_timeout`                        | duration | `5m`                     | `MNEMONIC_ENRICHMENT_JOB_TIMEOUT`                        | Maximum time for a single enrichment job; stuck jobs are reclaimed after this duration      |
-| `enrichment.related_to_min_similarity`          | float    | `0.3`                    | `MNEMONIC_ENRICHMENT_RELATED_TO_MIN_SIMILARITY`          | Minimum concept-overlap similarity (0.0-1.0) for creating RELATED_TO edges between patterns |
-| `enrichment.completed_retention`                | duration | `168h`                   | `MNEMONIC_ENRICHMENT_COMPLETED_RETENTION`                | Retention period for completed enrichment jobs (default 7 days); older jobs are deleted     |
-| `enrichment.failed_retention`                   | duration | `720h`                   | `MNEMONIC_ENRICHMENT_FAILED_RETENTION`                   | Retention period for failed enrichment jobs (default 30 days); older jobs are deleted       |
-| `observability.log_db_statements`               | bool     | `false`                  | `MNEMONIC_OBSERVABILITY_LOG_DB_STATEMENTS`               | Log SQL/Cypher queries at DEBUG level                                                       |
-| `logging.level`                                 | string   | `info`                   | `MNEMONIC_LOGGING_LEVEL`                                 | Log level                                                                                   |
-| `logging.format`                                | string   | `json`                   | `MNEMONIC_LOGGING_FORMAT`                                | Log format                                                                                  |
-| `observability.metrics.enabled`                 | bool     | `true`                   | `MNEMONIC_OBSERVABILITY_METRICS_ENABLED`                 | Enable metrics                                                                              |
-| `observability.metrics.path`                    | string   | `/metrics`               | `MNEMONIC_OBSERVABILITY_METRICS_PATH`                    | Metrics endpoint path                                                                       |
-| `observability.metrics.port`                    | int      | `9090`                   | `MNEMONIC_OBSERVABILITY_METRICS_PORT`                    | Metrics server port                                                                         |
-| `observability.health.enabled`                  | bool     | `true`                   | `MNEMONIC_OBSERVABILITY_HEALTH_ENABLED`                  | Enable health check                                                                         |
-| `observability.health.path`                     | string   | `/health`                | `MNEMONIC_OBSERVABILITY_HEALTH_PATH`                     | Health check endpoint path                                                                  |
-| `observability.tracing.enabled`                 | bool     | `false`                  | `MNEMONIC_OBSERVABILITY_TRACING_ENABLED`                 | Enable distributed tracing                                                                  |
-| `observability.tracing.endpoint`                | string   | `""`                     | `MNEMONIC_OBSERVABILITY_TRACING_ENDPOINT`                | OTLP collector endpoint                                                                     |
-| `observability.tracing.otlp_insecure`           | bool     | `true`                   | `MNEMONIC_OBSERVABILITY_TRACING_OTLP_INSECURE`           | Use insecure OTLP connection (local development only; production should use TLS)            |
+The Services column shows which services define each key: **A** = `mnemonic-api`, **E** = `mnemonic-enricher`, **M** = `mnemonic-mcp`. Queue keys are listed under [RabbitMQ Configuration](#rabbitmq-configuration).
 
-> **Pending Implementation:** The following configuration fields are designed but not yet implemented in code: `enrichment.related_to_min_similarity`, `enrichment.completed_retention`, `enrichment.failed_retention`, and `observability.log_db_statements`. The Go struct definitions and Viper defaults include these fields, but the application code does not yet read or act on them. They will be wired during implementation of the enrichment worker and database instrumentation.
+| Setting                                         | Type     | Default                     | Environment Variable                                     | Services | Description                                                                                 |
+| ----------------------------------------------- | -------- | --------------------------- | -------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `server.host`                                   | string   | `0.0.0.0`                   | `MNEMONIC_SERVER_HOST`                                   | A, E, M  | HTTP listen address (also used by the MCP endpoint)                                         |
+| `server.port`                                   | int      | `8080`                      | `MNEMONIC_SERVER_PORT`                                   | A, E, M  | HTTP port: REST API (A) and `/health`, `/version` (all)                                     |
+| `server.read_timeout`                           | duration | `30s`                       | `MNEMONIC_SERVER_READ_TIMEOUT`                           | A, E, M  | Read timeout                                                                                |
+| `server.write_timeout`                          | duration | `30s`                       | `MNEMONIC_SERVER_WRITE_TIMEOUT`                          | A, E, M  | Write timeout                                                                               |
+| `server.idle_timeout`                           | duration | `120s`                      | `MNEMONIC_SERVER_IDLE_TIMEOUT`                           | A, E, M  | Idle timeout                                                                                |
+| `server.shutdown_timeout`                       | duration | `5s`                        | `MNEMONIC_SERVER_SHUTDOWN_TIMEOUT`                       | A, E, M  | Graceful shutdown timeout                                                                   |
+| `server.tls.enabled`                            | bool     | `false`                     | `MNEMONIC_SERVER_TLS_ENABLED`                            | E, M     | Serve the health/version server over TLS (not the MCP endpoint)                             |
+| `server.tls.cert_file`                          | string   | `""`                        | `MNEMONIC_SERVER_TLS_CERT_FILE`                          | E, M     | TLS certificate path; must exist when TLS is enabled                                        |
+| `server.tls.key_file`                           | string   | `""`                        | `MNEMONIC_SERVER_TLS_KEY_FILE`                           | E, M     | TLS key path; must exist when TLS is enabled                                                |
+| `mcp.port`                                      | int      | `8081`                      | `MNEMONIC_MCP_PORT`                                      | M        | MCP endpoint port (`/mcp`); must differ from `server.port`                                  |
+| `mcp.read_timeout`                              | duration | `30s`                       | `MNEMONIC_MCP_READ_TIMEOUT`                              | M        | MCP endpoint read timeout                                                                   |
+| `mcp.write_timeout`                             | duration | `30s`                       | `MNEMONIC_MCP_WRITE_TIMEOUT`                             | M        | MCP endpoint write timeout                                                                  |
+| `mcp.idle_timeout`                              | duration | `120s`                      | `MNEMONIC_MCP_IDLE_TIMEOUT`                              | M        | MCP endpoint idle timeout                                                                   |
+| `mcp.default_search_threshold`                  | float    | `0.5`                       | `MNEMONIC_MCP_DEFAULT_SEARCH_THRESHOLD`                  | M        | Similarity threshold (0.0-1.0) for `search_patterns` when the caller gives none             |
+| `database.postgres.host`                        | string   | `localhost`                 | `MNEMONIC_DATABASE_POSTGRES_HOST`                        | A, E, M  | PostgreSQL host                                                                             |
+| `database.postgres.port`                        | int      | `5432`                      | `MNEMONIC_DATABASE_POSTGRES_PORT`                        | A, E, M  | PostgreSQL port                                                                             |
+| `database.postgres.database`                    | string   | `mnemonic`                  | `MNEMONIC_DATABASE_POSTGRES_DATABASE`                    | A, E, M  | Database name                                                                               |
+| `database.postgres.username`                    | string   | `mnemonic`                  | `MNEMONIC_DATABASE_POSTGRES_USERNAME`                    | A, E, M  | Database username                                                                           |
+| `database.postgres.password`                    | string   | `""`                        | `MNEMONIC_DATABASE_POSTGRES_PASSWORD`                    | A, E, M  | Database password                                                                           |
+| `database.postgres.ssl_mode`                    | string   | `prefer`                    | `MNEMONIC_DATABASE_POSTGRES_SSL_MODE`                    | A, E, M  | SSL mode                                                                                    |
+| `database.postgres.max_open_conns`              | int      | `25`                        | `MNEMONIC_DATABASE_POSTGRES_MAX_OPEN_CONNS`              | A, E, M  | Pool maximum (pgxpool `MaxConns`)                                                           |
+| `database.postgres.max_idle_conns`              | int      | `5`                         | `MNEMONIC_DATABASE_POSTGRES_MAX_IDLE_CONNS`              | A, E, M  | Pool minimum kept open (pgxpool `MinConns`); must not exceed `max_open_conns`               |
+| `database.postgres.conn_max_lifetime`           | duration | `5m`                        | `MNEMONIC_DATABASE_POSTGRES_CONN_MAX_LIFETIME`           | A, E, M  | Connection max lifetime                                                                     |
+| `database.neo4j.uri`                            | string   | `bolt://localhost:7687`     | `MNEMONIC_DATABASE_NEO4J_URI`                            | A, E, M  | Neo4j URI (`bolt://` or `neo4j://`)                                                         |
+| `database.neo4j.username`                       | string   | `neo4j`                     | `MNEMONIC_DATABASE_NEO4J_USERNAME`                       | A, E, M  | Neo4j username                                                                              |
+| `database.neo4j.password`                       | string   | `""`                        | `MNEMONIC_DATABASE_NEO4J_PASSWORD`                       | A, E, M  | Neo4j password                                                                              |
+| `database.neo4j.database`                       | string   | `neo4j`                     | `MNEMONIC_DATABASE_NEO4J_DATABASE`                       | A, E, M  | Neo4j database                                                                              |
+| `database.neo4j.max_connection_pool_size`       | int      | `50`                        | `MNEMONIC_DATABASE_NEO4J_MAX_CONNECTION_POOL_SIZE`       | A, E, M  | Neo4j max connection pool size                                                              |
+| `database.neo4j.connection_acquisition_timeout` | duration | `60s`                       | `MNEMONIC_DATABASE_NEO4J_CONNECTION_ACQUISITION_TIMEOUT` | A, E, M  | Neo4j connection acquisition timeout                                                        |
+| `openai.api_key`                                | string   | `""`                        | `MNEMONIC_OPENAI_API_KEY`                                | A, E, M  | OpenAI API key (not checked at startup; a bad key shows as a Warning on `/health`)          |
+| `openai.base_url`                               | string   | `https://api.openai.com/v1` | `MNEMONIC_OPENAI_BASE_URL`                               | A, E, M  | OpenAI-compatible API root; must be an absolute URL. Integration tests point it at a stub   |
+| `openai.embedding_model`                        | string   | `text-embedding-3-large`    | `MNEMONIC_OPENAI_EMBEDDING_MODEL`                        | A, E, M  | Embedding model                                                                             |
+| `openai.embedding_dimensions`                   | int      | `2000`                      | `MNEMONIC_OPENAI_EMBEDDING_DIMENSIONS`                   | A, E, M  | Requested embedding dimensions                                                              |
+| `openai.extraction_model`                       | string   | `gpt-4o-mini`               | `MNEMONIC_OPENAI_EXTRACTION_MODEL`                       | A, E     | Concept extraction model (used by the enricher only)                                        |
+| `openai.max_requests_per_minute`                | int      | `500`                       | `MNEMONIC_OPENAI_MAX_REQUESTS_PER_MINUTE`                | A        | Validated (>= 1) but not enforced; no client-side rate limiting is implemented              |
+| `openai.retry_attempts`                         | int      | `3`                         | `MNEMONIC_OPENAI_RETRY_ATTEMPTS`                         | A, E, M  | Retries per OpenAI call                                                                     |
+| `openai.retry_delay`                            | duration | `1s`                        | `MNEMONIC_OPENAI_RETRY_DELAY`                            | A, E, M  | Delay between OpenAI retries                                                                |
+| `vocabulary.languages`                          | []string | 42 built-in values          | `MNEMONIC_VOCABULARY_LANGUAGES` (comma-separated)        | A        | Allowed pattern `language` values; must not be empty                                        |
+| `vocabulary.domains`                            | []string | 14 built-in values          | `MNEMONIC_VOCABULARY_DOMAINS` (comma-separated)          | A        | Allowed pattern `domain` values; must not be empty                                          |
+| `enrichment.worker_count`                       | int      | `2`                         | `MNEMONIC_ENRICHMENT_WORKER_COUNT`                       | E        | Concurrent workers                                                                          |
+| `enrichment.retry_delay`                        | duration | `30s`                       | `MNEMONIC_ENRICHMENT_RETRY_DELAY`                        | E        | Delay before a failed job is due for retry                                                  |
+| `enrichment.job_timeout`                        | duration | `5m`                        | `MNEMONIC_ENRICHMENT_JOB_TIMEOUT`                        | E        | Maximum time for a single enrichment job; stuck jobs are reclaimed after this duration      |
+| `enrichment.drain_timeout`                      | duration | `30s`                       | `MNEMONIC_ENRICHMENT_DRAIN_TIMEOUT`                      | E        | How long shutdown waits for in-flight jobs before cancelling them                           |
+| `enrichment.completed_retention`                | duration | `168h`                      | `MNEMONIC_ENRICHMENT_COMPLETED_RETENTION`                | E        | Retention period for completed enrichment jobs (default 7 days); older jobs are deleted     |
+| `enrichment.failed_retention`                   | duration | `720h`                      | `MNEMONIC_ENRICHMENT_FAILED_RETENTION`                   | E        | Retention period for failed enrichment jobs (default 30 days); older jobs are deleted       |
+| `enrichment.related_to_min_similarity`          | float    | `0.3`                       | `MNEMONIC_ENRICHMENT_RELATED_TO_MIN_SIMILARITY`          | E        | Minimum concept-overlap similarity (0.0-1.0) for creating RELATED_TO edges between patterns |
+| `logging.level`                                 | string   | `info`                      | `MNEMONIC_LOGGING_LEVEL`                                 | A, E, M  | Log level (`debug`, `info`, `warn`, `error`)                                                |
+| `logging.format`                                | string   | `json`                      | `MNEMONIC_LOGGING_FORMAT`                                | A        | Validated (`json` or `text`) but not applied; logs are always JSON                          |
+| `logging.include_caller`                        | bool     | `false`                     | `MNEMONIC_LOGGING_INCLUDE_CALLER`                        | A        | Accepted but not applied                                                                    |
+| `observability.metrics.enabled`                 | bool     | `true`                      | `MNEMONIC_OBSERVABILITY_METRICS_ENABLED`                 | A, E, M  | Serve Prometheus metrics                                                                    |
+| `observability.metrics.path`                    | string   | `/metrics`                  | `MNEMONIC_OBSERVABILITY_METRICS_PATH`                    | A, E, M  | Metrics endpoint path                                                                       |
+| `observability.metrics.port`                    | int      | `9090`                      | `MNEMONIC_OBSERVABILITY_METRICS_PORT`                    | A, E, M  | Metrics server port; must differ from `server.port`                                         |
+| `observability.health.enabled`                  | bool     | `true`                      | `MNEMONIC_OBSERVABILITY_HEALTH_ENABLED`                  | A        | Validated only; `/health` is always served                                                  |
+| `observability.health.path`                     | string   | `/health`                   | `MNEMONIC_OBSERVABILITY_HEALTH_PATH`                     | A        | Validated only; the route is fixed at `/health`                                             |
+| `observability.tracing.enabled`                 | bool     | `false`                     | `MNEMONIC_OBSERVABILITY_TRACING_ENABLED`                 | A, E, M  | Enable distributed tracing                                                                  |
+| `observability.tracing.endpoint`                | string   | `""`                        | `MNEMONIC_OBSERVABILITY_TRACING_ENDPOINT`                | A, E, M  | OTLP gRPC collector `host:port`; required when tracing is enabled                           |
+| `observability.tracing.sample_rate`             | float    | `0.1`                       | `MNEMONIC_OBSERVABILITY_TRACING_SAMPLE_RATE`             | A, E, M  | Ratio (0.0-1.0) of new traces sampled; incoming sampled parents are always honored          |
+| `observability.tracing.otlp_insecure`           | bool     | `true`                      | `MNEMONIC_OBSERVABILITY_TRACING_OTLP_INSECURE`           | A, E, M  | Use insecure OTLP connection (local development only; production should use TLS)            |
+
+> **Not implemented:** Rate limiting (`rate_limit.*`), a statement-logging switch (`observability.log_db_statements`), MCP session timeouts and enricher polling settings (`poll_interval`, `max_attempts`) appeared in earlier drafts of this document. None of them exist in code.
 
 ## Environment Variable Naming Conventions
 
@@ -361,168 +441,77 @@ All Mnemonic environment variables use the `MNEMONIC_` prefix with the following
 
 | YAML Path                    | Environment Variable                  |
 | ---------------------------- | ------------------------------------- |
-| `server.admin.port`          | `MNEMONIC_SERVER_ADMIN_PORT`          |
-| `server.mcp.port`            | `MNEMONIC_SERVER_MCP_PORT`            |
+| `server.port`                | `MNEMONIC_SERVER_PORT`                |
+| `mcp.port`                   | `MNEMONIC_MCP_PORT`                   |
 | `database.postgres.password` | `MNEMONIC_DATABASE_POSTGRES_PASSWORD` |
-| `rabbitmq.url`               | `MNEMONIC_RABBITMQ_URL`              |
-| `openai.api_key`             | `MNEMONIC_OPENAI_API_KEY`             |
+| `queue.rabbitmq.host`        | `MNEMONIC_QUEUE_RABBITMQ_HOST`        |
+| `openai.base_url`            | `MNEMONIC_OPENAI_BASE_URL`            |
 
 **Special Cases**:
 
-- Boolean values: `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
+- Boolean values: `true`, `false`, `1`, `0` (Go `strconv.ParseBool` forms)
 - Duration values: Go duration format (`30s`, `5m`, `1h`)
+- List values: comma-separated (`go,python,rust`)
 
 ## File Discovery Order
 
 [Table of Contents](#table-of-contents)
 
-Configuration files are searched in the following order:
+Configuration files are searched in the following order; the first match wins:
 
 ```text
-1. --config flag (if provided)
+1. --config flag (mnemonic-api only)
 2. $MNEMONIC_CONFIG_FILE (if set)
 3. /etc/mnemonic/config.yaml (production)
 4. ./config.yaml (development)
 ```
 
+`mnemonic-enricher` and `mnemonic-mcp` have no `--config` flag; their only command-line flags are `--version` and `--health`. All three binaries support `--health`, which calls `http://localhost:<server.port>/health` and exits 0 only on HTTP 200 (overall status OK or Warning); it is used as the container `HEALTHCHECK`. The API resolves `server.port` from the same sources as the server; the enricher and MCP server read it from defaults and environment only, not from the config file.
+
 ## Viper Initialization
 
 [Table of Contents](#table-of-contents)
 
-The following shows the Viper initialization pattern used by Mnemonic. All config structs use `mapstructure` tags (not `yaml`, `json`, or `env` tags) because Viper's `Unmarshal()` delegates to the `mapstructure` library.
+The following is a condensed version of the loading code in `mnemonic-api/src/internal/config/config.go` (`Resolve` and `LoadFromViper`). The enricher and MCP server do the same in a single `Load()` function, differing only in the file-error handling described in [Loading Behavior](#loading-behavior). All config structs use `mapstructure` tags (not `yaml`, `json`, or `env` tags) because Viper's `Unmarshal()` delegates to the `mapstructure` library.
 
 ```go
-package config
-
-import (
-    "fmt"
-    "strings"
-
-    "github.com/spf13/viper"
-)
-
-// Load reads configuration from defaults, file, and environment variables.
-// It returns a fully populated MnemonicConfig or an error.
-func Load(configPath string) (*MnemonicConfig, error) {
+func Resolve(flags *pflag.FlagSet) (*viper.Viper, error) {
     v := viper.New()
+    SetDefaults(v) // 1. compiled defaults from defaults.go
 
-    // 1. Compiled defaults (lowest priority)
-    setDefaults(v)
-
-    // 2. Configuration file
-    if configPath != "" {
+    // 2. configuration file: --config, $MNEMONIC_CONFIG_FILE, /etc/mnemonic, ./
+    if configPath := findConfigFile(flags); configPath != "" {
         v.SetConfigFile(configPath)
-    } else {
-        // File discovery order
-        v.SetConfigName("config")
-        v.SetConfigType("yaml")
-        v.AddConfigPath("/etc/mnemonic") // production
-        v.AddConfigPath(".")              // development
-    }
-
-    if err := v.ReadInConfig(); err != nil {
-        if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-            return nil, fmt.Errorf("reading config file: %w", err)
+        if err := v.ReadInConfig(); err != nil {
+            return nil, fmt.Errorf("failed to read config file %s: %w", configPath, err)
         }
-        // Config file not found is acceptable; defaults + env vars are sufficient
     }
 
-    // 3. Environment variables (highest priority)
-    v.SetEnvPrefix("MNEMONIC")
+    // 3. environment variables (highest priority)
+    v.SetEnvPrefix(EnvPrefix) // "MNEMONIC"
     v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
     v.AutomaticEnv()
-
-    // Unmarshal into config struct (uses mapstructure tags)
-    var cfg MnemonicConfig
-    if err := v.Unmarshal(&cfg); err != nil {
-        return nil, fmt.Errorf("unmarshaling config: %w", err)
-    }
-
-    return &cfg, nil
+    return v, nil
 }
 
-func setDefaults(v *viper.Viper) {
-    // Server defaults
-    v.SetDefault("server.admin.host", "0.0.0.0")
-    v.SetDefault("server.admin.port", 8080)
-    v.SetDefault("server.admin.read_timeout", "30s")
-    v.SetDefault("server.admin.write_timeout", "30s")
-    v.SetDefault("server.admin.idle_timeout", "120s")
-    v.SetDefault("server.admin.shutdown_timeout", "5s")
-
-    v.SetDefault("server.mcp.host", "0.0.0.0")
-    v.SetDefault("server.mcp.port", 8081)
-    v.SetDefault("server.mcp.read_timeout", "30s")
-    v.SetDefault("server.mcp.write_timeout", "120s")
-    v.SetDefault("server.mcp.idle_timeout", "120s")
-    v.SetDefault("server.mcp.shutdown_timeout", "5s")
-    v.SetDefault("server.mcp.session_timeout", "30m")
-
-    // Database defaults
-    v.SetDefault("database.postgres.host", "localhost")
-    v.SetDefault("database.postgres.port", 5432)
-    v.SetDefault("database.postgres.database", "mnemonic")
-    v.SetDefault("database.postgres.username", "mnemonic")
-    v.SetDefault("database.postgres.ssl_mode", "prefer")
-    v.SetDefault("database.postgres.max_open_conns", 25)
-    v.SetDefault("database.postgres.max_idle_conns", 5)
-    v.SetDefault("database.postgres.conn_max_lifetime", "5m")
-
-    v.SetDefault("database.neo4j.uri", "bolt://localhost:7687")
-    v.SetDefault("database.neo4j.username", "neo4j")
-    v.SetDefault("database.neo4j.database", "neo4j")
-    v.SetDefault("database.neo4j.max_connection_pool_size", 50)
-    v.SetDefault("database.neo4j.connection_acquisition_timeout", "60s")
-
-    // RabbitMQ defaults
-    v.SetDefault("rabbitmq.url", "amqp://guest:guest@localhost:5672/")
-    v.SetDefault("rabbitmq.exchange", "mnemonic.enrichment")
-    v.SetDefault("rabbitmq.routing_key", "enrichment.job")
-    v.SetDefault("rabbitmq.queue", "mnemonic.enrichment.jobs")
-    v.SetDefault("rabbitmq.prefetch_count", 5)
-    v.SetDefault("rabbitmq.consumer_tag", "enricher-1")
-    v.SetDefault("rabbitmq.publisher_confirms", true)
-
-    // OpenAI defaults
-    v.SetDefault("openai.embedding_model", "text-embedding-3-large")
-    v.SetDefault("openai.embedding_dimensions", 2000)
-    v.SetDefault("openai.extraction_model", "gpt-4o-mini")
-    v.SetDefault("openai.max_requests_per_minute", 500)
-    v.SetDefault("openai.retry_attempts", 3)
-    v.SetDefault("openai.retry_delay", "1s")
-
-    // Enrichment defaults
-    v.SetDefault("enrichment.worker_count", 2)
-    v.SetDefault("enrichment.poll_interval", "5s")
-    v.SetDefault("enrichment.max_attempts", 3)
-    v.SetDefault("enrichment.retry_delay", "30s")
-    v.SetDefault("enrichment.job_timeout", "5m")
-    v.SetDefault("enrichment.related_to_min_similarity", 0.3)
-    v.SetDefault("enrichment.completed_retention", "168h")
-    v.SetDefault("enrichment.failed_retention", "720h")
-
-    // Logging defaults
-    v.SetDefault("logging.level", "info")
-    v.SetDefault("logging.format", "json")
-    v.SetDefault("logging.include_caller", false)
-
-    // Observability defaults
-    v.SetDefault("observability.metrics.enabled", true)
-    v.SetDefault("observability.metrics.path", "/metrics")
-    v.SetDefault("observability.metrics.port", 9090)
-    v.SetDefault("observability.health.enabled", true)
-    v.SetDefault("observability.health.path", "/health")
-    v.SetDefault("observability.tracing.enabled", false)
-    v.SetDefault("observability.tracing.sample_rate", 0.1)
-    v.SetDefault("observability.tracing.otlp_insecure", true)
-    v.SetDefault("observability.log_db_statements", false)
+func LoadFromViper(v *viper.Viper) (*MnemonicConfig, error) {
+    cfg := &MnemonicConfig{}
+    if err := v.Unmarshal(cfg); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+    }
+    if errs := cfg.Validate(); len(errs) > 0 {
+        return nil, errs
+    }
+    return cfg, nil
 }
 ```
+
+`SetDefaults` registers a default for every key, including empty strings for secrets. This matters: `AutomaticEnv()` only affects keys Viper already knows, so a key without a default could not be set from the environment alone. Defaults live as constants in each service's `defaults.go`.
 
 **Key Viper details:**
 
 - `SetEnvPrefix("MNEMONIC")` causes all env var lookups to be prefixed with `MNEMONIC_`
-- `SetEnvKeyReplacer(strings.NewReplacer(".", "_"))` maps nested keys (e.g., `server.admin.port`) to env vars (e.g., `MNEMONIC_SERVER_ADMIN_PORT`)
+- `SetEnvKeyReplacer(strings.NewReplacer(".", "_"))` maps nested keys (e.g., `queue.rabbitmq.host`) to env vars (e.g., `MNEMONIC_QUEUE_RABBITMQ_HOST`)
 - `AutomaticEnv()` enables automatic binding of all Viper keys to their corresponding env vars
 - `Unmarshal(&cfg)` uses the `mapstructure` library under the hood, so config structs MUST use `mapstructure:"..."` tags (not `yaml` or `json` tags)
 
@@ -539,9 +528,11 @@ func setDefaults(v *viper.Viper) {
 | Secret             | Storage Method                         |
 | ------------------ | -------------------------------------- |
 | Database passwords | Environment variable or secret manager |
-| RabbitMQ URL       | Environment variable or secret manager |
+| RabbitMQ password  | Environment variable or secret manager |
 | OpenAI API key     | Environment variable or secret manager |
 | TLS private keys   | File with restricted permissions       |
+
+The services log only masked connection strings (`SafeDSN()`, `SafeURI()` in the config package).
 
 **Recommended patterns**:
 
@@ -601,53 +592,46 @@ export MNEMONIC_OPENAI_API_KEY="sk-openai-key"
 
 ### Configuration Validation
 
-Mnemonic validates configuration on startup:
+Each service validates its configuration after loading (`Validate()` in `config.go`) and exits with all errors listed if any check fails.
 
 **Validation checks**:
 
-| Check                           | Description                   |
-| ------------------------------- | ----------------------------- |
-| Required fields present         | Essential fields must exist   |
-| Port in valid range             | 1-65535                       |
-| Duration format valid           | Timeouts must be parseable    |
-| File paths exist (if specified) | TLS cert/key files must exist |
-| Database connection works       | Connection test at startup    |
-| API key format valid            | Basic format validation       |
+| Check                    | Services | Description                                                                                   |
+| ------------------------ | -------- | --------------------------------------------------------------------------------------------- |
+| Ports in range           | A, E, M  | `server.port`, `mcp.port`, `observability.metrics.port` (when metrics are enabled) in 1-65535 |
+| Port conflicts           | A, E, M  | `observability.metrics.port` and (M) `mcp.port` must differ from `server.port`                |
+| Positive durations       | A, E, M  | Server, MCP and enrichment timeouts; Neo4j acquisition timeout                                |
+| Required database fields | A, E, M  | Postgres host and database; Neo4j URI with `bolt://` or `neo4j://` scheme                     |
+| Pool sizes               | A, E, M  | `max_open_conns` >= 1, `0 <= max_idle_conns <= max_open_conns`, Neo4j pool >= 1               |
+| OpenAI values            | A, E, M  | `embedding_dimensions` >= 1, non-negative retries/delay, `base_url` absolute when set         |
+| TLS files exist          | E, M     | When `server.tls.enabled`, cert and key paths must be set and readable                        |
+| Tracing                  | A, E, M  | When enabled, `endpoint` set and `sample_rate` in 0-1                                         |
+| Ranges                   | E, M     | `related_to_min_similarity` (E) and `default_search_threshold` (M) in 0-1                     |
+| Log level / format       | A, E, M  | Level is one of `debug`, `info`, `warn`, `error`; (A) format is `json` or `text`              |
+| Vocabulary               | A        | `vocabulary.languages` and `vocabulary.domains` non-empty                                     |
 
-**Error behavior**:
-
-- Invalid configuration: Exit with error, detailed message
-- Missing required secrets: Exit with error listing missing values
-- Warning-level issues: Log warning, continue startup
+Secrets (database passwords, `openai.api_key`) are not required by validation; an empty value fails later at connection time or, for OpenAI, shows up as a Warning on `/health`. Database connectivity is checked when the service starts and connects, not by `Validate()`.
 
 ```text
 # Example validation error
-Error: configuration validation failed:
+failed to load configuration: configuration validation failed:
   - server.port: must be between 1 and 65535, got 0
-  - database.postgres.password: required but not set (use MNEMONIC_DATABASE_POSTGRES_PASSWORD)
-  - openai.api_key: required but not set (use MNEMONIC_OPENAI_API_KEY)
+  - observability.tracing.endpoint: required when tracing is enabled
 ```
 
 ### Embedding Dimension Validation
 
-**Warning**: The `openai.embedding_dimensions` configuration must match the PGVector column schema. Mismatched dimensions will cause runtime failures during pattern enrichment.
+**Warning**: The `openai.embedding_dimensions` configuration must match the PGVector column schema. Mismatched dimensions will cause runtime failures when embeddings are stored or searched. The value is sent as the `dimensions` parameter of the embeddings request, so `text-embedding-3-large` returns 2000-dimension vectors by default.
 
-**Startup validation**: Mnemonic validates at startup that the configured `embedding_dimensions` matches the PGVector `embedding` column dimensions. If they do not match, Mnemonic logs a fatal error and refuses to start:
-
-```text
-# Example dimension mismatch error
-FATAL: embedding dimension mismatch: config specifies 3072 dimensions but PGVector column is defined as vector(1536)
-```
-
-**Failure mode without validation**: If dimension validation were skipped, the system would fail at runtime with cryptic Postgres errors when attempting to store embeddings:
+**No startup check:** The services do not compare `embedding_dimensions` with the PGVector `embedding` column at startup; the only check is that the value is at least 1. A mismatch fails at runtime with a Postgres error such as:
 
 ```text
-ERROR: expected 1536 dimensions, not 3072 (SQLSTATE XX000)
+ERROR: expected 2000 dimensions, not 3072 (SQLSTATE 22000)
 ```
 
-This error occurs during pattern enrichment, making it difficult to diagnose as a configuration issue.
+This error occurs when the enricher stores chunk embeddings or when the API or MCP server searches, making it difficult to diagnose as a configuration issue. Keep the value identical in all three services.
 
-**Schema migration required**: Changing the `embedding_dimensions` setting (for example, when switching from `text-embedding-ada-002` with 1536 dimensions to `text-embedding-3-large` with 3072 dimensions) requires a database schema migration:
+**Schema migration required**: Changing the `embedding_dimensions` setting requires a database schema migration:
 
 1. Update the PGVector column definition to match the new dimensions
 2. Re-generate embeddings for all existing patterns
@@ -655,7 +639,7 @@ This error occurs during pattern enrichment, making it difficult to diagnose as 
 
 See [Pattern Processing - PGVector Configuration](pattern-processing.md#pgvector-configuration) for the schema definition and index configuration details.
 
-**Common embedding model dimensions**:
+**Common embedding model dimensions** (native sizes; the `text-embedding-3-*` models can return fewer via the `dimensions` parameter):
 
 | Model                    | Dimensions |
 | ------------------------ | ---------- |
@@ -667,52 +651,35 @@ See [Pattern Processing - PGVector Configuration](pattern-processing.md#pgvector
 
 [Table of Contents](#table-of-contents)
 
-The following Go struct definitions and class diagram show the configuration structure used by the Mnemonic server. All structs use `mapstructure` tags for Viper compatibility. This model is loaded from YAML files and environment variables using the precedence rules described above.
+The following Go struct definitions and class diagram show the configuration structure. All structs use `mapstructure` tags for Viper compatibility. Each service has its own copy of these types; the shared parts are identical apart from small differences noted in comments.
 
 ### Go Struct Definitions
 
 ```go
 package config
 
-import "time"
-
-// MnemonicConfig is the top-level configuration struct.
-// Viper unmarshals YAML keys and env vars into this struct via mapstructure tags.
+// MnemonicConfig is the top-level configuration struct. Fields marked with a
+// service letter exist only in that service (A = api, E = enricher, M = mcp).
 type MnemonicConfig struct {
-    Server        ServerConfigs      `mapstructure:"server"`
-    Database      DatabaseConfig     `mapstructure:"database"`
-    RabbitMQ      RabbitMQConfig     `mapstructure:"rabbitmq"`
-    OpenAI        OpenAIConfig       `mapstructure:"openai"`
-    RateLimit     RateLimitConfig    `mapstructure:"rate_limit"`
-    Enrichment    EnrichmentConfig   `mapstructure:"enrichment"`
-    Logging       LoggingConfig      `mapstructure:"logging"`
+    Server        ServerConfig        `mapstructure:"server"`
+    MCP           MCPConfig           `mapstructure:"mcp"`        // M
+    Database      DatabaseConfig      `mapstructure:"database"`
+    OpenAI        OpenAIConfig        `mapstructure:"openai"`
+    Enrichment    EnrichmentConfig    `mapstructure:"enrichment"` // E
+    Queue         QueueConfig         `mapstructure:"queue"`      // A, E
+    Vocabulary    VocabularyConfig    `mapstructure:"vocabulary"` // A
+    Logging       LoggingConfig       `mapstructure:"logging"`
     Observability ObservabilityConfig `mapstructure:"observability"`
 }
 
-type ServerConfigs struct {
-    Admin AdminServerConfig `mapstructure:"admin"`
-    MCP   MCPServerConfig   `mapstructure:"mcp"`
-}
-
-type AdminServerConfig struct {
+type ServerConfig struct {
     Host            string        `mapstructure:"host"`
     Port            int           `mapstructure:"port"`
     ReadTimeout     time.Duration `mapstructure:"read_timeout"`
     WriteTimeout    time.Duration `mapstructure:"write_timeout"`
     IdleTimeout     time.Duration `mapstructure:"idle_timeout"`
     ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
-    TLS             TLSConfig     `mapstructure:"tls"`
-}
-
-type MCPServerConfig struct {
-    Host            string        `mapstructure:"host"`
-    Port            int           `mapstructure:"port"`
-    ReadTimeout     time.Duration `mapstructure:"read_timeout"`
-    WriteTimeout    time.Duration `mapstructure:"write_timeout"`
-    IdleTimeout     time.Duration `mapstructure:"idle_timeout"`
-    ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
-    SessionTimeout  time.Duration `mapstructure:"session_timeout"`
-    TLS             TLSConfig     `mapstructure:"tls"`
+    TLS             TLSConfig     `mapstructure:"tls"` // E, M
 }
 
 type TLSConfig struct {
@@ -721,13 +688,19 @@ type TLSConfig struct {
     KeyFile  string `mapstructure:"key_file"`
 }
 
+type MCPConfig struct {
+    Port                   int           `mapstructure:"port"`
+    ReadTimeout            time.Duration `mapstructure:"read_timeout"`
+    WriteTimeout           time.Duration `mapstructure:"write_timeout"`
+    IdleTimeout            time.Duration `mapstructure:"idle_timeout"`
+    DefaultSearchThreshold float64       `mapstructure:"default_search_threshold"`
+}
+
 type DatabaseConfig struct {
     Postgres PostgresConfig `mapstructure:"postgres"`
     Neo4j    Neo4jConfig    `mapstructure:"neo4j"`
 }
 
-// PostgresConfig defines PostgreSQL connection parameters.
-// Matches the struct in data-storage.md Connection Configuration.
 type PostgresConfig struct {
     Host            string        `mapstructure:"host"`
     Port            int           `mapstructure:"port"`
@@ -735,13 +708,11 @@ type PostgresConfig struct {
     Username        string        `mapstructure:"username"`
     Password        string        `mapstructure:"password"`
     SSLMode         string        `mapstructure:"ssl_mode"`
-    MaxOpenConns    int           `mapstructure:"max_open_conns"`
-    MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+    MaxOpenConns    int32         `mapstructure:"max_open_conns"` // int in E, M
+    MaxIdleConns    int32         `mapstructure:"max_idle_conns"` // int in E, M
     ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 
-// Neo4jConfig defines Neo4j connection parameters.
-// Matches the struct in data-storage.md Connection Configuration.
 type Neo4jConfig struct {
     URI                          string        `mapstructure:"uri"`
     Username                     string        `mapstructure:"username"`
@@ -751,63 +722,58 @@ type Neo4jConfig struct {
     ConnectionAcquisitionTimeout time.Duration `mapstructure:"connection_acquisition_timeout"`
 }
 
-// RabbitMQConfig defines AMQP connection and messaging parameters.
-// Publisher settings (Exchange, RoutingKey, PublisherConfirms) are used by mnemonic-api.
-// Consumer settings (Queue, PrefetchCount, ConsumerTag) are used by mnemonic-enricher.
-type RabbitMQConfig struct {
-    URL               string `mapstructure:"url"`
-    Exchange          string `mapstructure:"exchange"`
-    RoutingKey        string `mapstructure:"routing_key"`
-    Queue             string `mapstructure:"queue"`
-    PrefetchCount     int    `mapstructure:"prefetch_count"`
-    ConsumerTag       string `mapstructure:"consumer_tag"`
-    PublisherConfirms bool   `mapstructure:"publisher_confirms"`
-}
-
 type OpenAIConfig struct {
-    APIKey              string        `mapstructure:"api_key"`
-    EmbeddingModel      string        `mapstructure:"embedding_model"`
-    EmbeddingDimensions int           `mapstructure:"embedding_dimensions"`
-    ExtractionModel     string        `mapstructure:"extraction_model"`
-    MaxRequestsPerMinute int          `mapstructure:"max_requests_per_minute"`
-    RetryAttempts       int           `mapstructure:"retry_attempts"`
-    RetryDelay          time.Duration `mapstructure:"retry_delay"`
-}
-
-type RateLimitConfig struct {
-    Enabled           bool             `mapstructure:"enabled"`
-    RequestsPerSecond int              `mapstructure:"requests_per_second"`
-    BurstSize         int              `mapstructure:"burst_size"`
-    PerUser           PerUserRateLimit `mapstructure:"per_user"`
-}
-
-type PerUserRateLimit struct {
-    RequestsPerMinute int `mapstructure:"requests_per_minute"`
-    BurstSize         int `mapstructure:"burst_size"`
+    APIKey               string        `mapstructure:"api_key"`
+    BaseURL              string        `mapstructure:"base_url"`
+    EmbeddingModel       string        `mapstructure:"embedding_model"`
+    EmbeddingDimensions  int           `mapstructure:"embedding_dimensions"`
+    ExtractionModel      string        `mapstructure:"extraction_model"`        // A, E
+    MaxRequestsPerMinute int           `mapstructure:"max_requests_per_minute"` // A
+    RetryAttempts        int           `mapstructure:"retry_attempts"`
+    RetryDelay           time.Duration `mapstructure:"retry_delay"`
 }
 
 type EnrichmentConfig struct {
     WorkerCount            int           `mapstructure:"worker_count"`
-    PollInterval           time.Duration `mapstructure:"poll_interval"`
-    MaxAttempts            int           `mapstructure:"max_attempts"`
     RetryDelay             time.Duration `mapstructure:"retry_delay"`
     JobTimeout             time.Duration `mapstructure:"job_timeout"`
+    DrainTimeout           time.Duration `mapstructure:"drain_timeout"`
+    CompletedRetention     time.Duration `mapstructure:"completed_retention"`
+    FailedRetention        time.Duration `mapstructure:"failed_retention"`
     RelatedToMinSimilarity float64       `mapstructure:"related_to_min_similarity"`
-    CompletedRetention     time.Duration `mapstructure:"completed_retention"`  // Default: 7d (168h)
-    FailedRetention        time.Duration `mapstructure:"failed_retention"`     // Default: 30d (720h)
+}
+
+type QueueConfig struct {
+    Provider string         `mapstructure:"provider"`
+    RabbitMQ RabbitMQConfig `mapstructure:"rabbitmq"`
+}
+
+type RabbitMQConfig struct {
+    Host           string        `mapstructure:"host"`
+    Port           int           `mapstructure:"port"`
+    User           string        `mapstructure:"user"`
+    Password       string        `mapstructure:"password"`
+    VHost          string        `mapstructure:"vhost"`
+    Queue          string        `mapstructure:"queue"`
+    PrefetchCount  int           `mapstructure:"prefetch_count"` // E
+    ReconnectDelay time.Duration `mapstructure:"reconnect_delay"`
+}
+
+type VocabularyConfig struct {
+    Languages []string `mapstructure:"languages"`
+    Domains   []string `mapstructure:"domains"`
 }
 
 type LoggingConfig struct {
     Level         string `mapstructure:"level"`
-    Format        string `mapstructure:"format"`
-    IncludeCaller bool   `mapstructure:"include_caller"`
+    Format        string `mapstructure:"format"`         // A
+    IncludeCaller bool   `mapstructure:"include_caller"` // A
 }
 
 type ObservabilityConfig struct {
-    Metrics         MetricsConfig `mapstructure:"metrics"`
-    Health          HealthConfig  `mapstructure:"health"`
-    Tracing         TracingConfig `mapstructure:"tracing"`
-    LogDBStatements bool          `mapstructure:"log_db_statements"`
+    Metrics MetricsConfig `mapstructure:"metrics"`
+    Health  HealthConfig  `mapstructure:"health"` // A
+    Tracing TracingConfig `mapstructure:"tracing"`
 }
 
 type MetricsConfig struct {
@@ -831,48 +797,38 @@ type TracingConfig struct {
 
 ### Class Diagram
 
+Leaf structs (`PostgresConfig`, `Neo4jConfig`, `TLSConfig` and the observability sub-structs) are omitted for readability; their fields are listed above.
+
 ```mermaid
 classDiagram
     class MnemonicConfig {
-        +ServerConfigs Server
+        +ServerConfig Server
+        +MCPConfig MCP
         +DatabaseConfig Database
         +OpenAIConfig OpenAI
-        +RateLimitConfig RateLimit
         +EnrichmentConfig Enrichment
+        +QueueConfig Queue
+        +VocabularyConfig Vocabulary
         +LoggingConfig Logging
         +ObservabilityConfig Observability
     }
 
-    class ServerConfigs {
-        +AdminServerConfig Admin
-        +MCPServerConfig MCP
-    }
-
-    class AdminServerConfig {
+    class ServerConfig {
         +string Host
         +int Port
-        +time.Duration ReadTimeout
-        +time.Duration WriteTimeout
-        +time.Duration IdleTimeout
-        +time.Duration ShutdownTimeout
+        +Duration ReadTimeout
+        +Duration WriteTimeout
+        +Duration IdleTimeout
+        +Duration ShutdownTimeout
         +TLSConfig TLS
     }
 
-    class MCPServerConfig {
-        +string Host
+    class MCPConfig {
         +int Port
-        +time.Duration ReadTimeout
-        +time.Duration WriteTimeout
-        +time.Duration IdleTimeout
-        +time.Duration ShutdownTimeout
-        +time.Duration SessionTimeout
-        +TLSConfig TLS
-    }
-
-    class TLSConfig {
-        +bool Enabled
-        +string CertFile
-        +string KeyFile
+        +Duration ReadTimeout
+        +Duration WriteTimeout
+        +Duration IdleTimeout
+        +float64 DefaultSearchThreshold
     }
 
     class DatabaseConfig {
@@ -880,68 +836,46 @@ classDiagram
         +Neo4jConfig Neo4j
     }
 
-    class PostgresConfig {
-        +string Host
-        +int Port
-        +string Database
-        +string Username
-        +string Password
-        +string SSLMode
-        +int MaxOpenConns
-        +int MaxIdleConns
-        +time.Duration ConnMaxLifetime
-    }
-
-    class Neo4jConfig {
-        +string URI
-        +string Username
-        +string Password
-        +string Database
-        +int MaxConnectionPoolSize
-        +time.Duration ConnectionAcquisitionTimeout
-    }
-
-    class RabbitMQConfig {
-        +string URL
-        +string Exchange
-        +string RoutingKey
-        +string Queue
-        +int PrefetchCount
-        +string ConsumerTag
-        +bool PublisherConfirms
-    }
-
     class OpenAIConfig {
         +string APIKey
+        +string BaseURL
         +string EmbeddingModel
         +int EmbeddingDimensions
         +string ExtractionModel
         +int MaxRequestsPerMinute
         +int RetryAttempts
-        +time.Duration RetryDelay
-    }
-
-    class RateLimitConfig {
-        +bool Enabled
-        +int RequestsPerSecond
-        +int BurstSize
-        +PerUserRateLimit PerUser
-    }
-
-    class PerUserRateLimit {
-        +int RequestsPerMinute
-        +int BurstSize
+        +Duration RetryDelay
     }
 
     class EnrichmentConfig {
         +int WorkerCount
-        +time.Duration PollInterval
-        +int MaxAttempts
-        +time.Duration RetryDelay
-        +time.Duration JobTimeout
+        +Duration RetryDelay
+        +Duration JobTimeout
+        +Duration DrainTimeout
+        +Duration CompletedRetention
+        +Duration FailedRetention
         +float64 RelatedToMinSimilarity
-        +time.Duration CompletedRetention
-        +time.Duration FailedRetention
+    }
+
+    class QueueConfig {
+        +string Provider
+        +RabbitMQConfig RabbitMQ
+    }
+
+    class RabbitMQConfig {
+        +string Host
+        +int Port
+        +string User
+        +string Password
+        +string VHost
+        +string Queue
+        +int PrefetchCount
+        +Duration ReconnectDelay
+    }
+
+    class VocabularyConfig {
+        +string[] Languages
+        +string[] Domains
     }
 
     class LoggingConfig {
@@ -954,45 +888,18 @@ classDiagram
         +MetricsConfig Metrics
         +HealthConfig Health
         +TracingConfig Tracing
-        +bool LogDBStatements
     }
 
-    class MetricsConfig {
-        +bool Enabled
-        +string Path
-        +int Port
-    }
-
-    class HealthConfig {
-        +bool Enabled
-        +string Path
-    }
-
-    class TracingConfig {
-        +bool Enabled
-        +string Endpoint
-        +float64 SampleRate
-        +bool OTLPInsecure
-    }
-
-    MnemonicConfig *-- ServerConfigs : Server
-    MnemonicConfig *-- DatabaseConfig : Database
-    MnemonicConfig *-- RabbitMQConfig : RabbitMQ
-    MnemonicConfig *-- OpenAIConfig : OpenAI
-    MnemonicConfig *-- RateLimitConfig : RateLimit
-    MnemonicConfig *-- EnrichmentConfig : Enrichment
-    MnemonicConfig *-- LoggingConfig : Logging
-    MnemonicConfig *-- ObservabilityConfig : Observability
-    ServerConfigs *-- AdminServerConfig : Admin
-    ServerConfigs *-- MCPServerConfig : MCP
-    AdminServerConfig *-- TLSConfig : AdminTLS
-    MCPServerConfig *-- TLSConfig : MCPTLS
-    DatabaseConfig *-- PostgresConfig : Postgres
-    DatabaseConfig *-- Neo4jConfig : Neo4j
-    RateLimitConfig *-- PerUserRateLimit : PerUser
-    ObservabilityConfig *-- MetricsConfig : Metrics
-    ObservabilityConfig *-- HealthConfig : Health
-    ObservabilityConfig *-- TracingConfig : Tracing
+    MnemonicConfig *-- ServerConfig : all
+    MnemonicConfig *-- MCPConfig : mcp only
+    MnemonicConfig *-- DatabaseConfig : all
+    MnemonicConfig *-- OpenAIConfig : all
+    MnemonicConfig *-- EnrichmentConfig : enricher only
+    MnemonicConfig *-- QueueConfig : api and enricher
+    MnemonicConfig *-- VocabularyConfig : api only
+    MnemonicConfig *-- LoggingConfig : all
+    MnemonicConfig *-- ObservabilityConfig : all
+    QueueConfig *-- RabbitMQConfig
 ```
 
 ## References

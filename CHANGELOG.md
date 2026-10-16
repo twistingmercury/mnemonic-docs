@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-15
+
+Full review of the docs against the `develop` code of `mnemonic-api`, `mnemonic-enricher` and `mnemonic-mcp` v0.4.0 and `mnemonic-integration-tests`.
+
+### Added
+
+- README: current topology diagram, a "Current State at a Glance" table (versions, ports, auth, branching, Dependabot) and `mnemonic-integration-tests` in the repository table
+- End-to-end trace propagation (API → RabbitMQ `traceparent` → enricher) and MCP request-path sequence diagrams
+- Enrichment job lifecycle state diagram, retry sweep (15s, `FOR UPDATE SKIP LOCKED`, 2-minute grace) and maintenance documentation
+- Per-service config reference with real keys, defaults and `MNEMONIC_*` variables, including `openai.base_url`
+- Metric inventory (`mnemonic.http.*`, `mnemonic.db.*`, `mnemonic.patterns.*`, `mnemonic.enrichment.*`, `mnemonic.mcp.*`, `mnemonic.queue.publish_failures_total`) and the heartbeat v2 `/health` checks with severities
+- "Which service uses what" tables and diagrams for PostgreSQL and Neo4j; corrected ER diagram
+- Requirements traceability implementation-status table pointing at real code and tests
+- REST API response shapes, the `/patterns/{id}/chunks` endpoint and error codes in the managing-patterns guide
+
+### Changed
+
+- MCP docs: three read-only tools with their real parameters (`language`, `domain`; no `agent`), Streamable HTTP at `/mcp` on 8081 (stateless, no auth), graph expansion in `search_patterns`, and Claude Code config using `"type": "http"`
+- Chunking documented as API-side at `[//]: pattern` decorators, with per-chunk embedding jobs and graph sync after the last chunk
+- Neo4j model corrected to `(Concept)-[:MENTIONED_IN]->(Pattern)` and `RELATED_TO {similarity}` (minimum 0.3)
+- Observability docs rewritten for otelx v2 and heartbeat v2 (`utc_date_time`, OpenAI and API RabbitMQ checks at Warning severity); `observability-implementation.md` cut from 2,000 to about 770 lines of accurate content
+- Deployment and CI docs: real image names (`mnemonic`, `mnemonic-api`, `mnemonic-enrichment`), `develop` as the trunk, `latest-dev` and `vX.Y.Z-dev` tags, PR builds that never push, Dependabot
+- ADRs: amendment notes where decisions changed, history kept
+- Versioning: versions come only from git tags (`git describe --tags --abbrev=0`); README version lines and changelogs are updated by hand
+- Agents, skills, authentication, reconciliation and other unbuilt features are labelled planned
+
+### Removed
+
+- Hypothetical code listings, config keys, metrics, spans and repository methods that do not exist in the services
+
+### Fixed
+
+- Queue name (`enrichment-jobs`), search thresholds (MCP 0.5, REST 0.7), content limit (100,000 bytes), connection pool defaults, HNSW (not IVFFlat) index, quickstart health checks, and 40 broken links and anchors
+
 ## [0.3.0] - 2026-09-16
 
 ### Added
@@ -98,7 +132,8 @@ Large rewrite for MVP 2 decomposed three-service topology.
 - Diagrams documenting MVP evolution (1-5) and system flow patterns
 - .gitignore file
 
-[Unreleased]: https://github.com/twistingmercury/mnemonic-docs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/twistingmercury/mnemonic-docs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/twistingmercury/mnemonic-docs/releases/tag/v0.4.0
 [0.3.0]: https://github.com/twistingmercury/mnemonic-docs/releases/tag/v0.3.0
 [0.2.0]: https://github.com/twistingmercury/mnemonic-docs/releases/tag/v0.2.0
 [0.1.0]: https://github.com/twistingmercury/mnemonic-docs/releases/tag/v0.1.0

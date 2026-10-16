@@ -1,6 +1,6 @@
 # Setting Up Mnemonic for Your Team
 
-This guide walks through setting up MFam on a local or trusted internal network. It assumes you've read the Quick Start or want a thorough foundation from scratch.
+This guide walks through setting up Mnemonic on a local or trusted internal network. It assumes you've read the Quick Start or want a thorough foundation from scratch.
 
 > **Important:** Mnemonic is in early development. This setup is intended for local machines and trusted team networks only — not for public-facing or cloud deployments. There is no authentication, authorization, or encryption in transit. The infrastructure and deployment model will change significantly as Mnemonic evolves toward a cloud-native platform.
 
@@ -9,7 +9,7 @@ This guide walks through setting up MFam on a local or trusted internal network.
 Before starting, ensure you have:
 
 - **Docker and Docker Compose** installed and running
-- **An OpenAI API key** with access to the text-embedding-3-large model (<https://platform.openai.com/api-keys>)
+- **An OpenAI API key** with access to the `text-embedding-3-large` (embeddings) and `gpt-4o-mini` (concept extraction) models (<https://platform.openai.com/api-keys>)
 - **curl, jq, and yq** (mikefarah/yq) for API interaction and pattern loading scripts
 - **Git** to clone repositories
 - The mnemonic-docs and mnemonic-patterns repositories (see next section)
@@ -46,7 +46,7 @@ You don't need to clone the individual service repos (mnemonic-mcp, mnemonic-api
 
 ## Step 2: Configure the Environment
 
-Mnemonic services use layered configuration: built-in defaults, then config files, then environment variables. For team setup, you only need to set one environment variable.
+Mnemonic services use layered configuration (Viper): built-in defaults, then a config file (`/etc/mnemonic/config.yaml`, `./config.yaml`, or the path in `MNEMONIC_CONFIG_FILE`), then `MNEMONIC_*` environment variables, where each `.` in a config key becomes `_` (for example `openai.base_url` is `MNEMONIC_OPENAI_BASE_URL`). For team setup, you only need to set one environment variable.
 
 Export your OpenAI API key:
 
@@ -63,12 +63,12 @@ All other configuration uses development defaults in the docker-compose.yaml:
 | PostgreSQL | 5432 | mnemonic / mnemonic_dev |
 | Neo4j | 7474 (HTTP), 7687 (Bolt) | neo4j / mnemonic_dev |
 | RabbitMQ | 5672 (AMQP), 15672 (Management) | mnemonic / mnemonic_dev |
-| MCP Server | 8081 | — (read-only, no auth) |
-| Admin API | 8080 | — (no auth in Phase 1) |
-| Enricher | 8082 | — (internal use only) |
+| MCP Server | 8081 (`/mcp`) | — (read-only, no auth) |
+| Admin API | 8080 (`/v1/api`, `/health`, `/version`, `/swagger/index.html`) | — (no auth in Phase 1) |
+| Enricher | 8082 → container 8080 (`/health`, `/version` only) | — (internal use only) |
 | Admin UI | 3000 | — (no auth in Phase 1) |
 
-These defaults are appropriate for local machines and trusted team networks. If deploying on a shared server, override credentials by setting environment variables before running `docker compose up` (see the docker-compose.yaml for the full list of `MNEMONIC_*` variables). Do not expose these services to the public internet.
+These defaults are appropriate for local machines and trusted team networks. The credentials are written literally into each service's `environment:` block in docker-compose.yaml; only `MNEMONIC_OPENAI_API_KEY` is read from your shell. To change a credential on a shared server, edit docker-compose.yaml: change the database or broker's own variable (for example `POSTGRES_PASSWORD`, `NEO4J_AUTH`, `RABBITMQ_DEFAULT_PASS`) and the matching `MNEMONIC_*` variable (for example `MNEMONIC_DATABASE_POSTGRES_PASSWORD`, `MNEMONIC_DATABASE_NEO4J_PASSWORD`, `MNEMONIC_QUEUE_RABBITMQ_PASSWORD`) in every service that uses it. Do not expose these services to the public internet.
 
 ## Step 3: Start the Stack
 
@@ -86,7 +86,7 @@ Docker Compose starts seven containers:
 - RabbitMQ — asynchronous job queue
 - MCP Server — MCP tools for Claude Code (port 8081)
 - Admin API — REST API for pattern management (port 8080)
-- Enricher — embedding generation worker
+- Enricher — embedding and concept-extraction worker (health on port 8082)
 - Admin UI — web interface for pattern browsing and management (port 3000)
 
 Wait about 30 seconds for all services to become healthy. Check the status:
@@ -95,16 +95,17 @@ Wait about 30 seconds for all services to become healthy. Check the status:
 docker compose ps
 ```
 
-All containers should show `Up` and (after a moment) `healthy` in the Status column.
+All containers should show `Up` and (after a moment) `healthy` in the Status column (`dev_admin` has no health check).
 
-Verify the API and MCP server are responding:
+Verify the services are responding. The MCP server's health endpoint is on its container port 8080, which docker-compose.yaml does not publish, so use its built-in probe:
 
 ```bash
-curl -s http://localhost:8080/health | jq .
-curl -s http://localhost:8081/health | jq .
+curl -s http://localhost:8080/health | jq .   # Admin API
+curl -s http://localhost:8082/health | jq .   # Enricher
+docker compose exec dev_mcp /mnemonic --health
 ```
 
-Both should return HTTP 200 with a status object. If either returns an error, check logs:
+Each should report HTTP 200 / healthy with a status entry per dependency (PostgreSQL, Neo4j and the OpenAI embedding model; the API also checks RabbitMQ). If any returns an error, check logs:
 
 ```bash
 docker compose logs dev_api
@@ -156,12 +157,13 @@ If you want to point the script at a different Mnemonic server (e.g., a shared t
 The script uses curl, yq, and jq to interact with the API. If loading fails, ensure:
 
 - The Admin API is running and healthy (`curl -s http://localhost:8080/health`)
-- Your OpenAI API key is set and valid (the enricher will fail silently if the key is wrong)
-- Each pattern's frontmatter is valid YAML and contains required fields (name, description, entity_type, language, domain)
+- Each pattern's frontmatter is valid YAML and contains the fields the API requires (`name`, `entity_type`, `language`, `domain`) with values the API accepts (see [Pattern File Schema](../reference/pattern-schema.md))
+
+An invalid OpenAI key does not stop loading: the API accepts the pattern and the enricher later marks it `failed` with the OpenAI error in `enrichment_error`.
 
 ## Step 5: Verify Enrichment
 
-After patterns are loaded, the enricher worker generates semantic embeddings asynchronously. This process typically takes seconds to minutes, depending on the number of patterns and OpenAI API rate limits.
+After patterns are loaded, the enricher worker generates an embedding for each chunk and then extracts concepts into Neo4j, asynchronously. This process typically takes seconds to minutes, depending on the number of patterns and OpenAI API rate limits.
 
 Check enrichment status:
 
@@ -178,7 +180,7 @@ Look for output like:
 }
 ```
 
-Patterns should eventually show `"enriched"` (not `"pending"` or `"failed"`). If a pattern stays in `"pending"` for more than a few minutes, check the enricher logs:
+Patterns should eventually show `"enriched"` (not `"pending"` or `"failed"`). If a pattern stays in `"pending"` for more than a few minutes, first check that its content has at least one `[//]: pattern` section (a pattern without one has no chunks and is never enriched), then check the enricher logs:
 
 ```bash
 docker compose logs dev_enricher -f
@@ -187,8 +189,9 @@ docker compose logs dev_enricher -f
 Common causes of enrichment failure:
 
 - Invalid OpenAI API key (check the MNEMONIC_OPENAI_API_KEY environment variable)
-- OpenAI API rate limit reached (wait and retry)
-- Pattern content is malformed or too large (check the Admin API logs for details)
+- OpenAI API rate limit reached (the enricher retries failed jobs automatically, 30 seconds apart by default)
+
+For a failed pattern, `curl -s http://localhost:8080/v1/api/patterns/{id} | jq .enrichment_error` shows the error.
 
 Once all patterns show `"enriched"`, your knowledge base is ready for search.
 
@@ -202,13 +205,19 @@ Claude Code supports two levels of MCP configuration: project-level and user-lev
 
 **Project-level (recommended for teams):**
 
-Create a `.mcp.json` file in the project root (the same directory where you cloned mnemonic-docs). This file is shared with the team:
+In the root of each code repository your team works in (not the mnemonic-docs clone), run:
+
+```bash
+claude mcp add -s project --transport http mnemonic http://localhost:8081/mcp
+```
+
+This writes a `.mcp.json` file that you commit so the whole team shares it:
 
 ```json
 {
   "mcpServers": {
     "mnemonic": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://localhost:8081/mcp"
     }
   }
@@ -217,9 +226,13 @@ Create a `.mcp.json` file in the project root (the same directory where you clon
 
 **User-level (personal setup):**
 
-If you prefer not to commit .mcp.json to your repo, add the same configuration to Claude Code's user settings. The exact location varies by setup; check Claude Code's documentation or settings interface.
+If you prefer not to commit .mcp.json to your repo, add the server for yourself across all projects:
 
-After adding the configuration, **restart Claude Code** to pick up the new MCP server. You should see "mnemonic" appear in the available MCP servers.
+```bash
+claude mcp add -s user --transport http mnemonic http://localhost:8081/mcp
+```
+
+This stores the entry in `~/.claude.json`. Run `claude mcp list` (or `/mcp` inside Claude Code) to confirm "mnemonic" is connected; start a new Claude Code session if one was already open.
 
 **For a remote team instance:**
 
@@ -229,7 +242,7 @@ If Mnemonic is running on a shared server instead of localhost, replace `http://
 {
   "mcpServers": {
     "mnemonic": {
-      "type": "streamable-http",
+      "type": "http",
       "url": "http://mnemonic.team.example.com:8081/mcp"
     }
   }
@@ -238,12 +251,12 @@ If Mnemonic is running on a shared server instead of localhost, replace `http://
 
 ### Other MCP-Compatible Assistants
 
-If your team uses a different AI assistant that supports MCP (e.g., Anthropic's Claude Web, or third-party tools), follow these steps:
+If your team uses a different AI assistant that supports MCP over Streamable HTTP and can reach the server on your network, follow these steps:
 
 1. Locate the assistant's MCP configuration file (check documentation for exact path)
 2. Add a new MCP server entry with these settings:
    - **Name:** mnemonic
-   - **Transport:** HTTP Streamable
+   - **Transport:** Streamable HTTP (no auth headers)
    - **URL:** <http://localhost:8081/mcp> (or your server's address)
 3. Restart the assistant
 
@@ -268,15 +281,16 @@ The assistant should invoke the `search_patterns` MCP tool and return relevant p
 Monitor the health of the stack:
 
 ```bash
-curl -s http://localhost:8080/health | jq .
-curl -s http://localhost:8081/health | jq .
+curl -s http://localhost:8080/health | jq .   # Admin API
+curl -s http://localhost:8082/health | jq .   # Enricher
+docker compose exec dev_mcp /mnemonic --health
 ```
 
-Both endpoints return HTTP 200 when the service is healthy.
+Each `/health` returns HTTP 200 when the service is healthy (a warning on OpenAI or RabbitMQ does not fail it). Each service also serves `GET /version`. Prometheus metrics are served on container port 9090 at `/metrics`, which docker-compose.yaml does not publish; add a port mapping if you want to scrape them from the host.
 
 ### Logs
 
-All services emit structured JSON logs via zerolog. View logs for a specific service:
+All Mnemonic services emit structured JSON logs via zerolog (`MNEMONIC_LOGGING_FORMAT`, default `json`; the compose file sets `MNEMONIC_LOGGING_LEVEL=debug`). View logs for a specific service:
 
 ```bash
 docker compose logs -f dev_api
@@ -302,7 +316,7 @@ From the Neo4j browser, you can explore the pattern relationship graph, run Cyph
 
 Open <http://localhost:15672> in a web browser. Log in with credentials: mnemonic / mnemonic_dev.
 
-Use the management UI to inspect queues, monitor job throughput, and troubleshoot queue issues. The main queue is named `mnemonic.enrichment`.
+Use the management UI to inspect queues, monitor job throughput, and troubleshoot queue issues. The API publishes one message per chunk enrichment job to the `enrichment-jobs` queue, which the enricher consumes. Jobs also live in PostgreSQL, so a job whose message is lost is still picked up by the enricher's retry sweep.
 
 **Admin UI** (web-based pattern browser):
 
@@ -362,7 +376,7 @@ Common causes:
 
 - Invalid OpenAI API key
 - OpenAI API rate limit (wait and retry)
-- Pattern content exceeds size limits (shorten the pattern or split it)
+- One chunk failed, which marks the whole pattern `failed` until its retry succeeds (check `enrichment_error`)
 
 **MCP server is not responding:**
 
@@ -370,7 +384,7 @@ Verify the MCP server is running:
 
 ```bash
 docker compose ps dev_mcp
-curl -s http://localhost:8081/health | jq .
+docker compose exec dev_mcp /mnemonic --health
 ```
 
 If the container is running but the health check fails, check logs:
@@ -387,13 +401,13 @@ Verify patterns are enriched:
 curl -s http://localhost:8080/v1/api/patterns?limit=5 | jq '.data[] | {name, enrichment_status}'
 ```
 
-All patterns should show `"enriched"`. If they show `"pending"`, wait a moment and retry. If they show `"failed"`, check the enricher logs.
+All patterns should show `"enriched"`. If they show `"pending"`, wait a moment and retry. If they show `"failed"`, check the enricher logs. Also note that the MCP `search_patterns` tool uses a 0.5 similarity threshold by default (`MNEMONIC_MCP_DEFAULT_SEARCH_THRESHOLD`) and the REST search uses 0.7; a lower threshold returns more results.
 
 ## Security Considerations
 
 **Mnemonic does not currently support public or cloud deployment.** The following limitations apply:
 
-- **No authentication or authorization** — all API endpoints are open. The MCP interface is read-only, but the REST API allows unrestricted pattern creation, modification, and deletion.
+- **No authentication or authorization** — all API endpoints and the MCP endpoint are open. The MCP interface is read-only, but the REST API allows unrestricted pattern creation, modification, and deletion.
 - **No encryption in transit** — all traffic is unencrypted HTTP.
 - **No audit trail** — there is no record of who accessed or modified patterns.
 
@@ -402,7 +416,7 @@ All patterns should show `"enriched"`. If they show `"pending"`, wait a moment a
 To reduce risk on shared internal networks:
 
 - Restrict database and queue access to the Docker network only
-- Use strong credentials for RabbitMQ, PostgreSQL, and Neo4j (override defaults in docker-compose.yaml)
+- Use strong credentials for RabbitMQ, PostgreSQL, and Neo4j (edit them in docker-compose.yaml, as described in Step 2)
 - Monitor logs regularly for unusual activity
 
 Authentication, authorization, and secure transport are planned for future releases as Mnemonic moves toward a cloud-native deployment model.
@@ -428,14 +442,14 @@ docker compose up -d
 
 ### Using a Different OpenAI Embedding Model
 
-The default is text-embedding-3-large. To use a different model, set the environment variable before starting:
+The default is `text-embedding-3-large` with 2000 dimensions (`openai.embedding_model`, `openai.embedding_dimensions`), which matches the `vector(2000)` column in PostgreSQL. The API and MCP server embed search queries and the enricher embeds chunks, so all three must use the same model. docker-compose.yaml does not pass these variables through from your shell, so add them to the `environment:` block of `dev_api`, `dev_mcp`, and `dev_enricher`:
 
-```bash
-export MNEMONIC_OPENAI_EMBEDDING_MODEL="text-embedding-3-large"
-docker compose up -d
+```yaml
+MNEMONIC_OPENAI_EMBEDDING_MODEL: your-embedding-model
+MNEMONIC_OPENAI_EMBEDDING_DIMENSIONS: 2000
 ```
 
-Check OpenAI's documentation for supported models.
+The model must be able to return 2000-dimensional vectors (for example, `text-embedding-3-small` cannot: its maximum is 1536), because the dimension count must match the database column. After switching models, existing embeddings are not comparable with new query embeddings: re-load or update every pattern so it is re-enriched. To point all three services at an OpenAI-compatible endpoint, set `MNEMONIC_OPENAI_BASE_URL` the same way.
 
 ### Persisting Data Across Restarts
 
@@ -458,7 +472,7 @@ For larger teams sharing a single instance on an internal network:
 
 - Deploy on a shared server accessible over the team's LAN or VPN
 - Adjust resource limits in docker-compose.yaml (memory, CPU)
-- Use environment variables to override default credentials
+- Change the default credentials in docker-compose.yaml
 
 Cloud-native deployment (managed databases, Kubernetes, authentication, SSL) is not yet supported but is on the roadmap. Expect the deployment model to change significantly in future releases.
 

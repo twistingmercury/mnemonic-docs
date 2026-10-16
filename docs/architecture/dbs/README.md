@@ -5,7 +5,7 @@
 Start here: [Architecture Overview](00-overview.md)
 
 | # | Document | Description |
-|---|---|---|
+| --- | --- | --- |
 | 00 | [Overview](00-overview.md) | System overview and document navigation |
 | 02 | [Architectural Decisions](02-architectural-decisions.md) | ADR log |
 | 05 | [Deployment Architecture](05-deployment-architecture.md) | Image build pipeline and CI/CD |
