@@ -37,6 +37,8 @@ The `mnemonic-mcp` service exposes 3 read-only pattern search tools over the Mod
 
 All 3 tools are stateless: each invocation is a standalone request/response with no session state carried between calls. The tools return markdown-formatted text content.
 
+The server speaks MCP protocol version 2026-07-28 (sessionless, no `initialize`, per-request `_meta`), and 2025-11-25 and earlier for older clients. The SDK handles `server/discover`, header validation and version negotiation; see [MCP Tools: Tool Discovery](../architecture/mnemonic/08-mcp-tools.md#tool-discovery) for the wire format.
+
 **Authentication:** none. The MCP endpoint is unauthenticated in the current local, single-user phase. Do not expose port 8081 beyond localhost.
 
 **SDK:** `github.com/modelcontextprotocol/go-sdk/mcp` v1.8.0 (see `src/go.mod`). The Go module path of the service is `github.com/twistingmercury/mnemonic`.
@@ -59,7 +61,7 @@ All server construction lives in `src/internal/mcpserver/server.go`; `src/intern
 
 ### MCP Server Creation
 
-`NewMCPServer` creates the MCP server with Mnemonic's implementation metadata, attaches the tool telemetry middleware and registers the 3 tools. The version string comes from the `internal/version` package (set from the git tag at build time). A `SchemaCache` avoids repeated reflection on tool input structs.
+`NewMCPServer` creates the MCP server with Mnemonic's implementation metadata, attaches the tool telemetry middleware and registers the 3 tools. The version string comes from the `internal/version` package (set from the git tag at build time). A `SchemaCache` avoids repeated reflection on tool input structs. `Capabilities` advertises only `tools`, with no `listChanged` because the tool set is fixed (the SDK would otherwise also advertise the deprecated `logging` capability). `SetCacheable` gives `tools/list` and `server/discover` a one-hour `ttlMs` with `cacheScope: "public"`.
 
 ```go
 // NewMCPServer creates a configured MCP server with all 3 pattern search
@@ -69,7 +71,12 @@ func NewMCPServer(deps ToolDependencies, logger zerolog.Logger, mcpCfg config.MC
         Name:    "mnemonic",
         Version: version.Version(),
     }, &mcp.ServerOptions{
-        SchemaCache: mcp.NewSchemaCache(),
+        SchemaCache:  mcp.NewSchemaCache(),
+        Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+        SetCacheable: func(_ context.Context, _ mcp.Request, c *mcp.Cacheable) {
+            c.TTLMs = int(toolListTTL.Milliseconds()) // 1 hour
+            c.CacheScope = "public"
+        },
     })
 
     server.AddReceivingMiddleware(toolTelemetry(toolMetrics))
@@ -97,18 +104,22 @@ func NewMCPHTTPHandler(server *mcp.Server) *mcp.StreamableHTTPHandler {
 }
 ```
 
-The factory always returns the same shared server instance. With `Stateless: true` the SDK does not create or track sessions, so a client may send `tools/call` without a preceding `initialize` (the integration tests do exactly this). Clients should send `Accept: application/json, text/event-stream`; the response body may be framed as a single SSE `data:` event.
+The factory always returns the same shared server instance. With `Stateless: true` the SDK does not create, read or echo `Mcp-Session-Id`, and answers `GET` and `DELETE` with 405. A 2026-07-28 client never sends `initialize`; an older client may, and may also send `tools/call` without it. Clients should send `Accept: application/json, text/event-stream`; the response body may be framed as a single SSE `data:` event.
 
 There is no session timeout or session configuration: `MCPConfig` has only `port`, `read_timeout`, `write_timeout`, `idle_timeout` and `default_search_threshold`.
 
 ### HTTP Server Lifecycle
 
-`NewMCPHTTPServer` mounts the handler at `/mcp` on a dedicated `net/http.Server`, wrapped in `otelhttp` so every request gets a server span (continuing any incoming W3C trace context) and the standard `http.server.*` metrics.
+`NewMCPHTTPServer` mounts the handler at `/mcp` on a dedicated `net/http.Server`. From the outside in:
+
+1. `otelhttp` gives every request a server span (continuing any incoming W3C trace context) and the standard `http.server.*` metrics.
+2. `withMCPHeaders` copies the `Mcp-Method` and `MCP-Protocol-Version` headers onto that span as `mcp.method.name` and `mcp.protocol.version`.
+3. `http.CrossOriginProtection` rejects cross-origin browser requests with 403, since the spec requires servers to validate `Origin`. Requests without `Origin` or `Sec-Fetch-Site` (non-browser clients) pass.
 
 ```go
 func NewMCPHTTPServer(mcpCfg config.MCPConfig, host string, mcpHandler http.Handler) *http.Server {
     mux := http.NewServeMux()
-    mux.Handle("/mcp", otelhttp.NewHandler(mcpHandler, "/mcp"))
+    mux.Handle("/mcp", otelhttp.NewHandler(withMCPHeaders(http.NewCrossOriginProtection().Handler(mcpHandler)), "/mcp"))
 
     return &http.Server{
         Addr:         mcpCfg.Address(host), // server.host + mcp.port, default 0.0.0.0:8081
@@ -141,7 +152,7 @@ sequenceDiagram
     Coord->>HTTP: ListenAndServe() [errgroup goroutine]
 
     note over Coord,TH: Tool call (no session needed)
-    CC->>HTTP: POST /mcp tools/list
+    CC->>HTTP: POST /mcp tools/list (_meta: protocolVersion 2026-07-28)
     HTTP->>MCP: JSON-RPC dispatch
     MCP-->>CC: 200 OK (3 tools)
     CC->>HTTP: POST /mcp tools/call
@@ -162,8 +173,9 @@ How one `tools/call` travels through the service:
 
 ```mermaid
 flowchart LR
-    CC["Claude Code"] -->|"POST /mcp<br/>JSON-RPC tools/call"| OTEL["otelhttp handler<br/>span: /mcp"]
-    OTEL --> SH["StreamableHTTPHandler<br/>stateless"]
+    CC["Claude Code"] -->|"POST /mcp<br/>JSON-RPC tools/call"| OTEL["otelhttp handler<br/>span: POST /mcp<br/>+ mcp.method.name"]
+    OTEL --> COP["CrossOriginProtection<br/>403 on foreign Origin"]
+    COP --> SH["StreamableHTTPHandler<br/>stateless, validates headers"]
     SH --> MW["toolTelemetry middleware<br/>span: tools/call &lt;tool&gt;<br/>metrics: tool_calls, tool_duration"]
     MW --> H["tool handler<br/>defaults + validation"]
     H --> TD["ToolDependencies<br/>(toolDeps)"]
@@ -456,7 +468,7 @@ No custom implementation exists for transport-level errors.
 
 `telemetry.go` defines `toolTelemetry`, added with `server.AddReceivingMiddleware`. It passes every method other than `tools/call` straight through. For `tools/call` it:
 
-1. Starts a span `tools/call <tool>` (child of the `/mcp` HTTP span) with attribute `mcp.tool.name`.
+1. Starts a span `tools/call <tool>` with attribute `mcp.tool.name`, as a child of the `/mcp` HTTP span, or of the client span named by a `traceparent` in the request `_meta` (with a link to the HTTP span) when that is in a different trace.
 2. Calls the next handler.
 3. Derives the tool error from the returned error or, since the SDK turns handler errors into results, from a `CallToolResult` with `IsError` set.
 4. Maps it to an outcome: `ok`, `invalid_input`, `not_found` or `unavailable`; sets `mcp.tool.outcome` on the span and records the error. Only `unavailable` marks the span status as Error, because invalid input and unknown patterns are caller mistakes.
@@ -468,13 +480,15 @@ The MCP server runs on plain `net/http`, not Gin. Spans per request:
 
 | Span                         | Source                     | Attributes                                                                         |
 | ---------------------------- | -------------------------- | ---------------------------------------------------------------------------------- |
-| `/mcp` (server)              | `otelhttp.NewHandler`      | standard HTTP server attributes; continues incoming W3C `traceparent`/`tracestate` |
-| `tools/call <tool>`          | `toolTelemetry` middleware | `mcp.tool.name`, `mcp.tool.outcome`                                                |
+| `POST /mcp` (server)         | `otelhttp.NewHandler`      | standard HTTP server attributes, `mcp.method.name`, `mcp.protocol.version`; continues incoming W3C `traceparent`/`tracestate` |
+| `tools/call <tool>`          | `toolTelemetry` middleware | `mcp.tool.name`, `mcp.tool.outcome`; parented from `_meta.traceparent` when present |
 | `neo4j <Operation>` (client) | graph repository           | `db.system.name`, `db.namespace`, `db.operation.name`                              |
 | PostgreSQL query spans       | otelpgx                    | otelpgx defaults                                                                   |
 | OpenAI embedding HTTP span   | `otelhttp.NewTransport`    | retries add an `openai.embed.retry` span event                                     |
 
 When the caller sends no trace context, the `/mcp` span is the trace root.
+
+The 2026-07-28 spec also lets a client put `traceparent`, `tracestate` and `baggage` in a request's `_meta`. When a `tools/call` carries a valid `_meta.traceparent` from a different trace than the HTTP span, the `tools/call <tool>` span joins that trace as a child of the client's span and gets a span link back to the `/mcp` HTTP span. When the `_meta` and header contexts are in the same trace, the HTTP span stays the parent.
 
 ### Metrics
 

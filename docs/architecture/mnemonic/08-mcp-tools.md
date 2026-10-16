@@ -17,16 +17,43 @@ Mnemonic exposes 3 read-only MCP tools for pattern search: `search_patterns`, `f
 
 ## Tool Discovery
 
-The MCP server uses Streamable HTTP in **stateless** mode at `http://localhost:8081/mcp` (port from `mcp.port`). There is **no authentication** in the current local, single-user phase, so the port should not be exposed beyond localhost.
+The MCP server speaks MCP protocol version **2026-07-28** over Streamable HTTP at `http://localhost:8081/mcp` (port from `mcp.port`). There is **no authentication** in the current local, single-user phase, so the port should not be exposed beyond localhost.
 
-Claude Code discovers and invokes tools in these steps:
+The 2026-07-28 protocol has no `initialize` handshake and no sessions. Every request is one HTTP POST that stands on its own:
 
-1. **Connection**: Claude Code connects via MCP over Streamable HTTP to `http://localhost:8081/mcp`
-2. **Initialization**: sends `initialize`; the server keeps no session, so this only returns server capabilities
-3. **Discovery**: sends `tools/list` to receive all 3 tool registrations
-4. **Invocation**: during conversation, sends `tools/call` with the tool name and arguments
+1. **Discovery (optional)**: `server/discover` returns the supported protocol versions, the capabilities (`{"tools":{}}`) and `serverInfo` (`mnemonic`)
+2. **Tool listing**: `tools/list` returns the 3 tools, sorted by name, with `ttlMs: 3600000` and `cacheScope: "public"`, so a client may cache the list for an hour
+3. **Invocation**: `tools/call` with the tool name and arguments
 
-Because the server is stateless, a client may also send `tools/call` directly without `initialize`. Requests should carry `Accept: application/json, text/event-stream`; the response may be framed as an SSE `data:` event.
+Each request carries its protocol version, client info and client capabilities in `params._meta`, and mirrors them into headers:
+
+| Header                 | Value                   | Required for                              |
+| ---------------------- | ----------------------- | ----------------------------------------- |
+| `MCP-Protocol-Version` | `2026-07-28`            | every request                             |
+| `Mcp-Method`           | the JSON-RPC `method`   | every request                             |
+| `Mcp-Name`             | the tool name           | `tools/call`                              |
+| `Accept`               | `application/json, text/event-stream` | every request (the response may be an SSE `data:` event) |
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "search_patterns",
+    "arguments": { "query": "Go error handling" },
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { "name": "example", "version": "1.0.0" },
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+Clients on protocol 2025-11-25 and earlier still work: they send `initialize` first, and the server answers with the newest version they share. `GET` and `DELETE` on `/mcp` return 405, and an `Mcp-Session-Id` header is ignored.
+
+Browser requests from another origin (an `Origin` header that does not match the host) are rejected with 403, to block DNS-rebinding attacks. Clients that send no `Origin` header, such as Claude Code, are unaffected.
 
 ```mermaid
 sequenceDiagram
@@ -36,8 +63,8 @@ sequenceDiagram
     participant NEO as Neo4j
     participant OAI as OpenAI
 
-    CC->>MCP: tools/list
-    MCP-->>CC: search_patterns, find_related_patterns, get_pattern
+    CC->>MCP: tools/list (cache for ttlMs)
+    MCP-->>CC: find_related_patterns, get_pattern, search_patterns
     CC->>MCP: tools/call search_patterns {query}
     MCP->>OAI: embed query
     MCP->>PG: chunk similarity search
@@ -143,15 +170,18 @@ For not-found conditions, validation failures, and backend unavailability, Mnemo
 
 ### Transport-Level Errors
 
-For protocol problems, the MCP SDK returns a JSON-RPC error response. These use standard JSON-RPC 2.0 error codes:
+For protocol problems, the MCP SDK rejects the request before any tool runs:
 
-| Code   | Meaning          | Description                             |
-| ------ | ---------------- | --------------------------------------- |
-| -32700 | Parse error      | Malformed JSON                          |
-| -32600 | Invalid request  | Not a valid JSON-RPC 2.0 request        |
-| -32601 | Method not found | Unknown method                          |
-| -32602 | Invalid params   | Parameters do not match the tool schema |
-| -32603 | Internal error   | Unexpected server error                 |
+| HTTP | Body                                    | Cause                                                                                  |
+| ---- | --------------------------------------- | -------------------------------------------------------------------------------------- |
+| 400  | plain text `malformed payload: ...`     | Malformed JSON, or not a JSON-RPC 2.0 message                                          |
+| 400  | JSON-RPC error `-32020` HeaderMismatch  | `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` missing or not matching the body    |
+| 400  | JSON-RPC error `-32022` UnsupportedProtocolVersion | Unknown protocol version; `error.data.supported` lists the versions the server speaks |
+| 403  | plain text                              | Cross-origin browser request                                                           |
+| 404  | JSON-RPC error `-32601` Method not found | Unknown method, including `ping` and `logging/setLevel`, which 2026-07-28 removed     |
+| 405  | plain text                              | `GET` or `DELETE` on `/mcp`                                                            |
+
+Arguments that do not match a tool's input schema (for example a number where `id` expects a string) are not a transport error: the SDK returns a tool result with `isError: true` and a `validating "arguments": ...` message.
 
 ## References
 
