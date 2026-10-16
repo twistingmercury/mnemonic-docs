@@ -28,7 +28,7 @@
 
 ## Current State (Local Phase)
 
-This is what the code does today (`mnemonic-api` v0.4.1, `mnemonic-enricher` v0.4.2, `mnemonic-mcp` v0.5.1). The phase is a trusted, local, single-user environment.
+This is what the code does today (`mnemonic-api` v0.5.0, `mnemonic-enricher` v0.5.0, `mnemonic-mcp` v0.6.0). The phase is a trusted, local, single-user environment.
 
 | Surface                                                               | Current behavior                                                                                                                                                               |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
