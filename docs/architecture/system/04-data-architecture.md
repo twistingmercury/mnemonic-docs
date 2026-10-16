@@ -692,7 +692,7 @@ LIMIT 5;
 
 The services do not set `hnsw.ef_search`; the pgvector default applies. Because the similarity threshold and metadata filters are applied after the index scan, heavy filtering can return fewer than `LIMIT` rows.
 
-**Pattern List Query:** The API's list query selects every column except `content` and uses `COUNT(*) OVER()` for the total, so one round trip returns a page plus the total count.
+**Pattern List Query:** The API's list query selects every column except `content` and returns one page; it does not compute a total count.
 
 #### Connection Pool Configuration
 
@@ -701,7 +701,7 @@ The services do not set `hnsw.ef_search`; the pgvector default applies. Because 
 | Setting | Config key | Default | Description |
 | --- | --- | --- | --- |
 | Max Connections | `database.postgres.max_open_conns` | 25 | `pgxpool` `MaxConns` |
-| Min Connections | `database.postgres.max_idle_conns` | 5 | Mapped to `pgxpool` `MinConns` |
+| Min Connections | `database.postgres.min_conns` | 5 | Mapped to `pgxpool` `MinConns` |
 | Max Connection Lifetime | `database.postgres.conn_max_lifetime` | 5m | Recycle connections |
 
 **Neo4j Connection Pool Settings:**

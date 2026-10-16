@@ -16,9 +16,8 @@
   - [EnrichmentService](#enrichmentservice)
   - [Queue Interfaces](#queue-interfaces)
   - [Planned: Agent and Skill Services](#planned-agent-and-skill-services)
-- [ToolDependencies: MCP Facade](#tooldependencies-mcp-facade)
-  - [Interface Definition](#interface-definition)
-  - [Concrete Implementation](#concrete-implementation)
+- [Services: MCP Facade](#services-mcp-facade)
+  - [Struct Definition](#struct-definition)
   - [MCP Handler Wiring](#mcp-handler-wiring)
 - [Resolving the find_related_patterns Data Gap](#resolving-the-find_related_patterns-data-gap)
   - [RelatedPattern Struct](#relatedpattern-struct)
@@ -84,7 +83,7 @@ The service layer does NOT:
 graph TB
     subgraph "mnemonic-mcp"
         MCP[MCP Tool Handlers<br/>:8081/mcp]
-        TD[ToolDependencies<br/>MCP facade]
+        TD[mcpserver.Services<br/>MCP facade]
         MSEARCH[search.Service<br/>vector + graph expansion]
         MPS[pattern.Service<br/>read-only]
     end
@@ -142,7 +141,7 @@ graph TB
 
 [Table of Contents](#table-of-contents)
 
-Service interfaces and implementations live under `src/internal/service/` in each repo. Each domain gets its own sub-package to keep repository type imports unambiguous. Sentinel errors live in `internal/service/errors.go`.
+Service interfaces and implementations live under `src/internal/service/` in each repo. Each domain gets its own sub-package to keep repository type imports unambiguous. Sentinel errors live in `internal/service/errors.go` in the API; the MCP server has none and passes repository errors through.
 
 ```text
 mnemonic-api/src/internal/
@@ -153,9 +152,9 @@ mnemonic-api/src/internal/
     server/              # wiring, routes, HTTP servers
 
 mnemonic-mcp/src/internal/
-    mcpserver/           # MCP server, tools, handlers, ToolDependencies
+    mcpserver/           # MCP server, tools, handlers, Services
     repository/          # chunk, graph, pattern (read-only)
-    service/             # errors.go; pattern (read-only), search, openai (embedding)
+    service/             # pattern (read-only), search, openai (embedding)
     handlers/operations/ # /health, /version
     server/              # wiring, HTTP servers
 
@@ -168,9 +167,9 @@ mnemonic-enricher/src/internal/
     server/              # wiring, HTTP server
 ```
 
-All three also have `config`, `database` (api: `database/graphdb`, `database/vectordb`), `health`, `metrics`, `middleware`, `telemetry` and `version`. The Go module paths are `github.com/twistingmercury/mnemonic-api`, `github.com/twistingmercury/mnemonic` (the MCP service) and `github.com/twistingmercury/mnemonic-enricher`.
+All three also have `config`, `database` (api: `database/graphdb`, `database/vectordb`), `health`, `metrics`, `telemetry` and `version`; the API also has `middleware`. The Go module paths are `github.com/twistingmercury/mnemonic-api`, `github.com/twistingmercury/mnemonic` (the MCP service) and `github.com/twistingmercury/mnemonic-enricher`.
 
-The `internal/mcpserver/deps.go` file (in `mnemonic-mcp`) defines the `ToolDependencies` interface and its implementation (`toolDeps`), which composes the MCP services.
+`mcpserver.Services` (in `mnemonic-mcp`'s `internal/mcpserver/server.go`) is a struct of function fields that `internal/server` fills with the MCP service methods.
 
 ## External Service Interfaces
 
@@ -240,7 +239,7 @@ type Service interface {
     // Create stores a pattern with its chunks and one pending enrichment job
     // per chunk, atomically, then publishes the jobs (best-effort).
     // Returns service.ErrConflict if the pattern name already exists.
-    Create(ctx context.Context, input CreateInput) (*patternRepo.Pattern, error)
+    Create(ctx context.Context, input Input) (*patternRepo.Pattern, error)
 
     // Get retrieves a pattern by ID. Returns service.ErrNotFound if not found.
     Get(ctx context.Context, id uuid.UUID) (*patternRepo.Pattern, error)
@@ -252,26 +251,22 @@ type Service interface {
 
     // Update rewrites the pattern, replaces all chunks and jobs in one
     // transaction, then publishes the new jobs.
-    Update(ctx context.Context, id uuid.UUID, input UpdateInput) (*patternRepo.Pattern, error)
+    Update(ctx context.Context, id uuid.UUID, input Input) (*patternRepo.Pattern, error)
 
     // Delete removes a pattern from Postgres (CASCADE handles chunks and
     // jobs) and best-effort cleans up Neo4j.
     Delete(ctx context.Context, id uuid.UUID) error
 
     // List retrieves patterns with filtering and pagination.
-    List(ctx context.Context, filter patternRepo.Filter, opts ListOptions) ([]*patternRepo.Pattern, int64, error)
-
-    // FindRelated finds patterns related to the given pattern via the Neo4j
-    // knowledge graph. Returns service.ErrNotFound if the pattern does not exist.
-    FindRelated(ctx context.Context, patternID uuid.UUID, limit int) ([]RelatedPatternResult, error)
+    List(ctx context.Context, filter patternRepo.Filter, opts ListOptions) ([]*patternRepo.Pattern, error)
 
     // ListChunks retrieves chunk summaries (no content) for a pattern, ordered
     // by chunk_index. It does not check that the pattern exists.
     ListChunks(ctx context.Context, patternID uuid.UUID) ([]*chunkrepo.Chunk, error)
 }
 
-// CreateInput and UpdateInput have the same fields.
-type CreateInput struct {
+// Input is used for both Create and Update.
+type Input struct {
     Name            string
     Description     *string
     Content         string
@@ -298,7 +293,6 @@ type RelatedPatternResult struct {
 
 type ConceptResult struct {
     Name string
-    Type string
 }
 
 type ListOptions struct {
@@ -307,14 +301,12 @@ type ListOptions struct {
 }
 ```
 
-`FindRelated` is part of the interface but no REST route calls it today; the MCP service has its own read-side copy (see [MCP Read Services](#mcp-read-services)).
-
 **Handler composition (`GET /v1/api/patterns/{id}`):**
 
 1. `GetWithGraph(ctx, id)` -- the pattern and, when enriched, graph context (up to 10 related patterns and all concepts, read in one Neo4j session via `GraphRepository.GetPatternGraph`)
 2. `ListChunks(ctx, id)` -- chunk summaries (`chunk_index`, `section_title`, `enrichment_status`); on failure the handler returns the pattern without chunks and sets `X-Warning: chunks unavailable`
 
-**REST serialization notes for `GraphContext`:** the handler maps `Similarity` to `strength`, omits `SharedConcepts`, and emits concepts with `name` only (`description` is always omitted; `Type` is not exposed).
+**REST serialization notes for `GraphContext`:** the handler maps `Similarity` to `strength`, omits `SharedConcepts`, and emits concepts with `name` only (`description` is always omitted).
 
 **Pattern-to-PatternSummary projection:** `GET /v1/api/patterns` projects `List` results to `PatternSummary` (`id`, `name`, `description`, `tags`, `enrichment_status`, timestamps). The repository's `List` does not select `content`.
 
@@ -364,7 +356,7 @@ Steps: embed the query (`ErrServiceUnavailable` on failure), call `ChunkReposito
 
 ### MCP Read Services
 
-`mnemonic-mcp` has concrete service structs (no interfaces; `ToolDependencies` is the seam for tests):
+`mnemonic-mcp` has concrete service structs (no interfaces; the function fields of `mcpserver.Services` are the seam for tests):
 
 ```go
 // internal/service/search
@@ -396,7 +388,8 @@ func New(patternRepo patternrepo.Repository, graphRepo graphrepo.Repository, log
 func (s *Service) GetPatternWithGraph(ctx context.Context, id uuid.UUID) (*patternrepo.Pattern, *GraphContext, error)
 
 // FindRelatedPatterns: source pattern name (SELECT name) and RELATED_TO
-// traversal, run concurrently. Returns service.ErrNotFound for an unknown ID.
+// traversal, run concurrently. Returns an error wrapping patternrepo.ErrNotFound
+// for an unknown ID.
 func (s *Service) FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, limit int) (string, []RelatedPatternResult, error)
 ```
 
@@ -475,67 +468,39 @@ Both have RabbitMQ implementations under `queue/rabbitmq`. The publisher sends `
 
 Earlier versions of this document specified `AgentService` (agent CRUD with CRC64 change detection and best-effort Neo4j `Agent` node sync), `SkillService` and `SkillFileService` (Postgres-only skill definitions and child files, addressed by name), pattern-agent associations (`PUT /v1/api/patterns/{id}/agents`, `RELEVANT_FOR` edges), and an `agent` filter on `search_patterns`. If these are built, they should follow the same conventions as `pattern.Service`: sentinel-error translation, one Postgres transaction per write, best-effort Neo4j sync after commit.
 
-## ToolDependencies: MCP Facade
+## Services: MCP Facade
 
 [Table of Contents](#table-of-contents)
 
 > **Architecture Reference:** [MCP Server Design - Tool Handler Signatures](mcp-server.md#tool-handler-signatures)
 
-The MCP server's `ToolDependencies` interface provides a narrow facade over the MCP read services. MCP handlers call these methods; the facade delegates to the appropriate service. Handlers never import repository packages except for the `Pattern` type.
+The MCP server's `Services` struct is a narrow facade over the MCP read services: one function field per tool, filled in by `internal/server` with the service methods. Tests set the fields to stubs, so handlers can be tested without databases. Handlers never import repository packages except for the `Pattern` type and `patternrepo.ErrNotFound`.
 
-### Interface Definition
+### Struct Definition
 
 ```go
 // Package: internal/mcpserver (module github.com/twistingmercury/mnemonic)
-
-// ToolDependencies defines what the MCP tool handlers require, so they can be
-// tested without databases. Each method maps 1:1 to an MCP tool.
-type ToolDependencies interface {
-    SearchPatterns(ctx context.Context, opts searchsvc.SearchOptions) (*searchsvc.SearchResult, error)
-    FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, limit int) (string, []patternsvc.RelatedPatternResult, error)
-    GetPatternWithGraph(ctx context.Context, id uuid.UUID) (*patternrepo.Pattern, *patternsvc.GraphContext, error)
+type Services struct {
+    SearchPatterns      func(ctx context.Context, opts searchsvc.SearchOptions) (*searchsvc.SearchResult, error)
+    FindRelatedPatterns func(ctx context.Context, patternID uuid.UUID, limit int) (string, []patternsvc.RelatedPatternResult, error)
+    GetPatternWithGraph func(ctx context.Context, id uuid.UUID) (*patternrepo.Pattern, *patternsvc.GraphContext, error)
 }
 ```
 
 `FindRelatedPatterns` also returns the source pattern's name, which the response header shows.
 
-### Concrete Implementation
-
-```go
-type toolDeps struct {
-    search  *searchsvc.Service
-    pattern *patternsvc.Service
-}
-
-func NewToolDependencies(search *searchsvc.Service, pattern *patternsvc.Service) ToolDependencies {
-    return toolDeps{search: search, pattern: pattern}
-}
-
-func (t toolDeps) SearchPatterns(ctx context.Context, opts searchsvc.SearchOptions) (*searchsvc.SearchResult, error) {
-    return t.search.SearchPatterns(ctx, opts)
-}
-
-func (t toolDeps) FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, limit int) (string, []patternsvc.RelatedPatternResult, error) {
-    return t.pattern.FindRelatedPatterns(ctx, patternID, limit)
-}
-
-func (t toolDeps) GetPatternWithGraph(ctx context.Context, id uuid.UUID) (*patternrepo.Pattern, *patternsvc.GraphContext, error) {
-    return t.pattern.GetPatternWithGraph(ctx, id)
-}
-```
-
 ### MCP Handler Wiring
 
-`NewMCPServer` in `internal/mcpserver/server.go` receives a `ToolDependencies` value and registers each handler closure:
+`NewMCPServer` in `internal/mcpserver/server.go` receives a `Services` value and registers each handler closure with the function it needs:
 
 ```go
 server.AddReceivingMiddleware(toolTelemetry(toolMetrics))
-mcp.AddTool(server, searchPatternsTool, handleSearchPatterns(deps, logger, mcpCfg.DefaultSearchThreshold))
-mcp.AddTool(server, findRelatedPatternsTool, handleFindRelatedPatterns(deps, logger))
-mcp.AddTool(server, getPatternTool, handleGetPattern(deps, logger))
+mcp.AddTool(server, searchPatternsTool(mcpCfg.DefaultSearchThreshold), handleSearchPatterns(svc.SearchPatterns, logger))
+mcp.AddTool(server, findRelatedPatternsTool(), handleFindRelatedPatterns(svc.FindRelatedPatterns, logger))
+mcp.AddTool(server, getPatternTool, handleGetPattern(svc.GetPatternWithGraph, logger))
 ```
 
-Handlers call `deps.SearchPatterns(...)`, `deps.FindRelatedPatterns(...)` or `deps.GetPatternWithGraph(...)` and format the results as markdown text content.
+Handlers call the function they were given and format the results as markdown text content.
 
 ## Resolving the find_related_patterns Data Gap
 
@@ -552,7 +517,7 @@ Handlers call `deps.SearchPatterns(...)`, `deps.FindRelatedPatterns(...)` or `de
 type RelatedPattern struct {
     ID             uuid.UUID
     Name           string
-    SharedConcepts int      // Count of shared concepts
+    SharedConcepts int      // Count of shared concepts (api only)
     Similarity     float64  // Pre-computed RELATED_TO similarity (0.0-1.0)
     ConceptNames   []string // Names of the shared concepts
 }
@@ -567,16 +532,18 @@ WITH p1, p2, r.similarity AS similarity
 
 // Also collect shared concept names
 OPTIONAL MATCH (p1)<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2)
-WITH p2, similarity, collect(c.name) AS conceptNames, count(c) AS sharedConcepts
+WITH p2, similarity, collect(c.name) AS conceptNames
 
 ORDER BY similarity DESC
 LIMIT $limit
-RETURN p2.id AS id, p2.name AS name, sharedConcepts, similarity, conceptNames
+RETURN p2.id AS id, p2.name AS name, similarity, conceptNames
 ```
 
 Using stored similarity avoids recomputing it at query time and is consistent with [Pattern Processing - RELATED_TO Edge Computation](pattern-processing.md#related_to-edge-computation), where the enricher writes the edges.
 
 ### Service Layer Mapping
+
+This is the MCP query. The API reads related patterns only through `GetPatternGraph`, whose query also returns `count(c) AS sharedConcepts`.
 
 Both services map `RelatedPattern` to `RelatedPatternResult` with `Relationship: "RELATED_TO"` and `SharedConcepts: r.ConceptNames`. The MCP version checks existence by reading the pattern name concurrently with the graph query:
 
@@ -590,10 +557,7 @@ func (s *Service) FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, 
     g, gCtx := errgroup.WithContext(ctx)
     g.Go(func() error {
         var err error
-        name, err = s.patternRepo.GetName(gCtx, patternID)
-        if errors.Is(err, patternrepo.ErrNotFound) {
-            return fmt.Errorf("%w: pattern %s", service.ErrNotFound, patternID)
-        }
+        name, err = s.patternRepo.GetName(gCtx, patternID) // patternrepo.ErrNotFound passes through
         return err
     })
     g.Go(func() error {
@@ -609,7 +573,7 @@ func (s *Service) FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, 
 }
 ```
 
-The API's `FindRelated` instead calls `PatternRepository.Exists` first and then the graph query.
+The graph query has no special case for the all-zero UUID: it matches no `RELATED_TO` edges and returns an empty list (the name lookup then reports the pattern as not found).
 
 ## Transaction Boundaries
 
@@ -758,24 +722,15 @@ sequenceDiagram
 
 ### Neo4j Sync Helper
 
-`pattern.Service` uses a helper for best-effort Neo4j operations:
+`pattern.Service.Delete` runs its one best-effort Neo4j operation inline; the error is logged but not returned to the caller:
 
 ```go
-// syncNeo4j runs fn as a best-effort Neo4j operation.
-// Errors are logged but not returned to the caller.
-func (s *patternService) syncNeo4j(entityDesc string, fn func() error) {
-    if err := fn(); err != nil {
-        s.logger.Warn().
-            Err(err).
-            Str("entity", entityDesc).
-            Msg("neo4j sync failed")
-    }
+if err := s.graphRepo.DeletePattern(ctx, id); err != nil {
+    s.logger.Warn().
+        Err(err).
+        Str("entity", "pattern:delete:"+id.String()).
+        Msg("neo4j sync failed")
 }
-
-// Usage (Delete):
-s.syncNeo4j("pattern:delete:"+id.String(), func() error {
-    return s.graphRepo.DeletePattern(ctx, id)
-})
 ```
 
 ## Error Mapping
@@ -805,7 +760,7 @@ var (
 )
 ```
 
-`mnemonic-mcp` defines only `ErrNotFound` and `ErrServiceUnavailable`. In the API, `ErrInvalidInput` is mapped by the REST layer but no service returns it today; field validation happens in the handler.
+`mnemonic-mcp` has no service-level sentinels: its services return repository errors wrapped with context, and not-found is `patternrepo.ErrNotFound` ("pattern not found"). In the API, `ErrInvalidInput` is mapped by the REST layer but no service returns it today; field validation happens in the handler.
 
 Service implementations wrap these sentinels with context:
 
@@ -838,12 +793,11 @@ Handler-level validation failures use `RespondValidationError` (400, `validation
 
 MCP handlers map service errors to the sentinels in `internal/mcpserver/errors.go`:
 
-| Service Error                   | MCP Sentinel                      | SDK Behavior                   |
-| ------------------------------- | --------------------------------- | ------------------------------ |
-| `service.ErrNotFound`           | `mcpserver.ErrPatternNotFound`    | `isError: true` in tool result |
-| (handler validation)            | `mcpserver.ErrInvalidInput`       | `isError: true` in tool result |
-| `service.ErrServiceUnavailable` | `mcpserver.ErrServiceUnavailable` | `isError: true` in tool result |
-| Any other error                 | `mcpserver.ErrServiceUnavailable` | `isError: true` in tool result |
+| Service Error              | MCP Sentinel                      | SDK Behavior                   |
+| -------------------------- | --------------------------------- | ------------------------------ |
+| `patternrepo.ErrNotFound`  | `mcpserver.ErrPatternNotFound`    | `isError: true` in tool result |
+| (handler validation)       | `mcpserver.ErrInvalidInput`       | `isError: true` in tool result |
+| Any other error            | `mcpserver.ErrServiceUnavailable` | `isError: true` in tool result |
 
 ### Mapping Implementation
 
@@ -868,14 +822,14 @@ func (h *Handler) Get(c *gin.Context) {
 
 ```go
 // MCP handler (mnemonic-mcp internal/mcpserver)
-func handleGetPattern(deps ToolDependencies, logger zerolog.Logger) mcp.ToolHandlerFor[GetPatternInput, any] {
+func handleGetPattern(getPattern func(context.Context, uuid.UUID) (*patternrepo.Pattern, *patternsvc.GraphContext, error), logger zerolog.Logger) mcp.ToolHandlerFor[GetPatternInput, any] {
     return func(ctx context.Context, _ *mcp.CallToolRequest, input GetPatternInput) (*mcp.CallToolResult, any, error) {
         id, err := uuid.Parse(input.ID)
         if err != nil {
             return nil, nil, fmt.Errorf("%w: invalid UUID %q", ErrInvalidInput, input.ID)
         }
 
-        pattern, graphCtx, err := deps.GetPatternWithGraph(ctx, id)
+        pattern, graphCtx, err := getPattern(ctx, id)
         if err != nil {
             return nil, nil, mapServiceError(err)
         }
@@ -887,7 +841,7 @@ func handleGetPattern(deps ToolDependencies, logger zerolog.Logger) mcp.ToolHand
 }
 
 func mapServiceError(err error) error {
-    if errors.Is(err, service.ErrNotFound) {
+    if errors.Is(err, patternrepo.ErrNotFound) {
         return fmt.Errorf("%w: %v", ErrPatternNotFound, err)
     }
     return fmt.Errorf("%w: %v", ErrServiceUnavailable, err)
@@ -1109,22 +1063,22 @@ func (h *Handler) List(c *gin.Context) {
 }
 ```
 
-The filter carries `tags` (comma-separated), `search` (keyword), `language`, `domain` and `entity_type` query parameters. The total count returned by the service is not exposed.
+The filter carries `tags` (comma-separated), `search` (keyword), `language`, `domain` and `entity_type` query parameters. No total count is computed or returned.
 
 ### Service Layer Contract
 
-The service layer knows nothing about cursors. It accepts `ListOptions{Offset, Limit}` and returns items plus a total count:
+The service layer knows nothing about cursors. It accepts `ListOptions{Offset, Limit}` and returns the items only:
 
 ```go
-func (s *patternService) List(ctx context.Context, filter patternRepo.Filter, opts ListOptions) ([]*patternRepo.Pattern, int64, error) {
-    patterns, total, err := s.patternRepo.List(ctx, filter, repository.ListOptions{
+func (s *patternService) List(ctx context.Context, filter patternRepo.Filter, opts ListOptions) ([]*patternRepo.Pattern, error) {
+    patterns, err := s.patternRepo.List(ctx, filter, repository.ListOptions{
         Offset: opts.Offset,
         Limit:  opts.Limit,
     })
     if err != nil {
-        return nil, 0, fmt.Errorf("list patterns: %w", err)
+        return nil, fmt.Errorf("list patterns: %w", err)
     }
-    return patterns, total, nil
+    return patterns, nil
 }
 ```
 
@@ -1141,7 +1095,7 @@ enrichmentJobRepo := enrichmentjobrepo.NewRepository(pgPool)
 graphRepo := graphrepo.NewRepository(neo4jDriver, cfg.Database.Neo4j.Database, registry.Database)
 chunkRepo := chunkrepo.NewRepository(pgPool)
 embeddingSvc := openaisvc.NewEmbeddingService(cfg.OpenAI)
-pub, err := rabbitmq.NewPublisher(rabbitmq.PublisherConfig{ /* cfg.Queue.RabbitMQ.* */ }, meter)
+pub, err := rabbitmq.NewPublisher(cfg.Queue.RabbitMQ, otel.Meter("mnemonic/queue")) // config.RabbitMQConfig
 searchSvc := searchsvc.New(embeddingSvc, chunkRepo, registry.Patterns, logger)
 patternSvc := patternsvc.New(patternRepo, enrichmentJobRepo, graphRepo, pgPool, chunkRepo, pub, logger)
 // -> server.RegisterAPIRoutes(router, Services{Pattern: patternSvc, Search: searchSvc}, cfg.Vocabulary)
@@ -1151,8 +1105,12 @@ patternSvc := patternsvc.New(patternRepo, enrichmentJobRepo, graphRepo, pgPool, 
 // mnemonic-mcp
 searchSvc := searchsvc.New(embeddingSvc, patternRepo, chunkRepo, graphRepo, registry.Patterns, logger)
 patternSvc := patternsvc.New(patternRepo, graphRepo, logger)
-toolDeps := mcpserver.NewToolDependencies(searchSvc, patternSvc)
-mcpSrv := mcpserver.NewMCPServer(toolDeps, logger, cfg.MCP, tel.MetricsRegistry().Tools)
+services := mcpserver.Services{
+    SearchPatterns:      searchSvc.SearchPatterns,
+    FindRelatedPatterns: patternSvc.FindRelatedPatterns,
+    GetPatternWithGraph: patternSvc.GetPatternWithGraph,
+}
+mcpSrv := mcpserver.NewMCPServer(services, logger, cfg.MCP, registry.Tools)
 mcpHTTPServer := mcpserver.NewMCPHTTPServer(cfg.MCP, cfg.Server.Host, mcpserver.NewMCPHTTPHandler(mcpSrv))
 ```
 
@@ -1160,13 +1118,13 @@ mcpHTTPServer := mcpserver.NewMCPHTTPServer(cfg.MCP, cfg.Server.Host, mcpserver.
 // mnemonic-enricher
 embeddingSvc := openaisvc.NewEmbeddingService(cfg.OpenAI)
 extractionSvc := openaisvc.NewExtractionService(cfg.OpenAI)
-enrichmentSvc, err := enrichmentsvc.New(
+enrichmentSvc := enrichmentsvc.New(
     enrichmentJobRepo, patternRepo, graphRepo,
     embeddingSvc, extractionSvc,
     cfg.Enrichment, chunkRepo, logger,
-) // returns an error if any dependency is nil
-rmqSub, err := rabbitmq.NewSubscriber(rabbitmq.RabbitMQConfig{ /* cfg.Queue.RabbitMQ.* */ })
-worker := enricher.New(enrichmentSvc, rmqSub, cfg.Enrichment, logger, registry.Jobs)
+)
+rmqSub, err := rabbitmq.NewSubscriber(cfg.Queue.RabbitMQ) // config.RabbitMQConfig; user, password and vhost are escaped in the AMQP URL
+worker := enricher.New(enrichmentSvc, rmqSub, cfg.Enrichment, logger, jobMetrics)
 // errgroup: operations HTTP server + worker.Run(ctx)
 ```
 
@@ -1187,10 +1145,10 @@ In the enricher, `queue.provider` must be `rabbitmq`; any other value fails star
 - **Each service carries only what it needs.** The API writes patterns, chunks and jobs; the enricher writes embeddings, statuses and the graph; the MCP service only reads.
 - **Postgres is always committed first.** Job rows are created in the same transaction as the pattern and chunks; RabbitMQ publish and API-side Neo4j cleanup are best-effort afterwards. No distributed transactions.
 - **Lost messages are recovered from Postgres.** The enricher's 15-second retry sweep claims due and never-delivered jobs with `FOR UPDATE SKIP LOCKED`.
-- **ToolDependencies is a thin facade.** It delegates to the MCP `search.Service` and `pattern.Service`.
+- **mcpserver.Services is a thin facade.** Its function fields are the MCP `search.Service` and `pattern.Service` methods.
 - **find_related_patterns uses pre-computed RELATED_TO edges** and collects shared concept names in the same query.
 - **Cursor pagination is a handler concern.** The service layer uses `offset + limit`. Handlers encode/decode opaque base64 cursors and reject invalid ones.
-- **Error mapping is a two-stage process.** Repository errors are translated to service-level sentinels (`service.ErrNotFound`). Handlers translate service errors to HTTP status codes or MCP error sentinels.
+- **Error mapping is a two-stage process.** In the API, repository errors are translated to service-level sentinels (`service.ErrNotFound`); the MCP services pass `patternrepo.ErrNotFound` through. Handlers translate service errors to HTTP status codes or MCP error sentinels.
 - **The enrichment pipeline is a sequence of service and repository calls** in `enrichment.Service.ProcessJob`; `enricher.Worker` owns the goroutines, acks, sweep and maintenance.
 
 ## References

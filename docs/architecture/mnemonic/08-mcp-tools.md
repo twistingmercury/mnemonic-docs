@@ -113,6 +113,8 @@ Semantic search over pattern chunks, with graph expansion of the best hits.
 
 **Returns:** Markdown-formatted text. A header (`Found N sections across M patterns matching '<query>':`) is followed by one entry per matching chunk with pattern name, similarity percentage, section title, tags and the chunk content. If graph expansion finds anything, a `### Related Patterns (via graph)` section follows with up to 5 extra patterns, each with its concept-overlap similarity, the seed pattern it was found via, and shared concepts.
 
+`limit` and `threshold` carry their `minimum`, `maximum` and `default` in the tool's input schema; the `threshold` default is `mcp.default_search_threshold`.
+
 **Notes:** Only enriched chunks appear in results. Chunk results are ranked by pgvector cosine similarity. Graph expansion takes the top 3 distinct patterns from the vector results, follows their `RELATED_TO` edges in Neo4j (up to 5 per seed), drops patterns already in the vector results, and applies the same tag, domain and language filters (in the graph section only, patterns with language `agnostic` also pass a language filter). Expansion is best-effort: if Neo4j fails, the vector results are returned alone. There is no agent filter and no blended vector/graph score.
 
 ### `find_related_patterns`
@@ -128,7 +130,7 @@ Find patterns related to a given pattern via the knowledge graph.
 
 **Returns:** Markdown with the related patterns, each with relationship type (`RELATED_TO`), similarity score and shared concepts. Pattern content is not included.
 
-**Notes:** Traverses `RELATED_TO` edges in Neo4j in either direction, ordered by similarity. The similarity (0.0–1.0) is concept overlap, `shared / max(conceptsA, conceptsB)`, computed during enrichment. An unknown `pattern_id` returns a not-found error; a pattern with no edges (for example, one not enriched yet) returns `No related patterns found for '<name>'.`
+**Notes:** Traverses `RELATED_TO` edges in Neo4j in either direction, ordered by similarity. The similarity (0.0–1.0) is concept overlap, `shared / max(conceptsA, conceptsB)`, computed during enrichment. `limit` carries its `minimum`, `maximum` and `default` in the input schema. An unknown `pattern_id` (including the all-zero UUID) returns a not-found error; a pattern with no edges (for example, one not enriched yet) returns `No related patterns found for '<name>'.`
 
 ### `get_pattern`
 
@@ -165,7 +167,7 @@ For not-found conditions, validation failures, and backend unavailability, Mnemo
 | Pattern             | Message prefix        | Applies To                                                                    |
 | ------------------- | --------------------- | ----------------------------------------------------------------------------- |
 | Not found           | `pattern not found`   | `get_pattern` and `find_related_patterns`                                     |
-| Invalid input       | `invalid input`       | All 3 tools — bad UUID, `limit` or `threshold` out of range                   |
+| Invalid input       | `invalid input`       | `get_pattern` and `find_related_patterns` — bad UUID                          |
 | Service unavailable | `service unavailable` | All 3 tools — any other backend failure (PostgreSQL, Neo4j, OpenAI embedding) |
 
 ### Transport-Level Errors
@@ -181,7 +183,7 @@ For protocol problems, the MCP SDK rejects the request before any tool runs:
 | 404  | JSON-RPC error `-32601` Method not found | Unknown method, including `ping` and `logging/setLevel`, which 2026-07-28 removed     |
 | 405  | plain text                              | `GET` or `DELETE` on `/mcp`                                                            |
 
-Arguments that do not match a tool's input schema (for example a number where `id` expects a string) are not a transport error: the SDK returns a tool result with `isError: true` and a `validating "arguments": ...` message.
+Arguments that do not match a tool's input schema (for example a number where `id` expects a string, a `limit` or `threshold` outside its `minimum`/`maximum`, or an explicit `null`) are not a transport error: the SDK returns a tool result with `isError: true` and a `validating "arguments": ...` message. The tool metrics count these, like any other argument-validation failure, under the `invalid_input` outcome.
 
 ## References
 

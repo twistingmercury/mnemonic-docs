@@ -61,13 +61,11 @@ Each service serves its metrics in Prometheus format on a separate port (`observ
 
 **Telling services apart:** Each service sets the OpenTelemetry resource attribute `service.name` to its own name: `mnemonic-api`, `mnemonic-enricher` or `mnemonic-mcp`. The Prometheus exporter puts resource attributes on `target_info` rather than on every series, so there is no `service` label on the metrics. Distinguish services by scrape target (Prometheus `job`/`instance`) or by joining on `target_info`.
 
-Names below are the OpenTelemetry instrument names. In Prometheus, dots become underscores and unit or `_total` suffixes are added, for example `mnemonic_http_request_count_total` and `mnemonic_http_request_duration_milliseconds`.
+Names below are the OpenTelemetry instrument names. In Prometheus, dots become underscores and unit or `_total` suffixes are added, for example `http_server_request_duration_seconds` and `mnemonic_queue_publish_failures_total`.
 
 | Metric                                  | Type          | Unit    | Attributes                                                            | Services |
 | --------------------------------------- | ------------- | ------- | --------------------------------------------------------------------- | -------- |
-| `mnemonic.http.request.count`           | counter       | request | `http.method`, `http.route`, `http.status_code`                       | all      |
-| `mnemonic.http.request.duration`        | histogram     | ms      | `http.method`, `http.route`, `http.status_code`                       | all      |
-| `mnemonic.http.request.in_flight`       | up-down gauge | request | none                                                                  | all      |
+| `http.server.request.duration`          | histogram     | s       | `http.route`, `http.response.status_code` (otelgin semconv)           | all      |
 | `mnemonic.db.query_latency`             | histogram     | ms      | `database`, `operation`                                               | all      |
 | `mnemonic.db.query_errors`              | counter       | error   | `database`, `operation`                                               | all      |
 | `mnemonic.patterns.query_latency`       | histogram     | ms      | `database`                                                            | API, MCP |
@@ -80,7 +78,7 @@ Names below are the OpenTelemetry instrument names. In Prometheus, dots become u
 
 Notes:
 
-- **Request metrics** cover the Gin routers only (the API's REST routes and every service's `/version`); `/health` and `/metrics` are skipped. The MCP endpoint (`/mcp` on port 8081) is not a Gin route: per-tool metrics come from `mnemonic.mcp.tool_*`, and the `otelhttp` wrapper adds the standard OpenTelemetry `http.server.*` metrics.
+- **HTTP metrics** come only from the `otelgin` middleware's standard `http.server.request.duration`; there are no Mnemonic HTTP instruments and no in-flight request gauge. They cover the Gin routers only (the API's REST routes and every service's `/version`); `/health` is excluded from traces and metrics. The MCP endpoint (`/mcp` on port 8081) is not a Gin route: per-tool metrics come from `mnemonic.mcp.tool_*`, and the `otelhttp` wrapper adds the standard OpenTelemetry `http.server.*` metrics.
 - **Database metrics** (`mnemonic.db.*`) are recorded for Neo4j operations (`database="neo4j"`). Postgres is covered by otelpgx connection-pool metrics and query spans rather than these instruments.
 - **Pattern metrics** are recorded for the semantic search step (`database="pgvector"`).
 - **Publish failures** count enrichment jobs the API could not publish after one reconnect and retry. The job row stays `pending` in Postgres and the enricher's retry sweep picks it up, so this is a delay signal rather than data loss.
@@ -109,7 +107,7 @@ Each service writes structured JSON logs (zerolog via otelx) to stdout. Logs are
 
 **Request events** (all services):
 
-- Request completed: one line per Gin request. The API uses its own completion logger (`info`, or `error` for 5xx), which records the route template and a bounded, redacted error diagnostic and never logs request bodies or query strings. The MCP server and enricher use the otelx Gin logging middleware (`info`, `warn` for 4xx, `error` for 5xx, with `latency_ms`, `client_ip`, `request_id`, `correlation_id`). `/health` and `/metrics` are skipped (the API still logs them when they fail with 5xx). Requests to `/mcp` do not pass through Gin and get no request-completed line.
+- Request completed: one line per Gin request. The API uses its own completion logger (`info`, or `error` for 5xx), which records the route template and a bounded, redacted error diagnostic and never logs request bodies or query strings. The MCP server and enricher use the otelx Gin logging middleware (`info`, `warn` for 4xx, `error` for 5xx, with `latency_ms`, `client_ip`, `request_id`, `correlation_id`). `/health` is skipped (the API still logs it when it fails with 5xx). Requests to `/mcp` do not pass through Gin and get no request-completed line.
 
 **MCP tool events** (MCP Server):
 
@@ -146,7 +144,7 @@ Tracing is off by default. When `observability.tracing.enabled` is `true`, each 
 
 | Source                      | Spans                                                         | Services |
 | --------------------------- | ------------------------------------------------------------- | -------- |
-| `otelgin` middleware        | One server span per Gin request (skips `/health`, `/metrics`) | all      |
+| `otelgin` middleware        | One server span per Gin request (skips `/health`)             | all      |
 | `otelhttp` handler          | Server span for each `/mcp` request, with `mcp.method.name`   | MCP      |
 | MCP tool middleware         | `tools/call <tool>` with `mcp.tool.name`, `mcp.tool.outcome`  | MCP      |
 | `otelhttp` client transport | Client span for each OpenAI API call                          | all      |
