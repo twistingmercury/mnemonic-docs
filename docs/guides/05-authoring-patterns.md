@@ -117,7 +117,7 @@ The heading text becomes the chunk's section title (max 255 characters; a longer
 | Intro prose before first decorator | No | Supports reading but not searching |
 | Empty decorated body | No | Silently dropped |
 
-Everything in the file is still stored and returned by `get_pattern`; the table only covers what is indexed. A pattern with no decorated sections produces no chunks, so it stays `pending` and never appears in search.
+Everything in the file is still stored and returned by `get_pattern`; the table only covers what is indexed. A pattern with no decorated sections (or only empty ones) is indexed as a single chunk holding the whole content, titled by its first heading or `Content`, so search can only return it as a whole.
 
 ### Why Decorators Matter
 
@@ -152,11 +152,11 @@ Each decorated section becomes an independently searchable chunk. Someone search
 
 ## Required Sections
 
-The mnemonic-patterns validator requires these (the API itself only requires non-empty content, but without a decorated section nothing is searchable):
+The mnemonic-patterns validator requires these (the API itself only requires non-empty content, but without a decorated section the whole file is indexed as one chunk):
 
 1. **`## Overview`** — What the pattern is, when to use it, and why. Keep this concise (a few sentences to a short paragraph). It's your elevator pitch.
 
-2. **At least one `[//]: pattern` decorated section** — The actual knowledge. Without decorated sections, there's nothing to search.
+2. **At least one `[//]: pattern` decorated section** — The actual knowledge. Without decorated sections, the whole file, Overview included, is searched as one undifferentiated chunk.
 
 ## Writing Patterns for Semantic Search
 

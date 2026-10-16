@@ -59,7 +59,7 @@ For the Go implementation (packages, middleware order, exact attributes), see [O
 
 Each service serves its metrics in Prometheus format on a separate port (`observability.metrics.port`, default `9090`, path `/metrics`), alongside Go runtime and process metrics. Metrics are pulled; there is no OTLP metrics push.
 
-**Telling services apart:** All three services currently set the OpenTelemetry resource attribute `service.name` to `mnemonic`, and the Prometheus exporter puts resource attributes on `target_info` rather than on every series. There is no `service` label on the metrics. Distinguish services by scrape target (Prometheus `job`/`instance`), or set `OTEL_SERVICE_NAME` per container.
+**Telling services apart:** Each service sets the OpenTelemetry resource attribute `service.name` to its own name: `mnemonic-api`, `mnemonic-enricher` or `mnemonic-mcp`. The Prometheus exporter puts resource attributes on `target_info` rather than on every series, so there is no `service` label on the metrics. Distinguish services by scrape target (Prometheus `job`/`instance`) or by joining on `target_info`.
 
 Names below are the OpenTelemetry instrument names. In Prometheus, dots become underscores and unit or `_total` suffixes are added, for example `mnemonic_http_request_count_total` and `mnemonic_http_request_duration_milliseconds`.
 
@@ -257,8 +257,8 @@ The Enricher does not report its RabbitMQ consumer connection on `/health`.
 ```json
 {
   "status": "Warning",
-  "name": "mnemonic",
-  "resource": "mnemonic",
+  "name": "mnemonic-api",
+  "resource": "mnemonic-api",
   "machine": "a1b2c3d4e5f6",
   "utc_date_time": "2026-10-15T12:00:00.123456Z",
   "request_duration_ms": 41.2,
@@ -280,7 +280,7 @@ The Enricher does not report its RabbitMQ consumer connection on `/health`.
 [Back to Table of Contents](#table-of-contents)
 
 - **OpenTelemetry via otelx** - One initialization per service for logs, Prometheus metrics and OTLP traces; tracing is opt-in
-- **Service identity** - All three services report `service.name=mnemonic`; tell them apart by scrape target or by setting `OTEL_SERVICE_NAME`
+- **Service identity** - Each service reports its own `service.name` (`mnemonic-api`, `mnemonic-enricher`, `mnemonic-mcp`) on traces, logs, `/health` and `/version`
 - **Correlation** - Trace IDs connect logs and spans, and a pattern write is one trace from the API through RabbitMQ to the enricher
 - **Lightweight focus** - Observability focuses on knowledge graph query performance, MCP serving efficiency, and enrichment pipeline throughput, not LLM costs
 - **Degraded, not down** - OpenAI and RabbitMQ problems are Warnings on `/health`; only the databases are Critical

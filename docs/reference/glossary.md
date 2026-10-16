@@ -7,11 +7,11 @@ Definitions of key terms used throughout the Mnemonic documentation. Terms are l
 ---
 
 <a id="agent"></a>**Agent**
-A Claude Code agent role (e.g., `go-engineer`, `devops-engineer`). Associating patterns with agents by relevance score is **planned, not implemented**: the mnemonic-dbs schema documents agent tables, but no Mnemonic service reads or writes them, the pattern API has no agent field, and search has no agent filter.
+A Claude Code agent role (e.g., `go-engineer`, `devops-engineer`). Associating patterns with agents by relevance score is **planned, not implemented**: the design documents describe agent tables, but mnemonic-dbs has no agent schema, no Mnemonic service has agent code, the pattern API has no agent field, and search has no agent filter.
 See also: [Pattern](#pattern), [Knowledge Graph](#knowledge-graph)
 
 <a id="chunk"></a>**Chunk**
-A decorated section of a pattern file that is independently vectorized and indexed for semantic search. The API creates chunks when a pattern is created or updated, by splitting the content at headings (any level) marked with the `[//]: pattern` decorator; a chunk runs to the next decorator or end of file. Each chunk has its own enrichment status and gets its own embedding, stored in the `pattern_chunks` database table.
+A decorated section of a pattern file that is independently vectorized and indexed for semantic search. The API creates chunks when a pattern is created or updated, by splitting the content at headings (any level) marked with the `[//]: pattern` decorator; a chunk runs to the next decorator or end of file. Content with no decorated section becomes one chunk holding the whole content, titled by its first heading or `Content`. Each chunk has its own enrichment status and gets its own embedding, stored in the `pattern_chunks` database table.
 See also: [Decorator](#decorator), [Embedding](#embedding), [Pattern File](#pattern-file)
 
 <a id="concept"></a>**Concept**
@@ -23,7 +23,7 @@ A measure of similarity between two vectors, calculated as the cosine of the ang
 See also: [Embedding](#embedding), [PGVector](#pgvector)
 
 <a id="decorator"></a>**Decorator**
-The exact line `[//]: pattern` placed before a heading in a pattern file (blank lines in between are allowed). Decorators mark sections for chunking and vectorization. Content before the first decorator is not indexed; undecorated headings after a decorated section are absorbed into that section's chunk. By convention the `## Overview` section is not decorated and comes first.
+The exact line `[//]: pattern` placed before a heading in a pattern file (blank lines in between are allowed). Decorators mark sections for chunking and vectorization. Content before the first decorator is not indexed (unless the pattern has no non-empty decorated section, in which case the whole content is one chunk); undecorated headings after a decorated section are absorbed into that section's chunk. By convention the `## Overview` section is not decorated and comes first.
 See also: [Chunk](#chunk), [Pattern File](#pattern-file)
 
 <a id="embedding"></a>**Embedding**

@@ -211,7 +211,7 @@ The REST handler validates the request (`name` kebab-case, 1–128 chars; `conte
 
 #### Step 2: Generate Embeddings
 
-**Chunking (in the API).** `splitIntoChunks` does not split at every heading. A chunk starts at a line that is exactly `[//]: pattern` (a markdown comment decorator); the next heading line (any level, `#`…`######`) becomes the chunk's `section_title`, and every following line up to the next decorator (or end of file) is the chunk body. Lines outside decorated sections are discarded, and sections with an empty body are dropped. Chunks are numbered from 0 in document order (`chunk_index`).
+**Chunking (in the API).** `splitIntoChunks` does not split at every heading. A chunk starts at a line that is exactly `[//]: pattern` (a markdown comment decorator); the next heading line (any level, `#`…`######`) becomes the chunk's `section_title`, and every following line up to the next decorator (or end of file) is the chunk body. Lines outside decorated sections are discarded, and sections with an empty body are dropped. If that leaves no chunks (no decorator, or only empty decorated sections), the whole trimmed content becomes one chunk, titled by its first heading (`firstHeading`) or `Content` if there is none. Chunks are numbered from 0 in document order (`chunk_index`).
 
 ```markdown
 # go-error-handling
@@ -231,7 +231,7 @@ Declare package-level error values ...
 
 The example yields two chunks, "Wrapping Errors" and "Sentinel Errors".
 
-> **Known limitation:** content with no `[//]: pattern` decorator produces zero chunks and therefore zero enrichment jobs. The pattern is stored but stays `pending` forever and never appears in search or the graph. The decorator must match exactly (a trailing space or a CRLF line ending breaks it).
+> **Note:** Content with no `[//]: pattern` decorator is indexed as a single whole-content chunk, so it gets one enrichment job and becomes searchable, but search cannot point at a specific section. The decorator must match exactly (a trailing space or a CRLF line ending breaks it); a file whose decorators all fail to match is indexed as one whole-content chunk.
 
 **Embedding (in the enricher).** Each chunk job embeds one chunk and stores the vector and `enrichment_status = 'enriched'` on its `pattern_chunks` row in one statement:
 
@@ -487,7 +487,7 @@ RETURNING id, pattern_id, chunk_id;
 
 The 2-minute grace keeps the sweep from racing a message that is merely in flight. A delivered message starts its job with a conditional update instead (`WHERE id = $1 AND status = 'pending' AND scheduled_for <= now()`), so a redelivered message, a job the sweep already took, and a job waiting out its retry delay are all no-ops.
 
-Job columns used by the pipeline: `id`, `chunk_id` (set for chunk jobs, which the API creates), `pattern_id` (set only for legacy pattern-level jobs, which the enricher still processes with steps 3–5 only), `status`, `attempts`, `max_attempts` (3, set by the API at insert), `last_error`, `scheduled_for`, `started_at`, `completed_at`, `created_at`, `updated_at`. See [Data Storage - Migration 005](data-storage.md#migration-005-enrichment-jobs-table) for the table definition.
+Job columns used by the pipeline: `id`, `chunk_id` (set for chunk jobs, which the API creates), `pattern_id` (set only for legacy pattern-level jobs, which the enricher still processes with steps 3–5 only), `status`, `attempts`, `max_attempts` (3, set by the API at insert), `last_error`, `scheduled_for`, `started_at`, `completed_at`, `created_at`, `updated_at`. See [Data Storage - Migration 000003](data-storage.md#migration-000003-enrichment-jobs-table) (and 000005, which adds `chunk_id`) for the table definition.
 
 ### Job Lifecycle
 
@@ -709,7 +709,6 @@ Before deploying pattern enrichment, verify:
 | Dimension mismatch                         | Vectors unusable for similarity search                           | Validate config at startup                                                            |
 | Network blocked                            | Cannot reach external APIs                                       | Verify egress rules                                                                   |
 | Enricher crash                             | Unacked messages redelivered; started jobs stuck in `processing` | Redelivery is a no-op for started jobs; maintenance reclaims them after `job_timeout` |
-| Pattern without `[//]: pattern` decorators | No chunks, no jobs; stays `pending`                              | Author patterns with decorators (see Step 2)                                          |
 
 ### Health Check Endpoint
 
@@ -724,37 +723,31 @@ Before deploying pattern enrichment, verify:
 Vector embeddings are stored in `pattern_chunks.embedding`, not `patterns.embedding`. The `patterns` table no longer has an `embedding` column.
 
 ```sql
--- Chunk-level search uses an HNSW index (defined in the mnemonic-dbs migrations)
-CREATE INDEX ON pattern_chunks
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
+-- mnemonic-dbs 000006_update_embedding_dimensions.up.sql (000005 created the
+-- column as vector(1536) with the same HNSW index)
+drop index if exists idx_pattern_chunks_embedding;
+
+alter table pattern_chunks
+    alter column embedding type vector(2000);
+
+create index idx_pattern_chunks_embedding
+    on pattern_chunks using hnsw (embedding vector_cosine_ops);
 ```
 
-The vector column must be configured for the same dimensions as the embedding model:
-
-```sql
--- Must match openai.embedding_dimensions in config (default: 2000)
--- Column lives in pattern_chunks, not patterns
-ALTER TABLE pattern_chunks ADD COLUMN embedding vector(2000);
-```
+The index uses pgvector's default build parameters (`m = 16`, `ef_construction = 64`). The column dimension must match `openai.embedding_dimensions` (default 2000); changing it needs a new migration in `mnemonic-dbs`.
 
 ### Neo4j Schema
 
 ```cypher
-// Create constraints for pattern nodes
-CREATE CONSTRAINT pattern_id IF NOT EXISTS
+// mnemonic-dbs src/neo4j/001_create_constraints.cypher
+CREATE CONSTRAINT pattern_id_unique IF NOT EXISTS
 FOR (p:Pattern) REQUIRE p.id IS UNIQUE;
 
-// Create constraints for agent nodes
-CREATE CONSTRAINT agent_name IF NOT EXISTS
-FOR (a:Agent) REQUIRE a.name IS UNIQUE;
-
-// Create constraints for concept nodes
-CREATE CONSTRAINT concept_name IF NOT EXISTS
+CREATE CONSTRAINT concept_name_unique IF NOT EXISTS
 FOR (c:Concept) REQUIRE c.name IS UNIQUE;
 
-// Create indexes for common queries
-CREATE INDEX pattern_name IF NOT EXISTS
+// mnemonic-dbs src/neo4j/003_create_indexes.cypher
+CREATE INDEX pattern_name_index IF NOT EXISTS
 FOR (p:Pattern) ON (p.name);
 
 // Full-text indexes for search
@@ -769,7 +762,7 @@ CREATE INDEX concept_type_index IF NOT EXISTS
 FOR (c:Concept) ON (c.type);
 ```
 
-No current service creates `Agent` nodes; the constraint is kept for the planned agent feature.
+There is no `Agent` constraint or index: the planned agent feature has no graph schema yet. The Enterprise-only `002_create_existence_constraints.cypher` (not applied by the Community image) adds `pattern_name_exists` and `concept_name_exists`.
 
 ### Entity Extraction Prompt
 

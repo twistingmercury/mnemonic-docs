@@ -46,9 +46,9 @@ Sections prefixed with `[//]: pattern` are indexed as independent searchable chu
 Our team uses the following approach...
 ```
 
-The full content is stored in Mnemonic (and returned by `get_pattern`), but only decorated sections are indexed for semantic search. A decorated section runs from its heading to the next `[//]: pattern` line or the end of the file, so it also absorbs any undecorated headings after it. Put undecorated material such as an Overview before the first decorator to keep it out of search; content after the last decorated section is part of that section's chunk.
+The full content is stored in Mnemonic (and returned by `get_pattern`), but when a pattern has decorated sections, only those are indexed for semantic search. A decorated section runs from its heading to the next `[//]: pattern` line or the end of the file, so it also absorbs any undecorated headings after it. Put undecorated material such as an Overview before the first decorator to keep it out of search; content after the last decorated section is part of that section's chunk.
 
-There is no special handling for `## Overview`: it stays out of the index only because, by convention, it is not decorated. A pattern with no decorators produces no chunks and never becomes searchable.
+There is no special handling for `## Overview`: it stays out of the index only because, by convention, it is not decorated. A pattern with no decorators is indexed as a single chunk holding all of its content, titled by its first heading (or `Content`): it becomes searchable, but search cannot point at individual sections.
 
 Each decorated section becomes an independently searchable chunk. If your pattern has three decorated sections, all three are indexed separately, allowing more precise matches when Claude Code searches.
 

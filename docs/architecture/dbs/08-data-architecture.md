@@ -14,7 +14,7 @@
 
 ### PostgreSQL (`pgvector/pgvector:pg16`)
 
-**Purpose:** Relational store for patterns, their semantic search chunks, and enrichment jobs. PGVector provides the `vector` extension for embedding storage and HNSW similarity search. The schema also contains `agents`, `pattern_agent_associations`, `skills` and `skill_files` tables, but no current service (`mnemonic-api`, `mnemonic-mcp`, `mnemonic-enricher`) reads or writes them; they are reserved for planned agent/skill features.
+**Purpose:** Relational store for patterns, their semantic search chunks, and enrichment jobs. PGVector provides the `vector` extension for embedding storage and HNSW similarity search. There are no agent or skill tables: `agents`, `pattern_agent_associations`, `skills` and `skill_files` are planned (see [Data Storage Implementation](../../design/data-storage.md#jsonb-document-model)) but have no migrations.
 
 | Criterion | Requirement | How It Is Met |
 | --- | --- | --- |
@@ -25,7 +25,7 @@
 
 ### Neo4j (`neo4j:5` Community Edition)
 
-**Purpose:** Knowledge graph projection of Postgres data. The services use `Pattern` and `Concept` nodes joined by `MENTIONED_IN` (concept to pattern) and `RELATED_TO` (pattern to pattern) relationships, for graph traversal queries that are impractical in SQL (e.g. "find patterns related to X via concept graph"). The schema also declares an `Agent` label (uniqueness constraint) and a `RELEVANT_FOR` index; no current service creates `Agent` nodes or `RELEVANT_FOR` relationships.
+**Purpose:** Knowledge graph projection of Postgres data. The services use `Pattern` and `Concept` nodes joined by `MENTIONED_IN` (concept to pattern) and `RELATED_TO` (pattern to pattern) relationships, for graph traversal queries that are impractical in SQL (e.g. "find patterns related to X via concept graph"). The Cypher files define constraints and indexes for `Pattern` and `Concept` only; the planned `Agent` node and `RELEVANT_FOR` relationship have no schema.
 
 | Criterion | Requirement | How It Is Met |
 | --- | --- | --- |
@@ -83,45 +83,15 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
-    agents {
-        uuid id PK
-        varchar name
-        jsonb definition
-        timestamptz created_at
-        timestamptz updated_at
-    }
-    pattern_agent_associations {
-        uuid pattern_id FK
-        uuid agent_id FK
-        float relevance
-    }
-    skills {
-        uuid id PK
-        varchar name
-        jsonb definition
-        timestamptz created_at
-        timestamptz updated_at
-    }
-    skill_files {
-        uuid id PK
-        uuid skill_id FK
-        varchar path
-        text content
-        timestamptz created_at
-        timestamptz updated_at
-    }
 
     patterns ||--o{ pattern_chunks : "split into"
     patterns ||--o{ enrichment_jobs : "legacy job for"
     pattern_chunks ||--o{ enrichment_jobs : "queued for"
-    patterns ||--o{ pattern_agent_associations : "associated with"
-    agents ||--o{ pattern_agent_associations : "associated with"
-    skills ||--o{ skill_files : "contains"
 ```
 
-`patterns`, `pattern_chunks` and `enrichment_jobs` are the tables the services use; their columns above are the ones the services' SQL reads and writes. The agent and skill tables are shown with their main columns only (see [Data Storage Implementation](../../design/data-storage.md) for the full DDL) and are not used by any current service.
+`patterns`, `pattern_chunks` and `enrichment_jobs` are the only tables in the schema; the columns above are all of their columns (see [Data Storage Implementation](../../design/data-storage.md#postgresql-migrations) for the DDL).
 
-Notes inferred from the services' queries and e2e helpers:
+Notes from the migrations and the services' queries:
 
 - Deleting a pattern cascades to its `pattern_chunks` and `enrichment_jobs` rows (FK `ON DELETE CASCADE`); deleting a chunk cascades to its jobs.
 - `enrichment_jobs_target_exclusive` requires each job to target exactly one of `pattern_id` or `chunk_id`. `mnemonic-api` only creates chunk jobs (`chunk_id` set, `pattern_id` NULL); the enricher still processes legacy pattern jobs.
@@ -131,27 +101,29 @@ Notes inferred from the services' queries and e2e helpers:
 
 | Table | Migration | Purpose |
 | --- | --- | --- |
-| `agents` | 000002 | Team agents with JSONB definition blobs (not used by current services) |
-| `patterns` | 000003 | Reusable context patterns (embedding column dropped in 000009; metadata columns added in 000009) |
-| `pattern_agent_associations` | 000004 | Many-to-many relevance mapping between patterns and agents (not used by current services) |
-| `enrichment_jobs` | 000005 | Queue and state tracking for pattern/chunk enrichment |
-| `skills` | 000007 | Skill definitions (not used by current services) |
-| `skill_files` | 000008 | Individual files belonging to a skill (not used by current services) |
-| `pattern_chunks` | 000009 | Semantic chunks of patterns with per-chunk embeddings |
+| `patterns` | 000002 | Reusable context patterns (embedding column and 10KB content CHECK dropped in 000005; metadata columns added in 000005) |
+| `enrichment_jobs` | 000003 | Queue and state tracking for pattern/chunk enrichment (`chunk_id` added and `pattern_id` made nullable in 000005) |
+| `pattern_chunks` | 000005 | Semantic chunks of patterns with per-chunk embeddings (`vector(2000)` since 000006) |
 
 ### Indexes
 
 | Index | Table | Type | Purpose |
 | --- | --- | --- | --- |
-| `idx_agents_definition` | `agents` | GIN | Fast JSONB queries against agent definition |
-| `idx_patterns_enriched` | `patterns` | B-tree | Filter patterns by enrichment status |
-| `idx_patterns_embedding` | `patterns` | IVFFlat | Historical: dropped together with `patterns.embedding` in migration 000009; superseded by `idx_pattern_chunks_embedding` |
-| `idx_pattern_chunks_embedding` | `pattern_chunks` | HNSW | Vector similarity search on chunk embeddings (vector(2000)) |
-| Various on `enrichment_jobs` | `enrichment_jobs` | B-tree | Status and retry queries |
+| `idx_patterns_enriched` | `patterns` | B-tree, partial | `id` where `enrichment_status = 'enriched'` (000004) |
+| `idx_patterns_tags` | `patterns` | GIN | `tags` containment (000004) |
+| `idx_patterns_search` | `patterns` | GIN | Full-text on `name` and `description` (000004) |
+| `idx_patterns_language`, `idx_patterns_domain`, `idx_patterns_entity_type` | `patterns` | B-tree | Metadata filters (000005) |
+| `idx_patterns_embedding` | `patterns` | IVFFlat | Historical: created in 000004, dropped with `patterns.embedding` in 000005; superseded by `idx_pattern_chunks_embedding` |
+| `idx_pattern_chunks_pattern_id` | `pattern_chunks` | B-tree | Chunks of a pattern (000005) |
+| `idx_pattern_chunks_embedding` | `pattern_chunks` | HNSW | Vector similarity search on chunk embeddings (000005; recreated for `vector(2000)` in 000006) |
+| `idx_enrichment_jobs_pattern` | `enrichment_jobs` | B-tree | Jobs of a pattern (000003) |
+| `idx_enrichment_jobs_unique_pending` | `enrichment_jobs` | Unique, partial | One pending/processing job per `pattern_id` (000003; legacy pattern jobs only) |
+| `idx_enrichment_jobs_unique_pending_chunk` | `enrichment_jobs` | Unique, partial | One pending/processing job per `chunk_id` (000005) |
+| `idx_enrichment_jobs_pending`, `idx_enrichment_jobs_processing` | `enrichment_jobs` | B-tree, partial | Pending jobs by `scheduled_for`, processing jobs by `started_at` (000004) |
 
 ### Embedding Dimensions
 
-Pattern chunk embeddings use `vector(2000)` (OpenAI text-embedding-3-large with Matryoshka truncation). All three services default `openai.embedding_dimensions` to 2000 and `openai.embedding_model` to `text-embedding-3-large`; changing either requires a matching schema change. Migration 000010 updated `pattern_chunks.embedding` to this dimension. The `patterns` table embedding column was removed in migration 000009 — embeddings now exist only in `pattern_chunks`.
+Pattern chunk embeddings use `vector(2000)` (OpenAI text-embedding-3-large with Matryoshka truncation). All three services default `openai.embedding_dimensions` to 2000 and `openai.embedding_model` to `text-embedding-3-large`; changing either requires a matching schema change. Migration 000006 updated `pattern_chunks.embedding` to this dimension. The `patterns` table embedding column was removed in migration 000005 — embeddings now exist only in `pattern_chunks`.
 
 ## Neo4j Schema
 
@@ -160,7 +132,6 @@ Pattern chunk embeddings use `vector(2000)` (OpenAI text-embedding-3-large with 
 | Label | Unique Constraint | Description |
 | --- | --- | --- |
 | `Pattern` | `pattern_id_unique` on `id` | Graph projection of a Postgres pattern row; properties `id` (UUID string), `name`, `description`, `updatedAt` |
-| `Agent` | `agent_name_unique` on `name` | Reserved for agents; no current service creates `Agent` nodes |
 | `Concept` | `concept_name_unique` on `name` | Concept extracted during enrichment; `name` (lowercase, trimmed), `type` (`technology`, `practice` or `domain`), `createdAt` |
 | `SchemaVersion` | — | Tracks applied migration version (`v.version`, `v.migratedAt`) |
 
@@ -170,7 +141,6 @@ Pattern chunk embeddings use `vector(2000)` (OpenAI text-embedding-3-large with 
 | --- | --- | --- | --- |
 | `MENTIONED_IN` | `Concept → Pattern` | — | Concepts extracted from a pattern's content |
 | `RELATED_TO` | `Pattern → Pattern` | `similarity` (float), `updatedAt` | Pre-computed edges between patterns that share concepts; stored in one direction, queried undirected |
-| `RELEVANT_FOR` | `Pattern → Agent` | `relevance` (float) | Reserved (indexed in the schema); no current service creates it |
 
 `RELATED_TO.similarity` is `sharedConcepts / max(conceptsA, conceptsB)`; the enricher only creates edges at or above `enrichment.related_to_min_similarity` (default 0.3).
 
@@ -188,11 +158,12 @@ graph LR
 | --- | --- | --- | --- |
 | `pattern_name_index` | B-tree | `Pattern.name` | Name-based pattern lookup |
 | `concept_type_index` | B-tree | `Concept.type` | Filter concepts by category |
-| `rel_relevant_for_relevance` | B-tree | `RELEVANT_FOR.relevance` | Order relationships by relevance score |
 | `pattern_content_fulltext` | Fulltext | `Pattern.name`, `Pattern.description` | Natural language pattern search |
 | `concept_name_fulltext` | Fulltext | `Concept.name` | Natural language concept lookup |
 
-Auto-created indexes from uniqueness constraints: `Pattern.id`, `Agent.name`, `Concept.name`.
+Auto-created indexes from uniqueness constraints: `Pattern.id`, `Concept.name`.
+
+Existence constraints (`pattern_name_exists`, `concept_name_exists`) are in `002_create_existence_constraints.cypher`, which needs Enterprise Edition; the `neo4j:5` Community image skips it.
 
 ### Schema Version
 
@@ -202,7 +173,7 @@ The Neo4j schema is versioned via a `SchemaVersion` node:
 MATCH (v:SchemaVersion {name: 'mnemonic'}) RETURN v.version, v.migratedAt
 ```
 
-Current version: **3** (set by `003_create_indexes.cypher`).
+Current version: **3** (set by `003_create_indexes.cypher`; the image skips 002, which would set 2).
 
 ## Which Service Uses What
 
@@ -245,9 +216,9 @@ flowchart LR
 
 ## Migration Strategy
 
-- **Tooling:** None at runtime. Schema is applied at image build time.
-- **Postgres:** SQL files named `000001_description.up.sql` … `000010_description.up.sql`, executed in order by `docker-entrypoint-initdb.d`.
-- **Neo4j:** Cypher files named `001_description.cypher` … `003_description.cypher`, applied via `cypher-shell` during image build.
+- **Tooling:** None at runtime. The schema ships in the images.
+- **Postgres:** SQL files named `000001_description.up.sql` … `000006_description.up.sql`, copied into the image and executed in order by `docker-entrypoint-initdb.d` on first container start.
+- **Neo4j:** Cypher files named `001_description.cypher` … `003_description.cypher`, applied via `cypher-shell` during image build (002 is skipped: Enterprise only).
 - **Rollback:** Pull a prior image tag. No down migration files are maintained.
 - **Testing:** BATS test suites in `src/tests/bats/` verify schema state after initialization. CI gates image pushes on passing tests.
 - **Adding migrations:** Add new SQL/Cypher files with the next sequence number, add corresponding BATS assertions, open a PR.

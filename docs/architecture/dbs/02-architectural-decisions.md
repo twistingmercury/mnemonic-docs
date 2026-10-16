@@ -93,7 +93,7 @@ Both databases need their schema applied at image build time, but each supports 
 
 **Decision:**
 
-- **Postgres**: Copy all `*.up.sql` files into `/docker-entrypoint-initdb.d/`. The `pgvector/pgvector:pg16` base image runs these scripts automatically on first container start. File naming (`000001_…` through `000010_…`) ensures correct execution order.
+- **Postgres**: Copy all `*.up.sql` files into `/docker-entrypoint-initdb.d/`. The `pgvector/pgvector:pg16` base image runs these scripts automatically on first container start. File naming (`000001_…` through `000006_…`) ensures correct execution order.
 - **Neo4j**: No equivalent init-directory mechanism exists in the Community Edition image. The build script starts a temporary container, applies Cypher files via `cypher-shell`, stops the container, and commits it as the final image using `docker commit`.
 
 **Consequences:**

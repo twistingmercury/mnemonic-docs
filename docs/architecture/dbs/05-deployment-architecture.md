@@ -52,7 +52,7 @@ Built with a standard `docker build`. The `Dockerfile` is in `src/postgres/`:
 2. Sets `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` environment variables
 3. Copies all `*.up.sql` files into `/docker-entrypoint-initdb.d/`
 
-On first container start, Postgres runs the init scripts in filename order, applying all 10 migrations automatically. No external tooling required.
+On first container start, Postgres runs the init scripts in filename order, applying all 6 migrations (`000001`–`000006`) automatically. No external tooling required.
 
 ### mnemonic-neo4j
 
@@ -84,7 +84,7 @@ The workflow at `.github/workflows/mnemonic-ci.yaml` triggers on:
 | `test-neo4j`     | —                             | Starts local Neo4j container, applies Cypher, runs BATS tests           |
 | `build-and-push` | `test-postgres`, `test-neo4j` | Builds both images, logs into GHCR, pushes with version and latest tags |
 
-`test-postgres` and `test-neo4j` run in parallel. `build-and-push` is blocked until both pass.
+`test-postgres` and `test-neo4j` run in parallel. `build-and-push` is blocked until both pass. It has no event or branch guard, so it also runs for pull requests; a PR build is not on `main`, so it pushes the `-dev` tags.
 
 ## Image Tagging Strategy
 
@@ -103,7 +103,7 @@ Application services pin a specific tag rather than a floating one: the local-de
 
 1. Add or modify SQL/Cypher files in `src/postgres/` or `src/neo4j/`
 2. Update BATS tests to cover the new schema state
-3. Open a PR — CI runs tests and validates the build
+3. Open a PR — CI runs tests, builds the images and (see above) pushes `-dev` tags
 4. Merge to `develop`: new `latest-dev` images are pushed
 5. Merge to `main`: new `latest` + versioned images are pushed
 6. Update image references in `mnemonic-mcp`, `mnemonic-api`, and `mnemonic-enricher`

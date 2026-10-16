@@ -178,7 +178,6 @@ server:
 database:
   # ... same keys and defaults as mnemonic-mcp
 queue:
-  provider: "rabbitmq"
   rabbitmq:
     host: "localhost"
     port: 5672
@@ -192,8 +191,6 @@ openai:
   base_url: "https://api.openai.com/v1"
   embedding_model: "text-embedding-3-large"
   embedding_dimensions: 2000
-  extraction_model: "gpt-4o-mini"   # accepted, not used by the API
-  max_requests_per_minute: 500      # validated (>= 1), not enforced
   retry_attempts: 3
   retry_delay: "1s"
 vocabulary:
@@ -201,16 +198,11 @@ vocabulary:
   domains: ["api-design", "backend", "frontend", "testing", "..."]  # 14 values by default
 logging:
   level: "info"
-  format: "json"            # validated (json|text), not currently applied
-  include_caller: false     # not currently applied
 observability:
   metrics:
     enabled: true
     path: "/metrics"
     port: 9090
-  health:
-    enabled: true           # validated only; /health is always registered
-    path: "/health"         # validated only; the route is fixed at /health
   tracing:
     enabled: false
     endpoint: ""
@@ -312,7 +304,7 @@ In addition to `MNEMONIC_` prefixed variables, the otelx library reads the stand
 
 | Variable                                                                                 | Effect in Mnemonic                                                                                                                                   |
 | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OTEL_SERVICE_NAME`                                                                      | Overrides the `service.name` resource attribute (the code sets `mnemonic` in every service)                                                          |
+| `OTEL_SERVICE_NAME`                                                                      | Overrides the `service.name` resource attribute (the code sets `mnemonic-api`, `mnemonic-enricher` or `mnemonic-mcp`)                                |
 | `OTEL_RESOURCE_ATTRIBUTES`                                                               | Adds resource attributes and overrides the code's values                                                                                             |
 | `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT`, other `OTEL_EXPORTER_OTLP_*` | Read by the OTLP gRPC trace exporter for anything the service does not set itself                                                                    |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`                      | Overridden by `observability.tracing.endpoint`, which is required whenever tracing is enabled                                                        |
@@ -345,7 +337,7 @@ The keys live under `queue.rabbitmq` in both services. Credentials are sent via 
 
 | Key                              | Type     | Default           | Env Var                                   | Services      | Description                                                             |
 | -------------------------------- | -------- | ----------------- | ----------------------------------------- | ------------- | ----------------------------------------------------------------------- |
-| `queue.provider`                 | string   | `rabbitmq`        | `MNEMONIC_QUEUE_PROVIDER`                 | api, enricher | Queue backend; the enricher rejects any other value, the API ignores it |
+| `queue.provider`                 | string   | `rabbitmq`        | `MNEMONIC_QUEUE_PROVIDER`                 | enricher      | Queue backend; the enricher rejects any other value                     |
 | `queue.rabbitmq.host`            | string   | `localhost`       | `MNEMONIC_QUEUE_RABBITMQ_HOST`            | api, enricher | Broker host                                                             |
 | `queue.rabbitmq.port`            | int      | `5672`            | `MNEMONIC_QUEUE_RABBITMQ_PORT`            | api, enricher | Broker AMQP port                                                        |
 | `queue.rabbitmq.user`            | string   | `guest`           | `MNEMONIC_QUEUE_RABBITMQ_USER`            | api, enricher | Broker user                                                             |
@@ -396,8 +388,7 @@ The Services column shows which services define each key: **A** = `mnemonic-api`
 | `openai.base_url`                               | string   | `https://api.openai.com/v1` | `MNEMONIC_OPENAI_BASE_URL`                               | A, E, M  | OpenAI-compatible API root; must be an absolute URL. Integration tests point it at a stub   |
 | `openai.embedding_model`                        | string   | `text-embedding-3-large`    | `MNEMONIC_OPENAI_EMBEDDING_MODEL`                        | A, E, M  | Embedding model                                                                             |
 | `openai.embedding_dimensions`                   | int      | `2000`                      | `MNEMONIC_OPENAI_EMBEDDING_DIMENSIONS`                   | A, E, M  | Requested embedding dimensions                                                              |
-| `openai.extraction_model`                       | string   | `gpt-4o-mini`               | `MNEMONIC_OPENAI_EXTRACTION_MODEL`                       | A, E     | Concept extraction model (used by the enricher only)                                        |
-| `openai.max_requests_per_minute`                | int      | `500`                       | `MNEMONIC_OPENAI_MAX_REQUESTS_PER_MINUTE`                | A        | Validated (>= 1) but not enforced; no client-side rate limiting is implemented              |
+| `openai.extraction_model`                       | string   | `gpt-4o-mini`               | `MNEMONIC_OPENAI_EXTRACTION_MODEL`                       | E        | Concept extraction model                                                                    |
 | `openai.retry_attempts`                         | int      | `3`                         | `MNEMONIC_OPENAI_RETRY_ATTEMPTS`                         | A, E, M  | Retries per OpenAI call                                                                     |
 | `openai.retry_delay`                            | duration | `1s`                        | `MNEMONIC_OPENAI_RETRY_DELAY`                            | A, E, M  | Delay between OpenAI retries                                                                |
 | `vocabulary.languages`                          | []string | 42 built-in values          | `MNEMONIC_VOCABULARY_LANGUAGES` (comma-separated)        | A        | Allowed pattern `language` values; must not be empty                                        |
@@ -410,19 +401,17 @@ The Services column shows which services define each key: **A** = `mnemonic-api`
 | `enrichment.failed_retention`                   | duration | `720h`                      | `MNEMONIC_ENRICHMENT_FAILED_RETENTION`                   | E        | Retention period for failed enrichment jobs (default 30 days); older jobs are deleted       |
 | `enrichment.related_to_min_similarity`          | float    | `0.3`                       | `MNEMONIC_ENRICHMENT_RELATED_TO_MIN_SIMILARITY`          | E        | Minimum concept-overlap similarity (0.0-1.0) for creating RELATED_TO edges between patterns |
 | `logging.level`                                 | string   | `info`                      | `MNEMONIC_LOGGING_LEVEL`                                 | A, E, M  | Log level (`debug`, `info`, `warn`, `error`)                                                |
-| `logging.format`                                | string   | `json`                      | `MNEMONIC_LOGGING_FORMAT`                                | A        | Validated (`json` or `text`) but not applied; logs are always JSON                          |
-| `logging.include_caller`                        | bool     | `false`                     | `MNEMONIC_LOGGING_INCLUDE_CALLER`                        | A        | Accepted but not applied                                                                    |
 | `observability.metrics.enabled`                 | bool     | `true`                      | `MNEMONIC_OBSERVABILITY_METRICS_ENABLED`                 | A, E, M  | Serve Prometheus metrics                                                                    |
 | `observability.metrics.path`                    | string   | `/metrics`                  | `MNEMONIC_OBSERVABILITY_METRICS_PATH`                    | A, E, M  | Metrics endpoint path                                                                       |
 | `observability.metrics.port`                    | int      | `9090`                      | `MNEMONIC_OBSERVABILITY_METRICS_PORT`                    | A, E, M  | Metrics server port; must differ from `server.port`                                         |
-| `observability.health.enabled`                  | bool     | `true`                      | `MNEMONIC_OBSERVABILITY_HEALTH_ENABLED`                  | A        | Validated only; `/health` is always served                                                  |
-| `observability.health.path`                     | string   | `/health`                   | `MNEMONIC_OBSERVABILITY_HEALTH_PATH`                     | A        | Validated only; the route is fixed at `/health`                                             |
 | `observability.tracing.enabled`                 | bool     | `false`                     | `MNEMONIC_OBSERVABILITY_TRACING_ENABLED`                 | A, E, M  | Enable distributed tracing                                                                  |
 | `observability.tracing.endpoint`                | string   | `""`                        | `MNEMONIC_OBSERVABILITY_TRACING_ENDPOINT`                | A, E, M  | OTLP gRPC collector `host:port`; required when tracing is enabled                           |
 | `observability.tracing.sample_rate`             | float    | `0.1`                       | `MNEMONIC_OBSERVABILITY_TRACING_SAMPLE_RATE`             | A, E, M  | Ratio (0.0-1.0) of new traces sampled; incoming sampled parents are always honored          |
 | `observability.tracing.otlp_insecure`           | bool     | `true`                      | `MNEMONIC_OBSERVABILITY_TRACING_OTLP_INSECURE`           | A, E, M  | Use insecure OTLP connection (local development only; production should use TLS)            |
 
 > **Not implemented:** Rate limiting (`rate_limit.*`), a statement-logging switch (`observability.log_db_statements`), MCP session timeouts and enricher polling settings (`poll_interval`, `max_attempts`) appeared in earlier drafts of this document. None of them exist in code.
+>
+> **Removed from the API:** `logging.format`, `logging.include_caller`, `observability.health.enabled`, `observability.health.path`, `openai.extraction_model`, `openai.max_requests_per_minute` and `queue.provider` were validated by `mnemonic-api` but never used, and have been removed from it. Viper ignores them if they are still set. The health route is fixed at `/health`. The enricher still reads `openai.extraction_model` and `queue.provider`.
 
 ## Environment Variable Naming Conventions
 
@@ -607,7 +596,7 @@ Each service validates its configuration after loading (`Validate()` in `config.
 | TLS files exist          | E, M     | When `server.tls.enabled`, cert and key paths must be set and readable                        |
 | Tracing                  | A, E, M  | When enabled, `endpoint` set and `sample_rate` in 0-1                                         |
 | Ranges                   | E, M     | `related_to_min_similarity` (E) and `default_search_threshold` (M) in 0-1                     |
-| Log level / format       | A, E, M  | Level is one of `debug`, `info`, `warn`, `error`; (A) format is `json` or `text`              |
+| Log level                | A, E, M  | One of `debug`, `info`, `warn`, `error`                                                       |
 | Vocabulary               | A        | `vocabulary.languages` and `vocabulary.domains` non-empty                                     |
 
 Secrets (database passwords, `openai.api_key`) are not required by validation; an empty value fails later at connection time or, for OpenAI, shows up as a Warning on `/health`. Database connectivity is checked when the service starts and connects, not by `Validate()`.
@@ -723,14 +712,13 @@ type Neo4jConfig struct {
 }
 
 type OpenAIConfig struct {
-    APIKey               string        `mapstructure:"api_key"`
-    BaseURL              string        `mapstructure:"base_url"`
-    EmbeddingModel       string        `mapstructure:"embedding_model"`
-    EmbeddingDimensions  int           `mapstructure:"embedding_dimensions"`
-    ExtractionModel      string        `mapstructure:"extraction_model"`        // A, E
-    MaxRequestsPerMinute int           `mapstructure:"max_requests_per_minute"` // A
-    RetryAttempts        int           `mapstructure:"retry_attempts"`
-    RetryDelay           time.Duration `mapstructure:"retry_delay"`
+    APIKey              string        `mapstructure:"api_key"`
+    BaseURL             string        `mapstructure:"base_url"`
+    EmbeddingModel      string        `mapstructure:"embedding_model"`
+    EmbeddingDimensions int           `mapstructure:"embedding_dimensions"`
+    ExtractionModel     string        `mapstructure:"extraction_model"` // E
+    RetryAttempts       int           `mapstructure:"retry_attempts"`
+    RetryDelay          time.Duration `mapstructure:"retry_delay"`
 }
 
 type EnrichmentConfig struct {
@@ -744,7 +732,7 @@ type EnrichmentConfig struct {
 }
 
 type QueueConfig struct {
-    Provider string         `mapstructure:"provider"`
+    Provider string         `mapstructure:"provider"` // E
     RabbitMQ RabbitMQConfig `mapstructure:"rabbitmq"`
 }
 
@@ -765,14 +753,11 @@ type VocabularyConfig struct {
 }
 
 type LoggingConfig struct {
-    Level         string `mapstructure:"level"`
-    Format        string `mapstructure:"format"`         // A
-    IncludeCaller bool   `mapstructure:"include_caller"` // A
+    Level string `mapstructure:"level"`
 }
 
 type ObservabilityConfig struct {
     Metrics MetricsConfig `mapstructure:"metrics"`
-    Health  HealthConfig  `mapstructure:"health"` // A
     Tracing TracingConfig `mapstructure:"tracing"`
 }
 
@@ -780,11 +765,6 @@ type MetricsConfig struct {
     Enabled bool   `mapstructure:"enabled"`
     Path    string `mapstructure:"path"`
     Port    int    `mapstructure:"port"`
-}
-
-type HealthConfig struct {
-    Enabled bool   `mapstructure:"enabled"`
-    Path    string `mapstructure:"path"`
 }
 
 type TracingConfig struct {
@@ -842,7 +822,6 @@ classDiagram
         +string EmbeddingModel
         +int EmbeddingDimensions
         +string ExtractionModel
-        +int MaxRequestsPerMinute
         +int RetryAttempts
         +Duration RetryDelay
     }
@@ -880,13 +859,10 @@ classDiagram
 
     class LoggingConfig {
         +string Level
-        +string Format
-        +bool IncludeCaller
     }
 
     class ObservabilityConfig {
         +MetricsConfig Metrics
-        +HealthConfig Health
         +TracingConfig Tracing
     }
 

@@ -638,7 +638,7 @@ After commit (best-effort, not in transaction):
   4. Publish each job ID to RabbitMQ
 ```
 
-Jobs are published only after commit: a message sent inside the transaction could outlive a rollback and point the enricher at a job row that does not exist. If publishing fails the rows stay `pending` and the enricher's retry sweep picks them up after a 2-minute grace. Content without decorators produces no chunks and no jobs (see [Pattern Processing - Step 2](pattern-processing.md#step-2-generate-embeddings)).
+Jobs are published only after commit: a message sent inside the transaction could outlive a rollback and point the enricher at a job row that does not exist. If publishing fails the rows stay `pending` and the enricher's retry sweep picks them up after a 2-minute grace. Content without decorators (or with only empty decorated sections) becomes one whole-content chunk with one job (see [Pattern Processing - Step 2](pattern-processing.md#step-2-generate-embeddings)).
 
 ### Pattern Update
 
@@ -1176,7 +1176,7 @@ In the enricher, `queue.provider` must be `rabbitmq`; any other value fails star
 
 [Table of Contents](#table-of-contents)
 
-- [data-storage.md](data-storage.md) documents the `pattern_chunks` table (Migration 009), the chunk repository and the RELATED_TO / `FindRelatedPatterns` queries used here. Its agent, skill and association sections describe planned features (see [Planned: Agent and Skill Services](#planned-agent-and-skill-services)).
+- [data-storage.md](data-storage.md) documents the `pattern_chunks` table (migration 000005), the chunk repository and the RELATED_TO / `FindRelatedPatterns` queries used here. Its agent, skill and association sections describe planned features (see [Planned: Agent and Skill Services](#planned-agent-and-skill-services)).
 - [configuration.md](configuration.md) documents the RabbitMQ settings for the API (publisher) and enricher (consumer) and the `enrichment.*` settings, including `completed_retention` (168h) and `failed_retention` (720h).
 
 ## Key Takeaways
