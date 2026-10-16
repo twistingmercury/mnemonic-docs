@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-16
+
+Docs aligned with `mnemonic-api` v0.5.0, `mnemonic-enricher` v0.5.0 and `mnemonic-mcp` v0.6.0 (the second simplification pass).
+
+### Changed
+
+- Version references updated to the current releases (api v0.5.0, enricher v0.5.0, mcp v0.6.0) in the README, security, requirements, traceability and observability pages
+- Pages updated for the second simplification pass: `database.postgres.min_conns` replaces `max_idle_conns`, HTTP metrics come only from otelgin, and the enricher takes a `--config` flag
+
+### Fixed
+
+- The deployment monitoring table listed the removed `mnemonic.http.request.*` metrics for api and mcp; it now lists otelgin's `http.server.request.duration`
+
 ## [0.5.1] - 2026-10-16
 
 Docs aligned with `mnemonic-api` v0.4.1, `mnemonic-enricher` v0.4.2 and `mnemonic-mcp` v0.5.1.

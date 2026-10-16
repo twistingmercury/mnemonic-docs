@@ -4,7 +4,7 @@
 
 This matrix maps each requirement to the architecture and design documents that address it, and then to the code and tests that implement it today.
 
-- [Implementation Status](#implementation-status) — where each requirement lives in code (`mnemonic-api` v0.4.1, `mnemonic-enricher` v0.4.2, `mnemonic-mcp` v0.5.1, `develop`) and which tests cover it
+- [Implementation Status](#implementation-status) — where each requirement lives in code (`mnemonic-api` v0.5.0, `mnemonic-enricher` v0.5.0, `mnemonic-mcp` v0.6.0, `develop`) and which tests cover it
 - [Architecture References](#knowledge-management) — the design documents behind each requirement
 
 ## Implementation Status

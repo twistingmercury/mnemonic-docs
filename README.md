@@ -1,7 +1,7 @@
 # Mnemonic Docs
 
 > **Maturity Level**: Emerging - Documentation is in early rough draft; structure and content are actively being organized and will change frequently.  
-> **Version**: v0.5.1
+> **Version**: v0.5.2
 
 ---
 
@@ -65,7 +65,7 @@ The solution spans seven source repositories plus this documentation repo:
 
 | Topic          | Current value                                                                                          |
 | -------------- | ------------------------------------------------------------------------------------------------------ |
-| Releases       | `mnemonic-api` v0.4.1, `mnemonic-enricher` v0.4.2, `mnemonic-mcp` v0.5.1 (MCP protocol 2026-07-28)     |
+| Releases       | `mnemonic-api` v0.5.0, `mnemonic-enricher` v0.5.0, `mnemonic-mcp` v0.6.0 (MCP protocol 2026-07-28)     |
 | Toolchain      | Go 1.27.2, `heartbeat` v2 (`/health`), `otelx` v2 (logs, metrics, traces)                              |
 | Ports          | 8080 `/health` and `/version` (all), 8080 `/v1/api` (api), 8081 `/mcp` (mcp), 9090 `/metrics` (all)    |
 | Authentication | None: Phase 1 is a trusted, local, single-user environment                                             |

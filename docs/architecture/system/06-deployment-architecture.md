@@ -291,8 +291,8 @@ Key metrics to monitor:
 
 | Component         | Metrics                                                                                                                                 |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| mnemonic-mcp      | `mnemonic.http.request.*`, `mnemonic.mcp.tool_calls`, `mnemonic.mcp.tool_duration`, `mnemonic.patterns.query_latency` / `returned`      |
-| mnemonic-api      | `mnemonic.http.request.*`, `mnemonic.db.query_latency` / `query_errors`, `mnemonic.patterns.*`, `mnemonic.queue.publish_failures_total` |
+| mnemonic-mcp      | `http.server.request.duration` (otelgin), `mnemonic.mcp.tool_calls`, `mnemonic.mcp.tool_duration`, `mnemonic.patterns.query_latency` / `returned`      |
+| mnemonic-api      | `http.server.request.duration` (otelgin), `mnemonic.db.query_latency` / `query_errors`, `mnemonic.patterns.*`, `mnemonic.queue.publish_failures_total` |
 | mnemonic-enricher | `mnemonic.enrichment.jobs`, `mnemonic.enrichment.job_duration`, pending job age in `enrichment_jobs`                                    |
 | RabbitMQ          | Queue depth, message rates, consumer count                                                                                              |
 | Postgres          | Connection count, query latency, storage usage                                                                                          |
