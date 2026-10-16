@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-16
+
+Docs aligned with `mnemonic-api` v0.4.1, `mnemonic-enricher` v0.4.2 and `mnemonic-mcp` v0.5.1.
+
+### Changed
+
+- Version references updated to the current releases (api v0.4.1, enricher v0.4.2, mcp v0.5.1) in the README, security, requirements, traceability and observability pages
+- `database.postgres.max_open_conns` and `max_idle_conns` are documented as `int32` in all three services; out-of-range values fail config loading
+
 ## [0.5.0] - 2026-10-16
 
 Docs aligned with `mnemonic-api` and `mnemonic-enricher` v0.4.1 and `mnemonic-mcp` v0.5.0.

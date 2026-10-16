@@ -1624,13 +1624,13 @@ type PostgresConfig struct {
     Username        string        `mapstructure:"username"`
     Password        string        `mapstructure:"password"`
     SSLMode         string        `mapstructure:"ssl_mode"`
-    MaxOpenConns    int           `mapstructure:"max_open_conns"`
-    MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+    MaxOpenConns    int32         `mapstructure:"max_open_conns"`
+    MaxIdleConns    int32         `mapstructure:"max_idle_conns"`
     ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 ```
 
-Keys live under `database.postgres.*` (env `MNEMONIC_DATABASE_POSTGRES_*`). Defaults in all three services: `max_open_conns` 25, `max_idle_conns` 5, `conn_max_lifetime` 5m, `ssl_mode` `prefer`. The pool is a `pgxpool.Pool`: `max_open_conns` sets `MaxConns` and `max_idle_conns` sets `MinConns`.
+Keys live under `database.postgres.*` (env `MNEMONIC_DATABASE_POSTGRES_*`). Defaults in all three services: `max_open_conns` 25, `max_idle_conns` 5, `conn_max_lifetime` 5m, `ssl_mode` `prefer`. The pool is a `pgxpool.Pool`: `max_open_conns` sets `MaxConns` and `max_idle_conns` sets `MinConns`. Both are `int32`, the type pgxpool takes, so a value above 2147483647 fails config loading.
 
 **Recommended Pool Settings:**
 
