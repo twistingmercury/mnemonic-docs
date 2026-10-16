@@ -86,11 +86,11 @@ Viper's `MergeInConfig()` is NOT used. Configuration is loaded with `ReadInConfi
 
 **Missing or broken files** (differs slightly per service):
 
-| Service             | No file found  | Selected file cannot be read or parsed                                                   |
-| ------------------- | -------------- | ---------------------------------------------------------------------------------------- |
-| `mnemonic-api`      | Defaults + env | Always fatal, whether the file came from `--config`, `MNEMONIC_CONFIG_FILE` or discovery |
-| `mnemonic-enricher` | Defaults + env | Fatal only when set explicitly via `MNEMONIC_CONFIG_FILE`; a discovered file is ignored  |
-| `mnemonic-mcp`      | Defaults + env | Fatal only when set explicitly via `MNEMONIC_CONFIG_FILE`; a discovered file is ignored  |
+| Service             | No file found  | Selected file cannot be read or parsed                                                                  |
+| ------------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
+| `mnemonic-api`      | Defaults + env | Always fatal, whether the file came from `--config`, `MNEMONIC_CONFIG_FILE` or discovery                |
+| `mnemonic-enricher` | Defaults + env | Fatal only when set explicitly via `--config` or `MNEMONIC_CONFIG_FILE`; a discovered file is ignored   |
+| `mnemonic-mcp`      | Defaults + env | Fatal only when set explicitly via `MNEMONIC_CONFIG_FILE`; a discovered file is ignored                 |
 
 After loading, every service validates the result and refuses to start if validation fails (see [Configuration Validation](#configuration-validation)).
 
@@ -133,7 +133,7 @@ database:
     password: ""
     ssl_mode: "prefer"
     max_open_conns: 25
-    max_idle_conns: 5
+    min_conns: 5
     conn_max_lifetime: "5m"
   neo4j:
     uri: "bolt://localhost:7687"
@@ -376,9 +376,9 @@ The Services column shows which services define each key: **A** = `mnemonic-api`
 | `database.postgres.password`                    | string   | `""`                        | `MNEMONIC_DATABASE_POSTGRES_PASSWORD`                    | A, E, M  | Database password                                                                           |
 | `database.postgres.ssl_mode`                    | string   | `prefer`                    | `MNEMONIC_DATABASE_POSTGRES_SSL_MODE`                    | A, E, M  | SSL mode                                                                                    |
 | `database.postgres.max_open_conns`              | int32    | `25`                        | `MNEMONIC_DATABASE_POSTGRES_MAX_OPEN_CONNS`              | A, E, M  | Pool maximum (pgxpool `MaxConns`)                                                           |
-| `database.postgres.max_idle_conns`              | int32    | `5`                         | `MNEMONIC_DATABASE_POSTGRES_MAX_IDLE_CONNS`              | A, E, M  | Pool minimum kept open (pgxpool `MinConns`); must not exceed `max_open_conns`               |
+| `database.postgres.min_conns`                   | int32    | `5`                         | `MNEMONIC_DATABASE_POSTGRES_MIN_CONNS`                   | A, E, M  | Pool minimum kept open (pgxpool `MinConns`); must not exceed `max_open_conns`               |
 | `database.postgres.conn_max_lifetime`           | duration | `5m`                        | `MNEMONIC_DATABASE_POSTGRES_CONN_MAX_LIFETIME`           | A, E, M  | Connection max lifetime                                                                     |
-| `database.neo4j.uri`                            | string   | `bolt://localhost:7687`     | `MNEMONIC_DATABASE_NEO4J_URI`                            | A, E, M  | Neo4j URI (`bolt://` or `neo4j://`)                                                         |
+| `database.neo4j.uri`                            | string   | `bolt://localhost:7687`     | `MNEMONIC_DATABASE_NEO4J_URI`                            | A, E, M  | Neo4j URI (`bolt`, `neo4j` or their `+s`/`+ssc` variants)                                   |
 | `database.neo4j.username`                       | string   | `neo4j`                     | `MNEMONIC_DATABASE_NEO4J_USERNAME`                       | A, E, M  | Neo4j username                                                                              |
 | `database.neo4j.password`                       | string   | `""`                        | `MNEMONIC_DATABASE_NEO4J_PASSWORD`                       | A, E, M  | Neo4j password                                                                              |
 | `database.neo4j.database`                       | string   | `neo4j`                     | `MNEMONIC_DATABASE_NEO4J_DATABASE`                       | A, E, M  | Neo4j database                                                                              |
@@ -449,19 +449,19 @@ All Mnemonic environment variables use the `MNEMONIC_` prefix with the following
 Configuration files are searched in the following order; the first match wins:
 
 ```text
-1. --config flag (mnemonic-api only)
+1. --config flag (mnemonic-api and mnemonic-enricher)
 2. $MNEMONIC_CONFIG_FILE (if set)
 3. /etc/mnemonic/config.yaml (production)
 4. ./config.yaml (development)
 ```
 
-`mnemonic-enricher` and `mnemonic-mcp` have no `--config` flag; their only command-line flags are `--version` and `--health`. All three binaries support `--health`, which calls `http://localhost:<server.port>/health` and exits 0 only on HTTP 200 (overall status OK or Warning); it is used as the container `HEALTHCHECK`. The API resolves `server.port` from the same sources as the server; the enricher and MCP server read it from defaults and environment only, not from the config file.
+`mnemonic-enricher` takes `--config <path>`, which takes precedence over `MNEMONIC_CONFIG_FILE`, along with `--version` and `--health`. `mnemonic-mcp` has no `--config` flag; its only command-line flags are `--version` and `--health`. `--version` prints to stdout. All three binaries support `--health`, which calls `http://localhost:<server.port>/health` and exits 0 only on HTTP 200 (overall status OK or Warning); it is used as the container `HEALTHCHECK`. Each service resolves `server.port` for `--health` from the same sources as the server, including the config file (the MCP server honours `MNEMONIC_CONFIG_FILE` and the discovered files). The API and MCP server fail the probe if the port is outside 1-65535.
 
 ## Viper Initialization
 
 [Table of Contents](#table-of-contents)
 
-The following is a condensed version of the loading code in `mnemonic-api/src/internal/config/config.go` (`Resolve` and `LoadFromViper`). The enricher and MCP server do the same in a single `Load()` function, differing only in the file-error handling described in [Loading Behavior](#loading-behavior). All config structs use `mapstructure` tags (not `yaml`, `json`, or `env` tags) because Viper's `Unmarshal()` delegates to the `mapstructure` library.
+The following is a condensed version of the loading code in `mnemonic-api/src/internal/config/config.go` (`Resolve` and `LoadWithFlags`). The enricher and MCP server do the same with `Resolve` and `Load`, differing only in the file-error handling described in [Loading Behavior](#loading-behavior). All config structs use `mapstructure` tags (not `yaml`, `json`, or `env` tags) because Viper's `Unmarshal()` delegates to the `mapstructure` library.
 
 ```go
 func Resolve(flags *pflag.FlagSet) (*viper.Viper, error) {
@@ -483,13 +483,17 @@ func Resolve(flags *pflag.FlagSet) (*viper.Viper, error) {
     return v, nil
 }
 
-func LoadFromViper(v *viper.Viper) (*MnemonicConfig, error) {
+func LoadWithFlags(flags *pflag.FlagSet) (*MnemonicConfig, error) {
+    v, err := Resolve(flags)
+    if err != nil {
+        return nil, err
+    }
     cfg := &MnemonicConfig{}
     if err := v.Unmarshal(cfg); err != nil {
         return nil, fmt.Errorf("failed to unmarshal config: %w", err)
     }
     if errs := cfg.Validate(); len(errs) > 0 {
-        return nil, errs
+        return nil, fmt.Errorf("configuration validation failed:\n%w", errors.Join(errs...))
     }
     return cfg, nil
 }
@@ -521,7 +525,7 @@ func LoadFromViper(v *viper.Viper) (*MnemonicConfig, error) {
 | OpenAI API key     | Environment variable or secret manager |
 | TLS private keys   | File with restricted permissions       |
 
-The services log only masked connection strings (`SafeDSN()`, `SafeURI()` in the config package).
+The services log only masked connection strings (`SafeDSN()`, `SafeURI()` in the config package). The API and MCP server show a password as `xxxxx` and log an unparseable Neo4j URI as `[unparseable neo4j uri]`; the enricher shows a password as `*****`.
 
 **Recommended patterns**:
 
@@ -590,8 +594,8 @@ Each service validates its configuration after loading (`Validate()` in `config.
 | Ports in range           | A, E, M  | `server.port`, `mcp.port`, `observability.metrics.port` (when metrics are enabled) in 1-65535 |
 | Port conflicts           | A, E, M  | `observability.metrics.port` and (M) `mcp.port` must differ from `server.port`                |
 | Positive durations       | A, E, M  | Server, MCP and enrichment timeouts; Neo4j acquisition timeout                                |
-| Required database fields | A, E, M  | Postgres host and database; Neo4j URI with `bolt://` or `neo4j://` scheme                     |
-| Pool sizes               | A, E, M  | `max_open_conns` >= 1, `0 <= max_idle_conns <= max_open_conns`, Neo4j pool >= 1               |
+| Required database fields | A, E, M  | Postgres host and database; Neo4j URI scheme `bolt://`, `bolt+s://`, `bolt+ssc://`, `neo4j://`, `neo4j+s://` or `neo4j+ssc://` |
+| Pool sizes               | A, E, M  | `max_open_conns` >= 1, `0 <= min_conns <= max_open_conns`, Neo4j pool >= 1                    |
 | OpenAI values            | A, E, M  | `embedding_dimensions` >= 1, non-negative retries/delay, `base_url` absolute when set         |
 | TLS files exist          | E, M     | When `server.tls.enabled`, cert and key paths must be set and readable                        |
 | Tracing                  | A, E, M  | When enabled, `endpoint` set and `sample_rate` in 0-1                                         |
@@ -604,8 +608,8 @@ Secrets (database passwords, `openai.api_key`) are not required by validation; a
 ```text
 # Example validation error
 failed to load configuration: configuration validation failed:
-  - server.port: must be between 1 and 65535, got 0
-  - observability.tracing.endpoint: required when tracing is enabled
+server.port: must be between 1 and 65535, got 0
+observability.tracing.endpoint: required when tracing is enabled
 ```
 
 ### Embedding Dimension Validation
@@ -698,7 +702,7 @@ type PostgresConfig struct {
     Password        string        `mapstructure:"password"`
     SSLMode         string        `mapstructure:"ssl_mode"`
     MaxOpenConns    int32         `mapstructure:"max_open_conns"`
-    MaxIdleConns    int32         `mapstructure:"max_idle_conns"`
+    MinConns        int32         `mapstructure:"min_conns"`
     ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 

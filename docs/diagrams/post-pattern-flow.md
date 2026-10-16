@@ -12,7 +12,7 @@ Source: `mnemonic-api` `src/internal/handlers/patterns/patterns.go` (`Create`), 
 flowchart TD
     A([HTTP POST /v1/api/patterns]) --> B[Handler: Create]
 
-    B --> C[ShouldBindJSON into patternCreateRequest]
+    B --> C[ShouldBindJSON into patternRequest]
     C --> D{JSON parse<br/>error?}
     D -- yes --> E[RespondValidationError<br/>400 Bad Request]
     D -- no --> F[validatePatternFields<br/>format, length, vocabulary]

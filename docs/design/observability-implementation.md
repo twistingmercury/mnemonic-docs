@@ -44,13 +44,12 @@ Each service repo follows the same `src/` layout. Observability-related packages
 
 ```text
 src/
-├── cmd/main/main.go           # Flags (--version, --health), config load, server.ListenAndServe
+├── cmd/main/main.go           # Flags (--version, --health; api, enricher: --config), config load, server.ListenAndServe
 └── internal/
     ├── config/                # Viper config incl. observability.* keys
-    ├── telemetry/telemetry.go # otelx wrapper: builds otelx.Config, OTLP exporter, metrics registry
-    ├── metrics/               # Domain instruments + Registry
-    ├── middleware/            # tracing.go (otelgin), metrics.go (HTTP request metrics)
-    │                          # api only: observability.go (completion logging, redaction)
+    ├── telemetry/telemetry.go # builds otelx.Config and the OTLP exporter, returns *otelx.Telemetry
+    ├── metrics/               # Domain instruments (+ Registry in api and mcp)
+    ├── middleware/            # api only: observability.go (completion logging, redaction)
     ├── health/health.go       # heartbeat dependency checks
     ├── handlers/operations/   # GET /health, GET /version
     ├── repository/graph/      # Neo4j spans + db metrics
@@ -62,7 +61,7 @@ src/
 
 **Key Integration Points (per service):**
 
-1. `internal/server/server.go` - Telemetry initialization and shutdown, middleware registration, wiring of instruments into repositories and services
+1. `internal/server/server.go` - Telemetry initialization and shutdown, middleware registration (including `otelgin`), wiring of instruments into repositories and services
 2. `internal/telemetry/telemetry.go` - The only place that talks to otelx
 3. `internal/metrics/` - All domain-specific instruments
 
@@ -79,9 +78,8 @@ src/
 | Prometheus metrics         | otelx v2                                      | Own registry and HTTP server on `MetricsAddr`, plus Go runtime/process |
 | Trace provider             | otelx v2                                      | Uses the exporter Mnemonic supplies; sets W3C TraceContext + Baggage   |
 | Gin logging middleware     | `otelx/middleware/gin/v2` `LoggingMiddleware` | Used by mcp and enricher; the API has its own                          |
-| Gin tracing middleware     | `otelgin` (contrib)                           | `internal/middleware/tracing.go`                                       |
+| Gin tracing and metrics    | `otelgin` (contrib)                           | Registered in `internal/server/server.go`                              |
 | net/http tracing           | `otelhttp` (contrib)                          | `/mcp` handler and the OpenAI HTTP client transport                    |
-| Request metrics middleware | Mnemonic                                      | `internal/middleware/metrics.go`                                       |
 | Database instrumentation   | `otelpgx` (Postgres), Mnemonic (Neo4j)        | See [Database Instrumentation](#database-instrumentation)              |
 
 ### Required Dependencies
@@ -109,7 +107,7 @@ The observability keys (`logging.level`, `observability.metrics.*`, `observabili
 
 ### Telemetry Initialization
 
-`telemetry.Initialize(ctx, cfg)` maps the Mnemonic config onto an `otelx.Config`, calls `otelx.Initialize`, and builds the [metrics registry](#metrics-registry) from the resulting meter (or the global no-op meter when metrics are disabled). The mapping, condensed from `internal/telemetry/telemetry.go`:
+`telemetry.Initialize(ctx, cfg)` maps the Mnemonic config onto an `otelx.Config`, calls `otelx.Initialize`, and returns the resulting `*otelx.Telemetry`. otelx installs its meter and trace providers globally, so instruments are created from `otel.Meter` and `otel.Tracer` (the global no-op meter when metrics are disabled). The mapping, condensed from `internal/telemetry/telemetry.go`:
 
 ```go
 otelCfg := otelx.Config{
@@ -148,16 +146,16 @@ Consequences:
 
 - Options passed in code win over `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_INSECURE`; other `OTEL_EXPORTER_OTLP_*` variables (headers, timeout, certificates) still apply. `OTEL_TRACES_SAMPLER` is ignored because a sampler is always set. See [Configuration - OpenTelemetry Standard Variables](configuration.md#opentelemetry-standard-variables).
 - When tracing is disabled, otelx does not install a trace provider or a propagator, so the global no-op tracer and no-op propagator are used: spans are not recorded and no `traceparent` is injected into outgoing requests or messages.
-- The `Telemetry` wrapper exposes `Logger()`, `Meter(name)`, `MetricsRegistry()`, `Otelx()` and `Shutdown(ctx)` (the API also has `Tracer`, `TracerProvider` and `MeterProvider`).
+- There is no Mnemonic wrapper type: callers use the `*otelx.Telemetry` fields `Logger`, `MeterProvider` and `TracerProvider` and its `Shutdown(ctx)` method.
 
 ### Server Lifecycle and Telemetry
 
 `server.ListenAndServe(cfg)` in each service:
 
 1. Calls `telemetry.Initialize`; on a later startup error it shuts telemetry down before returning.
-2. Opens the Postgres pool and Neo4j driver, passing instruments from the registry into repositories and services.
-3. Creates `middleware.NewRequestMetrics(tel.Meter("mnemonic/http"))` and the Gin router (see [Structured Logging Implementation](#structured-logging-implementation) for the middleware order).
-4. Initializes health checks and registers `/health` and `/version`.
+2. Opens the Postgres pool and Neo4j driver, then creates the domain instruments from `otel.Meter("mnemonic")` and passes them into repositories and services.
+3. Creates the Gin router (see [Structured Logging Implementation](#structured-logging-implementation) for the middleware order).
+4. Builds the health checks with `health.Descriptors(deps)` and registers `/health` and `/version`.
 5. Runs the HTTP server(s) (and, in the enricher, the worker) until the context is cancelled, then shuts them down and finally calls `tel.Shutdown`, which flushes spans and stops the metrics server.
 
 ## Distributed Tracing Implementation
@@ -170,7 +168,7 @@ Spans and tracer names in use:
 
 | Tracer / instrumentation | Span name                                    | Kind     | Key attributes                                                                                                                  | Where                                        |
 | ------------------------ | -------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `otelgin` (service name) | route template, e.g. `POST /v1/api/patterns` | server   | HTTP semantic conventions                                                                                                       | `internal/middleware/tracing.go`             |
+| `otelgin` (service name) | route template, e.g. `POST /v1/api/patterns` | server   | HTTP semantic conventions                                                                                                       | `internal/server/server.go`                  |
 | `otelhttp`               | `/mcp`                                       | server   | HTTP semantic conventions                                                                                                       | `internal/mcpserver/server.go` (mcp)         |
 | `mnemonic/mcp`           | `tools/call <tool>`                          | internal | `mcp.tool.name`, `mcp.tool.outcome`                                                                                             | `internal/mcpserver/telemetry.go` (mcp)      |
 | `otelhttp` transport     | HTTP client span                             | client   | HTTP semantic conventions                                                                                                       | `internal/service/openai/*.go`               |
@@ -184,21 +182,18 @@ A failing operation records the error on its span and sets status `Error`. MCP t
 
 ### Tracing Middleware
 
-`internal/middleware/tracing.go` wraps `otelgin.Middleware` with a filter that skips `DefaultSkipPaths` (`/health`, `/metrics`):
+Each service's `setupRouter` (`internal/server/server.go`) registers `otelgin.Middleware` directly, with a filter that skips `/health`:
 
 ```go
-var DefaultSkipPaths = []string{"/health", "/metrics"}
-
-func TracingMiddlewareWithSkipPaths(serviceName string, skipPaths []string) gin.HandlerFunc {
-    return otelgin.Middleware(serviceName,
-        otelgin.WithFilter(func(req *http.Request) bool {
-            return !slices.Contains(skipPaths, req.URL.Path)
-        }),
-    )
-}
+// /health is polled by probes; keep it out of traces, metrics and logs.
+// /metrics is served on the otelx metrics port, not on this router.
+skipPaths := []string{"/health"}
+router.Use(otelgin.Middleware(version.Service, otelgin.WithFilter(func(r *http.Request) bool {
+    return !slices.Contains(skipPaths, r.URL.Path)
+})))
 ```
 
-All three services register it as `TracingMiddlewareWithSkipPaths(version.Service, middleware.DefaultSkipPaths)`. The MCP endpoint is a separate `net/http` server on `mcp.port`; its only route is `mux.Handle("/mcp", otelhttp.NewHandler(mcpHandler, "/mcp"))`, which continues any incoming W3C trace context.
+The same middleware records the standard HTTP server metrics (see [HTTP Request Metrics](#http-request-metrics)). The MCP endpoint is a separate `net/http` server on `mcp.port`; its only route is `mux.Handle("/mcp", otelhttp.NewHandler(mcpHandler, "/mcp"))`, which continues any incoming W3C trace context.
 
 ### Creating Child Spans in Handlers
 
@@ -291,7 +286,7 @@ Attributes follow OpenTelemetry semantic conventions where they exist (`messagin
 
 | Category        | Instruments                                                     | Defined in                             | Services |
 | --------------- | --------------------------------------------------------------- | -------------------------------------- | -------- |
-| HTTP requests   | `mnemonic.http.request.count`, `.duration`, `.in_flight`        | `internal/middleware/metrics.go`       | all      |
+| HTTP requests   | `http.server.request.duration`                                  | `otelgin` (contrib)                    | all      |
 | Database        | `mnemonic.db.query_latency`, `mnemonic.db.query_errors`         | `internal/metrics/database.go`         | all      |
 | Pattern queries | `mnemonic.patterns.query_latency`, `mnemonic.patterns.returned` | `internal/metrics/patterns.go`         | api, mcp |
 | Queue publish   | `mnemonic.queue.publish_failures_total`                         | `internal/queue/rabbitmq/publisher.go` | api      |
@@ -300,40 +295,19 @@ Attributes follow OpenTelemetry semantic conventions where they exist (`messagin
 | Postgres pool   | otelpgx pool stats (`RecordStats`)                              | `internal/database/`                   | all      |
 | Runtime         | Go runtime and process collectors                               | otelx                                  | all      |
 
-All latency histograms are in milliseconds with explicit bucket boundaries (for example `1, 5, 10, 25, 50, 100, 250, 500, 1000` for HTTP and database). Attribute values are fixed, bounded sets; no user input becomes an attribute value.
+All Mnemonic latency histograms are in milliseconds with explicit bucket boundaries (for example `1, 5, 10, 25, 50, 100, 250, 500, 1000` for database). Attribute values are fixed, bounded sets; no user input becomes an attribute value.
 
-**Prometheus names:** the OpenTelemetry Prometheus exporter replaces dots with underscores and appends unit and counter suffixes: `mnemonic_http_request_count_total`, `mnemonic_http_request_duration_milliseconds`, `mnemonic_http_request_in_flight`, `mnemonic_patterns_returned`, `mnemonic_queue_publish_failures_total`. Instrument scope (`mnemonic`, `mnemonic/http`, `mnemonic/queue`) appears as `otel_scope_name`.
+**Prometheus names:** the OpenTelemetry Prometheus exporter replaces dots with underscores and appends unit and counter suffixes: `http_server_request_duration_seconds`, `mnemonic_patterns_returned`, `mnemonic_queue_publish_failures_total`. Instrument scope (`mnemonic`, `mnemonic/queue`, and the otelgin scope for HTTP) appears as `otel_scope_name`.
 
-### Request Metrics Middleware
+### HTTP Request Metrics
 
-`middleware.RequestMetrics` creates the three HTTP instruments; `MiddlewareWithSkipPaths(DefaultSkipPaths)` records them for every Gin request except `/health` and `/metrics`:
-
-```go
-m.requestInFlight.Add(ctx, 1)
-defer m.requestInFlight.Add(context.Background(), -1)
-
-c.Next()
-
-route := c.FullPath()
-if route == "" {
-    route = "unknown" // unmatched paths, keeps cardinality bounded
-}
-attrs := []attribute.KeyValue{
-    attribute.String("http.method", c.Request.Method),
-    attribute.String("http.route", route),
-    attribute.String("http.status_code", strconv.Itoa(c.Writer.Status())),
-}
-m.requestCount.Add(context.Background(), 1, metric.WithAttributes(attrs...))
-m.requestDuration.Record(context.Background(), duration, metric.WithAttributes(attrs...))
-```
-
-The API measures duration as fractional milliseconds; the MCP server and enricher currently truncate to whole milliseconds. `in_flight` has no attributes.
+There is no Mnemonic HTTP metrics middleware. The `otelgin` middleware registered in `setupRouter` records the OpenTelemetry semantic-convention histogram `http.server.request.duration` (seconds) through the global meter provider for every Gin request except `/health`, with attributes including `http.route` (the route template) and `http.response.status_code`. There is no in-flight request gauge.
 
 ### MCP Server Metrics
 
-The MCP endpoint is not served by Gin, so it is not covered by the request metrics above. It has:
+The MCP endpoint is not served by Gin, so it is not covered by the otelgin metrics above. It has:
 
-- **Tool metrics** (`internal/metrics/tools.go`): `mnemonic.mcp.tool_calls` (counter, unit `{call}`) and `mnemonic.mcp.tool_duration` (histogram, ms, buckets `5 ... 5000`), both with `tool` (`search_patterns`, `find_related_patterns`, `get_pattern`) and `outcome` (`ok`, `invalid_input`, `not_found`, `unavailable`). Recorded by the tool telemetry middleware shown in [Creating Child Spans in Handlers](#creating-child-spans-in-handlers).
+- **Tool metrics** (`internal/metrics/tools.go`): `mnemonic.mcp.tool_calls` (counter, unit `{call}`) and `mnemonic.mcp.tool_duration` (histogram, ms, buckets `5 ... 5000`), both with `tool` (`search_patterns`, `find_related_patterns`, `get_pattern`) and `outcome` (`ok`, `invalid_input`, `not_found`, `unavailable`). Every argument-validation failure, including the SDK's schema rejections (`validating "arguments": ...`), counts as `invalid_input`. Recorded by the tool telemetry middleware shown in [Creating Child Spans in Handlers](#creating-child-spans-in-handlers).
 - **otelhttp metrics**: the `otelhttp` handler on `/mcp` records the standard `http.server.*` instruments through the global meter provider.
 
 The MCP server runs in stateless Streamable HTTP mode, so there are no session metrics.
@@ -415,13 +389,12 @@ The worker tags its logger with the span's `trace_id` and `span_id` (`spanLogger
 
 ## Metrics Registry
 
-`internal/metrics/registry.go` creates every domain instrument from one meter (scope `mnemonic`) at startup and hands them out to the code that records them:
+In the API and MCP server, `internal/metrics/registry.go` creates every domain instrument from one meter (`otel.Meter("mnemonic")`) at startup and hands them out to the code that records them. The enricher has no registry; its `wireDependencies` calls `metrics.NewJobs` and `metrics.NewDatabase` on the same meter directly.
 
-| Service  | Registry fields                 |
-| -------- | ------------------------------- |
-| api      | `Patterns`, `Database`          |
-| enricher | `Jobs`, `Database`              |
-| mcp      | `Patterns`, `Database`, `Tools` |
+| Service | Registry fields                 |
+| ------- | ------------------------------- |
+| api     | `Patterns`, `Database`          |
+| mcp     | `Patterns`, `Database`, `Tools` |
 
 ```go
 func NewRegistry(meter metric.Meter) (*Registry, error) {
@@ -437,7 +410,7 @@ func NewRegistry(meter metric.Meter) (*Registry, error) {
 }
 ```
 
-Instruments that are not domain-specific are created next to their use: the HTTP request instruments in `middleware.NewRequestMetrics` (scope `mnemonic/http`) and the publish failures counter inside the RabbitMQ publisher (scope `mnemonic/queue`).
+The publish failures counter is created next to its use, inside the RabbitMQ publisher (scope `mnemonic/queue`). HTTP server metrics come from `otelgin`.
 
 ## Structured Logging Implementation
 
@@ -448,7 +421,7 @@ Instruments that are not domain-specific are created next to their use: the HTTP
 The MCP server and enricher use the otelx Gin logging middleware. From `internal/server/server.go` (mnemonic-mcp; the enricher is the same):
 
 ```go
-func setupRouter(tel *telemetry.Telemetry, requestMetrics *middleware.RequestMetrics) *gin.Engine {
+func setupRouter(tel *otelx.Telemetry) *gin.Engine {
     router := gin.New()
     router.Use(gin.Recovery())
 
@@ -460,13 +433,14 @@ func setupRouter(tel *telemetry.Telemetry, requestMetrics *middleware.RequestMet
         c.Next()
     })
 
-    skipPaths := middleware.DefaultSkipPaths
-    router.Use(middleware.TracingMiddlewareWithSkipPaths(version.Service, skipPaths))
-    router.Use(otelxgin.LoggingMiddleware(tel.Otelx(),
-        otelxgin.WithSkipPaths("/health", "/metrics"),
+    skipPaths := []string{"/health"}
+    router.Use(otelgin.Middleware(version.Service, otelgin.WithFilter(func(r *http.Request) bool {
+        return !slices.Contains(skipPaths, r.URL.Path)
+    })))
+    router.Use(otelxgin.LoggingMiddleware(tel,
+        otelxgin.WithSkipPaths(skipPaths...),
         otelxgin.WithRequestHeaders("X-Request-ID", "X-Correlation-ID"),
     ))
-    router.Use(requestMetrics.MiddlewareWithSkipPaths(skipPaths))
     return router
 }
 ```
@@ -476,10 +450,9 @@ func setupRouter(tel *telemetry.Telemetry, requestMetrics *middleware.RequestMet
 **The API is different.** It does not use the otelx logging middleware. Its router, in order:
 
 1. Request ID: accepts `X-Request-ID` only if it is 1-128 characters of `[A-Za-z0-9._-]`, otherwise generates a UUID; always echoes it.
-2. `TracingMiddlewareWithSkipPaths(version.Service, DefaultSkipPaths)`.
+2. `otelgin.Middleware` (tracing and HTTP metrics), skipping `/health`.
 3. `middleware.CompletionLogging(logger, skipPaths)` (`internal/middleware/observability.go`): one `request completed` line with `method`, the route template as `route`, `status`, `duration_ms`, `request_id`, `trace_id`, `span_id` and a single redacted `error`. `info` normally, `error` for 5xx; skip paths are still logged when they fail with 5xx. For 5xx it also records the redacted error on the request span.
-4. Request metrics.
-5. A custom panic recovery that responds through the normal error handler (Gin's default recovery is avoided because it prints raw panic values and headers).
+4. A custom panic recovery that responds through the normal error handler (Gin's default recovery is avoided because it prints raw panic values and headers).
 
 Error diagnostics are passed through `safeDiagnostic`, which truncates them to 512 bytes and redacts URLs, quoted values, bearer tokens, upstream response bodies and fields such as `password`, `token`, `api_key`, `content`, `body` and `query`. `handlers.RespondError` attaches the error for logging with `middleware.RecordFailure(c, err)`.
 
@@ -542,13 +515,13 @@ Every line has the fields otelx adds (`service`, `version`, `environment`, `time
 
 Handlers get services, not telemetry. Instruments are injected one level down, where the work happens:
 
-| Instrument                    | Injected into                                                              |
-| ----------------------------- | -------------------------------------------------------------------------- |
-| `Registry.Database`           | Neo4j graph repository (`graphrepo.NewRepository(..., registry.Database)`) |
-| `Registry.Patterns`           | Search service (`searchsvc.New(..., registry.Patterns, logger)`)           |
-| `Registry.Tools`              | MCP server (`mcpserver.NewMCPServer(..., tel.MetricsRegistry().Tools)`)    |
-| `Registry.Jobs`               | Enrichment worker (`enricher.New(..., jobMetrics)`)                        |
-| `tel.Meter("mnemonic/queue")` | RabbitMQ publisher (API)                                                   |
+| Instrument                                         | Injected into                                                              |
+| -------------------------------------------------- | -------------------------------------------------------------------------- |
+| `Registry.Database` (enricher: `metrics.Database`) | Neo4j graph repository (`graphrepo.NewRepository(..., registry.Database)`) |
+| `Registry.Patterns`                                | Search service (`searchsvc.New(..., registry.Patterns, logger)`)           |
+| `Registry.Tools`                                   | MCP server (`mcpserver.NewMCPServer(..., registry.Tools)`)                 |
+| `metrics.Jobs` (enricher)                          | Enrichment worker (`enricher.New(..., jobMetrics)`)                        |
+| `otel.Meter("mnemonic/queue")`                     | RabbitMQ publisher (API)                                                   |
 
 ### Instrumented Handler Pattern
 
@@ -563,7 +536,7 @@ if err != nil {
 c.JSON(http.StatusAccepted, resp)
 ```
 
-The HTTP span, request metrics and completion log come from middleware; database, OpenAI and queue spans and metrics come from the instrumented clients that receive the same context.
+The HTTP span, HTTP metrics and completion log come from middleware; database, OpenAI and queue spans and metrics come from the instrumented clients that receive the same context.
 
 ### Handler Registration Update
 
@@ -579,7 +552,7 @@ All three services configure the pgx pool with the [otelpgx](https://github.com/
 
 ```go
 poolCfg.MaxConns = cfg.MaxOpenConns
-poolCfg.MinConns = cfg.MaxIdleConns
+poolCfg.MinConns = cfg.MinConns
 poolCfg.MaxConnLifetime = cfg.ConnMaxLifetime
 poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
@@ -615,13 +588,13 @@ func (r *neo4jRepository) instrument(ctx context.Context, op string) (context.Co
         }
         span.End()
         if r.dbMetrics != nil {
-            r.dbMetrics.RecordQueryWithError(ctx, "neo4j", op, time.Since(start), err)
+            r.dbMetrics.Record(ctx, "neo4j", op, time.Since(start), err)
         }
     }
 }
 ```
 
-Methods use it as `ctx, done := r.instrument(ctx, "FindRelatedPatterns")` and defer `done(err)` before closing the session, so session close errors are counted too. Cypher text is not recorded.
+Methods use it as `ctx, done := r.instrument(ctx, "FindRelatedPatterns")` and defer `done(err)` before closing any session, so session close errors are counted too. The MCP server's repository runs each query with `neo4j.ExecuteQuery` and opens no sessions. Cypher text is not recorded.
 
 ### Connection Pool Monitoring
 
@@ -648,7 +621,7 @@ func SetupHandlers(r *gin.Engine, deps []heartbeat.DependencyDescriptor) {
 
 ### Dependency Registration
 
-`health.Initialize(health.Dependencies{...})` in `internal/health/health.go` is called after the database connections are open. It builds `heartbeat.DependencyDescriptor` values with a `CheckFunc` and a 3-second `Timeout` each (condensed from mnemonic-api):
+`health.Descriptors(health.Dependencies{...})` in `internal/health/health.go` is called after the database connections are open, and its result is passed to `operations.SetupHandlers`. It builds `heartbeat.DependencyDescriptor` values with a `CheckFunc` and a 3-second `Timeout` each (condensed from mnemonic-api):
 
 ```go
 descriptors = []heartbeat.DependencyDescriptor{
@@ -671,13 +644,13 @@ if deps.Queue != nil {
 | `OpenAI extraction model` | Same for `extraction_model` (enricher only)                                                     | Warning          |
 | `RabbitMQ`                | `Publisher.Connected()` (API only)                                                              | Warning          |
 
-OpenAI failures report only a fixed message ("request failed", "request timed out" or the HTTP status), never the underlying error, which can contain internal addresses. `health.CheckHealth()` runs the same checks and returns an error only for Critical results.
+OpenAI failures report only a fixed message ("request failed", "request timed out" or the HTTP status), never the underlying error, which can contain internal addresses.
 
-The `--health` command-line flag does not call `CheckHealth`; it makes an HTTP request to the running server's `/health` and exits 0 on HTTP 200, for use as a Docker `HEALTHCHECK` in scratch images.
+The `--health` command-line flag makes an HTTP request to the running server's `/health` and exits 0 on HTTP 200, for use as a Docker `HEALTHCHECK` in scratch images.
 
 ### Health Check in Middleware Skip Paths
 
-`/health` (and `/metrics`) are in `DefaultSkipPaths`, which excludes them from tracing, request metrics and request logging, avoiding noise from frequent probe requests by container orchestration and load balancers.
+`/health` is the only skip path; it is excluded from tracing, HTTP metrics and request logging (`/metrics` is served on the otelx metrics port, not on the Gin router), avoiding noise from frequent probe requests by container orchestration and load balancers.
 
 ## Gaps and Additional Implementation
 
@@ -696,8 +669,7 @@ The `--health` command-line flag does not call `CheckHealth`; it makes an HTTP r
 
 | Capability                   | Status      | Where                                         |
 | ---------------------------- | ----------- | --------------------------------------------- |
-| Gin tracing middleware       | Implemented | `middleware/tracing.go` (otelgin)             |
-| Request metrics middleware   | Implemented | `middleware/metrics.go`                       |
+| Gin tracing and HTTP metrics | Implemented | `otelgin` in `server/server.go`               |
 | Application-specific metrics | Implemented | `metrics/*.go`                                |
 | Neo4j instrumentation        | Implemented | `repository/graph` `instrument()`             |
 | Postgres instrumentation     | Implemented | otelpgx tracer + `RecordStats`                |
@@ -713,7 +685,7 @@ The `--health` command-line flag does not call `CheckHealth`; it makes an HTTP r
 | Enricher RabbitMQ consumer not on `/health`                                  | Consumer disconnects are visible only in logs                                                          |
 | No pending-job backlog metric                                                | Backlog alerts need a SQL check on `enrichment_jobs`                                                   |
 | Neo4j driver pool not monitored                                              | Only Postgres pool stats are exported                                                                  |
-| Duration rounding differs                                                    | mcp and enricher record whole milliseconds in `mnemonic.http.request.duration`                         |
+| No in-flight request gauge                                                   | Concurrent request count is not exported                                                               |
 
 ## Implementation Checklist
 
@@ -722,19 +694,17 @@ Status at api v0.4.1, enricher v0.4.2, mcp v0.5.1.
 ### Foundation
 
 - [x] `internal/config` with observability configuration
-- [x] `internal/telemetry/telemetry.go` wrapping otelx v2, building the OTLP exporter from config
+- [x] `internal/telemetry/telemetry.go` initializing otelx v2, building the OTLP exporter from config
 - [x] `server.ListenAndServe()` initializes and shuts down telemetry
 
 ### Middleware
 
-- [x] `internal/middleware/tracing.go` using otelgin
-- [x] `internal/middleware/metrics.go` for request metrics
-- [x] Middleware registered in `internal/server/server.go` with `/health` and `/metrics` skipped
+- [x] `otelgin` tracing and HTTP metrics registered in `internal/server/server.go` with `/health` skipped
 - [x] Request logging: otelx middleware (mcp, enricher), redacting completion logger (api)
 
 ### Application Metrics
 
-- [x] `internal/metrics/registry.go`
+- [x] `internal/metrics/registry.go` (api, mcp)
 - [x] `internal/metrics/patterns.go` (api, mcp)
 - [x] `internal/metrics/database.go`
 - [x] `internal/metrics/jobs.go` (enricher)

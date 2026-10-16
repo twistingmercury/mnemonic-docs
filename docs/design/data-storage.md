@@ -751,10 +751,10 @@ limit $7;  -- default 10
 Other pattern queries the services run:
 
 ```sql
--- Admin API list (content omitted; total via window function)
+-- Admin API list (content omitted; no total count)
 select id, name, description, tags, entity_type, language, domain, version,
        related_patterns, enrichment_status, enrichment_error, enriched_at,
-       created_at, updated_at, count(*) over() as total_count
+       created_at, updated_at
 from patterns
 where tags ?& $1                                         -- has all tags (optional)
   and to_tsvector('english', name || ' ' || coalesce(description, ''))
@@ -1136,21 +1136,21 @@ WHERE similarity >= $minSimilarity
 CREATE (p1)-[:RELATED_TO {similarity: similarity, updatedAt: datetime()}]->(p2)
 ```
 
-**Find Related Patterns (Admin API and MCP server, read-only):**
+**Find Related Patterns (MCP server, read-only):**
 
-Uses pre-computed RELATED_TO edges and collects shared concept names. See [service-layer.md "Resolving the find_related_patterns Data Gap"](service-layer.md#resolving-the-find_related_patterns-data-gap) for the design decision to use pre-computed edges rather than recomputing similarity at query time.
+Uses pre-computed RELATED_TO edges and collects shared concept names. The Admin API reads related patterns only inside `GetPatternGraph`, whose query also returns `count(c) AS sharedConcepts`. See [service-layer.md "Resolving the find_related_patterns Data Gap"](service-layer.md#resolving-the-find_related_patterns-data-gap) for the design decision to use pre-computed edges rather than recomputing similarity at query time.
 
 ```cypher
 MATCH (p1:Pattern {id: $patternId})-[r:RELATED_TO]-(p2:Pattern)
 WITH p1, p2, r.similarity AS similarity
 OPTIONAL MATCH (p1)<-[:MENTIONED_IN]-(c:Concept)-[:MENTIONED_IN]->(p2)
-WITH p2, similarity, collect(c.name) AS conceptNames, count(c) AS sharedConcepts
+WITH p2, similarity, collect(c.name) AS conceptNames
 ORDER BY similarity DESC
 LIMIT $limit
-RETURN p2.id AS id, p2.name AS name, sharedConcepts, similarity, conceptNames
+RETURN p2.id AS id, p2.name AS name, similarity, conceptNames
 ```
 
-**Pattern Concepts (Admin API and MCP server, read-only):**
+**Pattern Concepts (Admin API and MCP server, read-only; the Admin API returns only `c.name`):**
 
 ```cypher
 MATCH (c:Concept)-[:MENTIONED_IN]->(p:Pattern {id: $patternId})
@@ -1299,9 +1299,8 @@ type Repository interface {
     Get(ctx context.Context, id uuid.UUID) (*Pattern, error)
     Update(ctx context.Context, pattern *Pattern) error
     Delete(ctx context.Context, id uuid.UUID) error
-    // List leaves Content empty; total count comes from COUNT(*) OVER().
-    List(ctx context.Context, filter Filter, opts repository.ListOptions) ([]*Pattern, int64, error)
-    Exists(ctx context.Context, id uuid.UUID) (bool, error)
+    // List leaves Content empty and does not count the total.
+    List(ctx context.Context, filter Filter, opts repository.ListOptions) ([]*Pattern, error)
     WithTx(db repository.DBTX) Repository
 }
 
@@ -1537,7 +1536,6 @@ type Repository interface {
     // GetPatternGraph returns up to relatedLimit related patterns and all
     // concepts for a pattern, using a single session and read transaction.
     GetPatternGraph(ctx context.Context, patternID uuid.UUID, relatedLimit int) (*PatternGraph, error)
-    FindRelatedPatterns(ctx context.Context, patternID uuid.UUID, limit int) ([]RelatedPattern, error)
 }
 ```
 
@@ -1558,7 +1556,7 @@ type Pattern struct {
 }
 ```
 
-**mnemonic-mcp** (`internal/repository/graph`, read-only sessions):
+**mnemonic-mcp** (`internal/repository/graph`, read-only; each query runs through `neo4j.ExecuteQuery` with reader routing):
 
 ```go
 type Repository interface {
@@ -1573,14 +1571,14 @@ Shared shapes:
 // Concept is a node linked to patterns via MENTIONED_IN.
 type Concept struct {
     Name string // normalized lowercase
-    Type string // technology, practice, or domain
+    Type string // technology, practice, or domain (mcp only)
 }
 
 // RelatedPattern is a pattern reached through a RELATED_TO edge.
 type RelatedPattern struct {
     ID             uuid.UUID
     Name           string
-    SharedConcepts int      // count of shared concepts
+    SharedConcepts int      // count of shared concepts (api only)
     Similarity     float64  // from the RELATED_TO edge (0.0-1.0)
     ConceptNames   []string // names of the shared concepts
 }
@@ -1625,19 +1623,19 @@ type PostgresConfig struct {
     Password        string        `mapstructure:"password"`
     SSLMode         string        `mapstructure:"ssl_mode"`
     MaxOpenConns    int32         `mapstructure:"max_open_conns"`
-    MaxIdleConns    int32         `mapstructure:"max_idle_conns"`
+    MinConns        int32         `mapstructure:"min_conns"`
     ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 ```
 
-Keys live under `database.postgres.*` (env `MNEMONIC_DATABASE_POSTGRES_*`). Defaults in all three services: `max_open_conns` 25, `max_idle_conns` 5, `conn_max_lifetime` 5m, `ssl_mode` `prefer`. The pool is a `pgxpool.Pool`: `max_open_conns` sets `MaxConns` and `max_idle_conns` sets `MinConns`. Both are `int32`, the type pgxpool takes, so a value above 2147483647 fails config loading.
+Keys live under `database.postgres.*` (env `MNEMONIC_DATABASE_POSTGRES_*`). Defaults in all three services: `max_open_conns` 25, `min_conns` 5, `conn_max_lifetime` 5m, `ssl_mode` `prefer`. The pool is a `pgxpool.Pool`: `max_open_conns` sets `MaxConns` and `min_conns` sets `MinConns`. Both are `int32`, the type pgxpool takes, so a value above 2147483647 fails config loading.
 
 **Recommended Pool Settings:**
 
 | Setting | Development | Production (Single Pod) | Production (Multi-Pod) |
 | --------- | ------------- | ------------------------- | ------------------------ |
 | MaxOpenConns | 5 | 25 | 15 per pod |
-| MaxIdleConns | 2 | 5 | 3 per pod |
+| MinConns | 2 | 5 | 3 per pod |
 | ConnMaxLifetime | 5m | 1h | 1h |
 
 ### Neo4j Connection
