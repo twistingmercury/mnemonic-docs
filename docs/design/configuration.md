@@ -375,8 +375,8 @@ The Services column shows which services define each key: **A** = `mnemonic-api`
 | `database.postgres.username`                    | string   | `mnemonic`                  | `MNEMONIC_DATABASE_POSTGRES_USERNAME`                    | A, E, M  | Database username                                                                           |
 | `database.postgres.password`                    | string   | `""`                        | `MNEMONIC_DATABASE_POSTGRES_PASSWORD`                    | A, E, M  | Database password                                                                           |
 | `database.postgres.ssl_mode`                    | string   | `prefer`                    | `MNEMONIC_DATABASE_POSTGRES_SSL_MODE`                    | A, E, M  | SSL mode                                                                                    |
-| `database.postgres.max_open_conns`              | int      | `25`                        | `MNEMONIC_DATABASE_POSTGRES_MAX_OPEN_CONNS`              | A, E, M  | Pool maximum (pgxpool `MaxConns`)                                                           |
-| `database.postgres.max_idle_conns`              | int      | `5`                         | `MNEMONIC_DATABASE_POSTGRES_MAX_IDLE_CONNS`              | A, E, M  | Pool minimum kept open (pgxpool `MinConns`); must not exceed `max_open_conns`               |
+| `database.postgres.max_open_conns`              | int32    | `25`                        | `MNEMONIC_DATABASE_POSTGRES_MAX_OPEN_CONNS`              | A, E, M  | Pool maximum (pgxpool `MaxConns`)                                                           |
+| `database.postgres.max_idle_conns`              | int32    | `5`                         | `MNEMONIC_DATABASE_POSTGRES_MAX_IDLE_CONNS`              | A, E, M  | Pool minimum kept open (pgxpool `MinConns`); must not exceed `max_open_conns`               |
 | `database.postgres.conn_max_lifetime`           | duration | `5m`                        | `MNEMONIC_DATABASE_POSTGRES_CONN_MAX_LIFETIME`           | A, E, M  | Connection max lifetime                                                                     |
 | `database.neo4j.uri`                            | string   | `bolt://localhost:7687`     | `MNEMONIC_DATABASE_NEO4J_URI`                            | A, E, M  | Neo4j URI (`bolt://` or `neo4j://`)                                                         |
 | `database.neo4j.username`                       | string   | `neo4j`                     | `MNEMONIC_DATABASE_NEO4J_USERNAME`                       | A, E, M  | Neo4j username                                                                              |
@@ -697,8 +697,8 @@ type PostgresConfig struct {
     Username        string        `mapstructure:"username"`
     Password        string        `mapstructure:"password"`
     SSLMode         string        `mapstructure:"ssl_mode"`
-    MaxOpenConns    int32         `mapstructure:"max_open_conns"` // int in E, M
-    MaxIdleConns    int32         `mapstructure:"max_idle_conns"` // int in E, M
+    MaxOpenConns    int32         `mapstructure:"max_open_conns"`
+    MaxIdleConns    int32         `mapstructure:"max_idle_conns"`
     ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 

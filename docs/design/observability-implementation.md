@@ -2,7 +2,7 @@
 
 > Back to [Design Documents](README.md) | [Project README](../../README.md)
 
-**Note:** This document describes the observability code as implemented in `mnemonic-api` and `mnemonic-enricher` (v0.4.1) and `mnemonic-mcp` (v0.5.0). Earlier versions of this page carried long, hypothetical code listings (handler dependency structs, instrumented repository wrappers, cache and tooling metrics, otelx v1 APIs) that never matched the code; they have been replaced with the actual design and short excerpts. File paths are relative to each service's `src/` directory.
+**Note:** This document describes the observability code as implemented in `mnemonic-api` (v0.4.1), `mnemonic-enricher` (v0.4.2) and `mnemonic-mcp` (v0.5.1). Earlier versions of this page carried long, hypothetical code listings (handler dependency structs, instrumented repository wrappers, cache and tooling metrics, otelx v1 APIs) that never matched the code; they have been replaced with the actual design and short excerpts. File paths are relative to each service's `src/` directory.
 
 ## Table of Contents
 
@@ -86,7 +86,7 @@ src/
 
 ### Required Dependencies
 
-From the services' `go.mod` (api and enricher v0.4.1, mcp v0.5.0):
+From the services' `go.mod` (api v0.4.1, enricher v0.4.2, mcp v0.5.1):
 
 ```go
 require (
@@ -717,7 +717,7 @@ The `--health` command-line flag does not call `CheckHealth`; it makes an HTTP r
 
 ## Implementation Checklist
 
-Status at api and enricher v0.4.1, mcp v0.5.0.
+Status at api v0.4.1, enricher v0.4.2, mcp v0.5.1.
 
 ### Foundation
 
